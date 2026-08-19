@@ -392,6 +392,20 @@ class DependencyTransitionRunner:
                 return True
         fresh = execution("angular-update:fresh")
         transition = execution("materialize:transition")
+        binding = self._stage._binding(session, continuation)
+        if (
+            fresh is not None
+            and fresh.status == "failed"
+            and self._has_evidence(session, fresh, "fresh-angular-update-failure")
+            and (fresh.start_fingerprint or {}).get("binding_fingerprint")
+            == binding.workspace_fingerprint
+        ):
+            live = STAGE_FINGERPRINT_PROFILE.fingerprint(Path(binding.workspace_path))
+            fresh.end_fingerprint = {"canonical_source": live}
+            if live != binding.workspace_fingerprint:
+                self._update_binding_fingerprint(
+                    session, continuation, binding, live
+                )
         return bool(
             fresh is not None
             and fresh.status == "failed"
@@ -1017,12 +1031,6 @@ class DependencyTransitionRunner:
                 execution.failure_message or "Angular update failed after dependency detach",
             )
         self._record_fresh_failure(session, continuation, context, execution)
-        live = STAGE_FINGERPRINT_PROFILE.fingerprint(context["workspace"])
-        execution.end_fingerprint = {"canonical_source": live}
-        if live != context["binding"].workspace_fingerprint:
-            self._update_binding_fingerprint(
-                session, continuation, context["binding"], live
-            )
         return "continue"
 
     @staticmethod
