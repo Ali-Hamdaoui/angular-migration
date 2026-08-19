@@ -516,6 +516,7 @@ class StageRecoveryService:
             binding,
             workspace,
             live,
+            step,
         )
         causal = None
         for candidate in session.scalars(
