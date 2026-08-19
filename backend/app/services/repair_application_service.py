@@ -81,6 +81,7 @@ from app.services.failure_evidence_service import (
     FailureEvidenceService,
     validate_context_pack,
 )
+from app.services.repair_lifecycle_service import RepairLifecycleService
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformation_continuation_service import append_continuation_event
 from app.services.workspace_fingerprint import (
