@@ -28,6 +28,7 @@ from app.repositories.models import (
     StageGateDecisionModel,
     StageGatePackageModel,
     StagePromptRequestModel,
+    StageRecoveryOperationModel,
     StageStepModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
@@ -45,6 +46,7 @@ from app.artifact_store import ArtifactNotFoundError, ArtifactStoreError, LocalF
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformer_prompt_service import TransformerPromptError, TransformerPromptService
 from app.services.transformer_stage_service import TransformerStageService
+from app.services.stage_recovery_service import StageRecoveryError, StageRecoveryService
 from app.domain.transformation import PromptDecisionRequest
 
 router = APIRouter(prefix="/runs", tags=["transformation"])
@@ -222,7 +224,9 @@ def _dependency_operation(proposal: dict[str, object] | None) -> dict[str, objec
     return None
 
 
-def _next_backend_action(continuation) -> str | None:
+def _next_backend_action(continuation, recovery=None) -> str | None:
+    if recovery is not None and recovery.status not in {"COMPLETED", "FAILED"}:
+        return "Recover stage through RECOVER_STAGE"
     if continuation.status == "waiting_command":
         return "Command in flight"
     if continuation.status == "waiting_gate":
@@ -261,6 +265,16 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
             StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
             StageWorkspaceBindingModel.active.is_(True),
         )
+    )
+    recovery = session.scalar(
+        select(StageRecoveryOperationModel)
+        .where(
+            StageRecoveryOperationModel.run_id == continuation.run_id,
+            StageRecoveryOperationModel.stage_id == continuation.current_stage_id,
+            StageRecoveryOperationModel.status.not_in(("COMPLETED", "FAILED")),
+        )
+        .order_by(StageRecoveryOperationModel.created_at.desc())
+        .limit(1)
     )
     command = session.scalar(
         select(CommandExecutionModel)
@@ -630,7 +644,23 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
         "repair_rationale": proposal.get("rationale", []) if proposal else [],
         "repair_apply_checksum": repair.apply_ledger_checksum if repair else None,
         "repair_validation_checksum": repair.validation_summary_checksum if repair else None,
-        "next_backend_action": _next_backend_action(continuation),
+        "next_backend_action": _next_backend_action(continuation, recovery),
+        "recovery_state": (
+            "BLOCKED_RECOVERY"
+            if recovery is not None and recovery.status not in {"COMPLETED", "FAILED"}
+            else None
+        ),
+        "required_action": (
+            "RECOVER_STAGE"
+            if recovery is not None and recovery.status not in {"COMPLETED", "FAILED"}
+            else None
+        ),
+        "recovery_id": recovery.id if recovery is not None else None,
+        "recovery_kind": recovery.kind if recovery is not None else None,
+        "recovery_status": recovery.status if recovery is not None else None,
+        "recovery_command_execution_id": (
+            recovery.command_execution_id if recovery is not None else None
+        ),
         "angular_update_retry_attempt": (
             retry_execution.attempt_number if retry_execution else None
         ),
@@ -735,6 +765,34 @@ def get_transformation(
         return _projection(session, continuation)
 
 
+@router.post("/{run_id}/transformation/recovery")
+def recover_stage(
+    run_id: str,
+    body: TransformationRestartRequest,
+    request: Request,
+    actor: str = Depends(authenticated_actor),
+):
+    with session_scope() as session:
+        authorize_run(session, run_id, actor)
+    try:
+        return StageRecoveryService(scope=session_scope).create(
+            run_id=run_id,
+            expected_state_version=body.expected_state_version,
+            idempotency_key=body.idempotency_key,
+            actor=actor,
+            correlation_id=body.correlation_id,
+        )
+    except StageRecoveryError as error:
+        return error_response(
+            request,
+            status_code=409,
+            error_code=error.code,
+            message=error.message,
+            details=error.details,
+            correlation_id=body.correlation_id,
+        )
+
+
 @router.post("/{run_id}/transformation/repairs/{attempt_id}/revisions")
 def request_repair_revision(
     run_id: str,
@@ -824,16 +882,21 @@ def recover_dependency_state(
     with session_scope() as session:
         authorize_run(session, run_id, actor)
     try:
-        return RepairApplicationService(scope=session_scope).recover_stale_dependency_state(
+        return StageRecoveryService(scope=session_scope).create(
             run_id=run_id,
-            attempt_id=attempt_id,
             expected_state_version=body.expected_state_version,
             idempotency_key=body.idempotency_key,
             actor=actor,
+            correlation_id=body.correlation_id,
         )
-    except RepairApplicationError as error:
+    except StageRecoveryError as error:
         return error_response(
-            request, status_code=409, error_code=error.code, message=error.message
+            request,
+            status_code=409,
+            error_code=error.code,
+            message=error.message,
+            details=error.details,
+            correlation_id=body.correlation_id,
         )
 
 
@@ -1232,6 +1295,30 @@ def restart_transformation(
                 status_code=404,
                 error_code="TRANSFORMATION_NOT_FOUND",
                 message="Transformer continuation has not been created",
+            )
+        recovery = session.scalar(
+            select(StageRecoveryOperationModel)
+            .where(
+                StageRecoveryOperationModel.run_id == run_id,
+                StageRecoveryOperationModel.stage_id == continuation.current_stage_id,
+                StageRecoveryOperationModel.status.not_in(("COMPLETED", "FAILED")),
+            )
+            .order_by(StageRecoveryOperationModel.created_at.desc())
+            .limit(1)
+        )
+        if StageRecoveryService.recovery_required(continuation, recovery):
+            return error_response(
+                request,
+                status_code=409,
+                error_code="RECOVERY_ACTION_REQUIRED",
+                message="This blocked continuation is owned by governed stage recovery",
+                details={
+                    "required_action": "RECOVER_STAGE",
+                    "recovery_id": recovery.id if recovery is not None else None,
+                    "recovery_kind": recovery.kind if recovery is not None else "RECONSTRUCT_THEN_RECONCILE",
+                    "state_version": continuation.state_version,
+                },
+                correlation_id=body.correlation_id,
             )
         replay = session.scalar(
             select(WorkflowEventModel).where(

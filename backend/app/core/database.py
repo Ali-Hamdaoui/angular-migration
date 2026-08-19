@@ -26,6 +26,7 @@ TRANSFORMER_TABLES = (
     "stage_gate_packages",
     "stage_gate_decisions",
     "stage_reconstruction_records",
+    "stage_recovery_operations",
 )
 
 

@@ -20,6 +20,7 @@ from app.services.transformation_continuation_service import (
     append_continuation_event,
 )
 from app.services.factory_runtime_service import FactoryRuntimeService, StaleFactoryRuntimeError
+from app.services.stage_recovery_service import StageRecoveryService
 from app.orchestration.transformer_graph import TransformerWorkflow
 from app.domain.contracts import WorkflowEventType
 
@@ -48,6 +49,7 @@ class TransformerWorker:
         )
         self.command_executor = command_executor or CommandExecutorService()
         self.continuations = continuation_service or TransformationContinuationService()
+        self.recovery = StageRecoveryService(scope=scope)
         self.workflow = workflow or TransformerWorkflow()
         self._scope = scope
         self.poll_seconds = poll_seconds or settings.transformer_worker_poll_seconds
@@ -70,6 +72,8 @@ class TransformerWorker:
                 self.factory_runtime.assert_active(session)
             self.command_executor.execute_claimed_execution(execution_id, self.worker_id)
             self._wake_command_waiter(execution_id)
+            return True
+        if self.recovery.advance_next():
             return True
         with self._scope() as session:
             self.factory_runtime.assert_active(session)

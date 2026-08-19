@@ -32,6 +32,7 @@ from app.repositories.models import (
     StageCheckpointModel,
     StageExecutionPlanModel,
     StageReconstructionRecordModel,
+    StageRecoveryOperationModel,
     StageStepModel,
     StageWorkspaceBindingModel,
     StageRuntimeBindingModel,
@@ -72,6 +73,7 @@ class TransformerStageError(ValueError):
 class ReconstructionMode(str, Enum):
     SAME_STATE = "same_state"
     AUTHORIZED_ROLLBACK = "authorized_rollback"
+    RECOVERY_OPERATION = "recovery_operation"
 
 
 def artifact_metadata_id(artifact_id: str) -> str:
@@ -964,6 +966,7 @@ class TransformerStageService:
         reason: str,
         execution_id: str | None,
         attempt_id: str | None,
+        recovery_operation_id: str | None,
     ) -> dict[str, object]:
         return {
             "run_id": continuation.run_id,
@@ -975,6 +978,7 @@ class TransformerStageService:
             "reason": reason,
             "repair_attempt_id": attempt_id,
             "authority_execution_id": execution_id,
+            "recovery_operation_id": recovery_operation_id,
             "current_binding_fingerprint": (
                 binding.workspace_fingerprint if binding is not None else None
             ),
@@ -999,6 +1003,7 @@ class TransformerStageService:
         execution_id: str | None = None,
         attempt_id: str | None = None,
         mode: ReconstructionMode = ReconstructionMode.SAME_STATE,
+        recovery_operation_id: str | None = None,
     ) -> str:
         """Record governed reconstruction intent before the filesystem swap.
 
@@ -1078,6 +1083,70 @@ class TransformerStageService:
                     "CHECKPOINT_INTEGRITY_FAILED",
                     "Authorized rollback checkpoint is not authoritative",
                 )
+        elif mode is ReconstructionMode.RECOVERY_OPERATION:
+            operation = (
+                session.get(StageRecoveryOperationModel, recovery_operation_id)
+                if recovery_operation_id
+                else None
+            )
+            attempt = session.get(RepairAttemptModel, attempt_id) if attempt_id else None
+            causal = (
+                session.get(CommandExecutionModel, operation.causal_execution_id)
+                if operation is not None and operation.causal_execution_id
+                else None
+            )
+            if binding is None or run is None or operation is None or attempt is None:
+                raise TransformerStageError(
+                    "RECONSTRUCTION_AUTHORIZATION_INVALID",
+                    "Recovery reconstruction lacks durable operation authority",
+                )
+            try:
+                live_workspace_fingerprint = StageSandboxCopier.fingerprint(
+                    Path(binding.workspace_path)
+                )
+            except OSError as error:
+                raise TransformerStageError(
+                    "WORKSPACE_FINGERPRINT_MISMATCH",
+                    "Live workspace cannot be fingerprinted for recovery reconstruction",
+                ) from error
+            governed_workspace = (run.workspace_aliases or {}).get(binding.alias)
+            lineage_execution_ids = {
+                operation.causal_execution_id,
+                operation.interrupted_execution_id,
+                checkpoint.created_from_execution_id,
+            }
+            if (
+                operation.run_id != continuation.run_id
+                or operation.stage_id != continuation.current_stage_id
+                or operation.status not in {"PLANNED", "RECONSTRUCTING"}
+                or operation.checkpoint_id != checkpoint.id
+                or operation.repair_attempt_id != attempt.id
+                or attempt.run_id != continuation.run_id
+                or attempt.stage_id != continuation.current_stage_id
+                or attempt.checkpoint_id != checkpoint.id
+                or causal is None
+                or causal.run_id != continuation.run_id
+                or causal.stage_id != continuation.current_stage_id
+                or binding.fingerprint_profile_id != STAGE_FINGERPRINT_PROFILE.profile_id
+                or governed_workspace is None
+                or Path(governed_workspace).resolve() != Path(binding.workspace_path).resolve()
+                or live_workspace_fingerprint != binding.workspace_fingerprint
+                or checkpoint.run_id != continuation.run_id
+                or checkpoint.stage_id != continuation.current_stage_id
+                or checkpoint.workspace_alias != binding.alias
+                or checkpoint.kind not in {"pre_repair", "pre_angular_update"}
+                or not checkpoint.safe_for_resume
+                or self.authoritative_checkpoint_fingerprint(session, checkpoint) is None
+                or (
+                    checkpoint.created_from_execution_id is not None
+                    and checkpoint.created_from_execution_id not in lineage_execution_ids
+                )
+            ):
+                raise TransformerStageError(
+                    "RECONSTRUCTION_AUTHORIZATION_INVALID",
+                    "Recovery reconstruction is not bound to the active workspace and causal stage lineage",
+                )
+            authoritative = self.authoritative_checkpoint_fingerprint(session, checkpoint)
         pre_repair_fallback_authorized = False
         if binding is not None and binding.workspace_fingerprint != checkpoint.workspace_fingerprint:
             authoritative = authoritative or self.authoritative_checkpoint_fingerprint(session, checkpoint)
@@ -1123,6 +1192,7 @@ class TransformerStageService:
             reason=reason,
             execution_id=execution_id,
             attempt_id=attempt_id,
+            recovery_operation_id=recovery_operation_id,
         )
         reconstruction_request_checksum = self.checksum(request)
         event_payload = {
@@ -1139,7 +1209,11 @@ class TransformerStageService:
         }
         if (
                 not pre_repair_fallback_authorized
-                and mode is not ReconstructionMode.AUTHORIZED_ROLLBACK
+                and mode
+                not in {
+                    ReconstructionMode.AUTHORIZED_ROLLBACK,
+                    ReconstructionMode.RECOVERY_OPERATION,
+                }
                 and (
                     checkpoint_authoritative_fingerprint is None
                     or binding.workspace_fingerprint
@@ -1210,6 +1284,7 @@ class TransformerStageService:
         execution_id: str | None = None,
         attempt_id: str | None = None,
         mode: ReconstructionMode = ReconstructionMode.SAME_STATE,
+        recovery_operation_id: str | None = None,
     ) -> StageReconstructionRecordModel:
         """Write the durable ledger row and the RECONSTRUCTED event.
 
@@ -1236,6 +1311,7 @@ class TransformerStageService:
             reason=reason,
             execution_id=execution_id,
             attempt_id=attempt_id,
+            recovery_operation_id=recovery_operation_id,
         )
         reconstruction_request_checksum = self.checksum(request)
         record_id = (

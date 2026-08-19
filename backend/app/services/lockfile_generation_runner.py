@@ -25,6 +25,7 @@ from app.repositories.models import (
     MigrationRunModel,
     RepairAttemptModel,
     StageExecutionPlanModel,
+    StageRecoveryOperationModel,
     StageStepModel,
     StageWorkspaceBindingModel,
 )
@@ -355,7 +356,15 @@ class LockfileGenerationRunner:
         )
         return diagnosis.get("classification") == "TARGET_MANIFEST_AHEAD"
 
-    def _queue_stale_lock_reconciliation(self, session, continuation, execution) -> str:
+    def _queue_stale_lock_reconciliation(
+        self,
+        session,
+        continuation,
+        execution,
+        *,
+        recovery_id: str | None = None,
+        recovery_owned: bool = False,
+    ) -> str:
         run, attempt, binding, workspace = self._authority(session, continuation)
         lockfile = workspace / "package-lock.json"
         start = execution.start_fingerprint or {}
@@ -381,7 +390,11 @@ class LockfileGenerationRunner:
         reconciliation_checksum = hashlib.sha256(
             json.dumps(identity_payload, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
-        owner = f"{execution.id}:stale-lock:{reconciliation_checksum[:24]}"
+        owner = (
+            f"{recovery_id}:stale-lock:{reconciliation_checksum[:24]}"
+            if recovery_id
+            else f"{execution.id}:stale-lock:{reconciliation_checksum[:24]}"
+        )
         preparation = session.scalar(
             select(ArtifactMetadataModel).where(
                 ArtifactMetadataModel.run_id == continuation.run_id,
@@ -408,7 +421,12 @@ class LockfileGenerationRunner:
             )
             stored = store.write_text_artifact(
                 run.id,
-                f"05_repairs/attempt-{attempt.id}/stale-package-lock.{reconciliation_checksum}.json",
+                (
+                    f"04_workflow_state/recovery/{recovery_id}/stale-package-lock."
+                    f"{reconciliation_checksum}.json"
+                    if recovery_id
+                    else f"05_repairs/attempt-{attempt.id}/stale-package-lock.{reconciliation_checksum}.json"
+                ),
                 lockfile.read_text(encoding="utf-8"),
                 ArtifactType.JSON,
                 stage_id=continuation.current_stage_id,
@@ -446,7 +464,8 @@ class LockfileGenerationRunner:
                     },
                 )
             )
-            self._resume(continuation, "lockfile_generation")
+            if not recovery_owned:
+                self._resume(continuation, "lockfile_generation")
             return "preparing"
 
         metadata = preparation.safe_metadata or {}
@@ -498,11 +517,19 @@ class LockfileGenerationRunner:
                 "LOCKFILE_RECONCILIATION_BINDING_STALE",
                 "Prepared workspace does not match durable binding authority",
             )
+        queue_reconciliation_key = (
+            "recovery-"
+            + hashlib.sha256(
+                f"{recovery_id}:{reconciliation_checksum}".encode()
+            ).hexdigest()[:48]
+            if recovery_id
+            else reconciliation_checksum
+        )
         return self._queue(
             session,
             continuation,
             generation=3,
-            reconciliation_key=reconciliation_checksum,
+            reconciliation_key=queue_reconciliation_key,
         )
 
     def _queue_successor(self, session, continuation, stale_execution) -> str:
@@ -549,14 +576,27 @@ class LockfileGenerationRunner:
 
     def _authority(self, session, continuation):
         run = session.get(MigrationRunModel, continuation.run_id)
-        attempt = session.scalar(
-            select(RepairAttemptModel)
+        recovery = session.scalar(
+            select(StageRecoveryOperationModel)
             .where(
-                RepairAttemptModel.run_id == continuation.run_id,
-                RepairAttemptModel.stage_id == continuation.current_stage_id,
-                RepairAttemptModel.status.in_(("applied", "applied_verified")),
+                StageRecoveryOperationModel.run_id == continuation.run_id,
+                StageRecoveryOperationModel.stage_id == continuation.current_stage_id,
+                StageRecoveryOperationModel.status.not_in(("COMPLETED", "FAILED")),
             )
-            .order_by(RepairAttemptModel.attempt_number.desc())
+            .order_by(StageRecoveryOperationModel.created_at.desc())
+        )
+        attempt = (
+            session.get(RepairAttemptModel, recovery.repair_attempt_id)
+            if recovery is not None and recovery.repair_attempt_id
+            else session.scalar(
+                select(RepairAttemptModel)
+                .where(
+                    RepairAttemptModel.run_id == continuation.run_id,
+                    RepairAttemptModel.stage_id == continuation.current_stage_id,
+                    RepairAttemptModel.status.in_(("applied", "applied_verified")),
+                )
+                .order_by(RepairAttemptModel.attempt_number.desc())
+            )
         )
         binding = session.scalar(
             select(StageWorkspaceBindingModel).where(
