@@ -1098,6 +1098,42 @@ class TransformerOrchestrator:
                 return
             if self._resume_known_baseline_validation(session, continuation):
                 return
+            execution = session.scalar(
+                select(CommandExecutionModel)
+                .where(
+                    CommandExecutionModel.run_id == continuation.run_id,
+                    CommandExecutionModel.stage_id == continuation.current_stage_id,
+                )
+                .order_by(CommandExecutionModel.requested_at.desc())
+                .limit(1)
+            )
+            binding = self._stage._binding(session, continuation)
+            artifacts = (
+                execution.stdout_artifact_id if execution else None,
+                execution.stderr_artifact_id if execution else None,
+                execution.command_log_artifact_id if execution else None,
+                execution.result_artifact_id if execution else None,
+                execution.manifest_artifact_id if execution else None,
+            )
+            if (
+                execution is not None
+                and execution.status == "failed"
+                and execution.operation_kind == "mutating"
+                and all(artifacts)
+                and all(
+                    session.get(ArtifactMetadataModel, "metadata-" + str(item))
+                    is not None
+                    for item in artifacts
+                )
+                and (execution.start_fingerprint or {}).get("binding_fingerprint")
+                == binding.workspace_fingerprint
+            ):
+                live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+                execution.end_fingerprint = {"canonical_source": live}
+                binding.workspace_fingerprint = live
+                binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
+                binding.last_verified_fingerprint = live
+                binding.last_verified_at = datetime.now(UTC)
             prior = [
                 item.failure_fingerprint
                 for item in session.query(RepairAttemptModel)
@@ -1145,6 +1181,7 @@ class TransformerOrchestrator:
                     if self._is_angular_update_failure(session, continuation)
                     else None
                 )
+
                 if live != binding.workspace_fingerprint:
                     # A workspace that diverged from its governed binding must
                     # never feed failure evidence or a repair attempt: a
