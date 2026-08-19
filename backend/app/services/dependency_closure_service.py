@@ -66,8 +66,17 @@ _COMPATIBLE_REINSTALL_BUNDLES: dict[tuple[str, int], tuple[tuple[str, str, bool]
 
 
 def _range_lower_bound(value: str) -> str | None:
-    match = re.search(r"\d+\.\d+\.\d+", value or "")
-    return match.group(0) if match else None
+    # npm peer ranges commonly omit the patch component (for example >=3.8).
+    # Keep the lower-bound derivation conservative: only accept a range that
+    # starts with a lower-bound-compatible comparator, never an upper bound.
+    match = re.match(
+        r"\s*(?:\^|~|>=|>|=)?\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?",
+        value or "",
+    )
+    if not match:
+        return None
+    major, minor, patch = match.groups()
+    return f"{major}.{minor or '0'}.{patch or '0'}"
 
 
 def _derived_reinstall_authority(
