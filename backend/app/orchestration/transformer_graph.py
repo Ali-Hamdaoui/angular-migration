@@ -1232,7 +1232,9 @@ class TransformerOrchestrator:
                         )
                         return
                     try:
-                        self._restore_angular_update_checkpoint(session, continuation)
+                        self._restore_angular_update_checkpoint(
+                            session, continuation, attempt
+                        )
                     except TransformerStageError as error:
                         self._block(session, continuation, error.code, error.message)
                         return
@@ -1260,7 +1262,9 @@ class TransformerOrchestrator:
                     # attempt and governed checkpoint share one authoritative
                     # workspace fingerprint.
                     try:
-                        self._restore_angular_update_checkpoint(session, continuation)
+                        self._restore_angular_update_checkpoint(
+                            session, continuation, attempt
+                        )
                     except TransformerStageError as error:
                         self._block(session, continuation, error.code, error.message)
                         return
@@ -1406,7 +1410,9 @@ class TransformerOrchestrator:
                             self._block(session, continuation, error.code, error.message)
                         return
                     if route.value == "environment_transient" and continuation.attempt < continuation.max_attempts:
-                        self._restore_angular_update_checkpoint(session, continuation)
+                        self._restore_angular_update_checkpoint(
+                            session, continuation, attempt
+                        )
                         continuation.attempt += 1
                         continuation.status = "queued"
                         continuation.current_node = "angular_update"
@@ -4115,8 +4121,10 @@ class TransformerOrchestrator:
             return None
         return checkpoint
 
-    def _restore_angular_update_checkpoint(self, session, continuation):
-        attempt = session.query(RepairAttemptModel).filter_by(
+    def _restore_angular_update_checkpoint(
+        self, session, continuation, attempt=None
+    ):
+        attempt = attempt or session.query(RepairAttemptModel).filter_by(
             run_id=continuation.run_id,
             stage_id=continuation.current_stage_id,
         ).order_by(RepairAttemptModel.attempt_number.desc()).first()
