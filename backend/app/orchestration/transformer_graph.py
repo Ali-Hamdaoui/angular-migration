@@ -46,6 +46,7 @@ from app.repositories.models import (
     MigrationRunModel,
     RepairAttemptModel,
     RepairFingerprintRecoveryModel,
+    StageRecoveryOperationModel,
     StageCheckpointModel,
     StageExecutionPlanModel,
     StageGatePackageModel,
@@ -1173,10 +1174,34 @@ class TransformerOrchestrator:
         ):
             with self._scope() as session:
                 continuation = self._owned(session, continuation_id, worker_id)
-                attempt = session.query(RepairAttemptModel).filter_by(
-                    run_id=continuation.run_id,
-                    stage_id=continuation.current_stage_id,
-                ).order_by(RepairAttemptModel.attempt_number.desc()).first()
+                recovery = (
+                    session.scalar(
+                        select(StageRecoveryOperationModel)
+                        .where(
+                            StageRecoveryOperationModel.run_id == continuation.run_id,
+                            StageRecoveryOperationModel.stage_id
+                            == continuation.current_stage_id,
+                            StageRecoveryOperationModel.command_execution_id
+                            == execution.id,
+                            StageRecoveryOperationModel.status == "FAILED",
+                        )
+                        .order_by(StageRecoveryOperationModel.updated_at.desc())
+                        .limit(1)
+                    )
+                    if execution is not None
+                    else None
+                )
+                attempt = (
+                    session.get(RepairAttemptModel, recovery.repair_attempt_id)
+                    if recovery is not None and recovery.repair_attempt_id
+                    else session.query(RepairAttemptModel)
+                    .filter_by(
+                        run_id=continuation.run_id,
+                        stage_id=continuation.current_stage_id,
+                    )
+                    .order_by(RepairAttemptModel.attempt_number.desc())
+                    .first()
+                )
                 binding = self._stage._binding(session, continuation)
                 live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
                 angular_recovery_checkpoint = (
