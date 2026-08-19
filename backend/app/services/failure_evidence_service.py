@@ -17,7 +17,10 @@ from app.artifact_store import (
 )
 from app.domain.contracts import ArtifactType
 from app.domain.transformation import FailureRoute
-from app.services.dependency_closure_service import installed_dependency_version
+from app.services.dependency_closure_service import (
+    installed_dependency_version,
+    is_exact_version,
+)
 
 
 CONTEXT_PACK_SCHEMA_VERSION = "repair-context-pack-v1"
@@ -246,6 +249,10 @@ class FailureEvidenceService:
                         str(normalized.get("failure_message") or "")
                     )
                     and diagnosis.get("source") != "npm_eresolve_peer_conflict"
+                )
+                or (
+                    diagnosis.get("source") == "npm_eresolve_peer_conflict"
+                    and not is_exact_version(diagnosis.get("installed_version"))
                 )
             )
         ):
