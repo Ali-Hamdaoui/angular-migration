@@ -2151,6 +2151,7 @@ class RepairApplicationService:
             or continuation.last_error_code
             not in {
                 "REPAIR_SEMANTIC_RETRY_EXHAUSTED",
+                "REPAIR_CAUSAL_REJECTION",
                 "REPAIR_DEPENDENCY_EVIDENCE_INVALID",
                 "REPAIR_PROPOSAL_SCHEMA_INVALID",
             }
