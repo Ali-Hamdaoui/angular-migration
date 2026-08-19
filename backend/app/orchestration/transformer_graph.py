@@ -1125,7 +1125,12 @@ class TransformerOrchestrator:
                     is not None
                     for item in artifacts
                 )
-                and (execution.start_fingerprint or {}).get("binding_fingerprint")
+                and (
+                    (execution.start_fingerprint or {}).get("binding_fingerprint")
+                    or (execution.start_fingerprint or {}).get(
+                        "post_apply_pre_command_binding_fingerprint"
+                    )
+                )
                 == binding.workspace_fingerprint
             ):
                 live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
