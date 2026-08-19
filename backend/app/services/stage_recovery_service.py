@@ -619,7 +619,7 @@ class StageRecoveryService:
                     CommandExecutionModel.command_id == "npm-lockfile-generate",
                     CommandExecutionModel.status == "interrupted",
                 )
-                .order_by(CommandExecutionModel.created_at.desc())
+                .order_by(CommandExecutionModel.requested_at.desc())
             )
             if candidate.id not in seen
         )
