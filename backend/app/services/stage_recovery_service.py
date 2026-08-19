@@ -180,9 +180,22 @@ class StageRecoveryService:
             )
 
             try:
-                return RepairApplicationService(scope=self._scope).recover_stale_dependency_state(
+                service = RepairApplicationService(scope=self._scope)
+                attempt_id = self._legacy_dependency_attempt_id(run_id)
+                try:
+                    return service.recover_manifest_ahead_dependency_state(
+                        run_id=run_id,
+                        attempt_id=attempt_id,
+                        expected_state_version=expected_state_version,
+                        idempotency_key=idempotency_key,
+                        actor=actor,
+                    )
+                except RepairApplicationError as error:
+                    if error.code != "DEPENDENCY_STATE_RECONCILIATION_NOT_APPLICABLE":
+                        raise
+                return service.recover_stale_dependency_state(
                     run_id=run_id,
-                    attempt_id=self._legacy_dependency_attempt_id(run_id),
+                    attempt_id=attempt_id,
                     expected_state_version=expected_state_version,
                     idempotency_key=idempotency_key,
                     actor=actor,

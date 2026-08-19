@@ -874,6 +874,226 @@ class RepairApplicationService:
                 "idempotent_replay": False,
             }
 
+    def recover_manifest_ahead_dependency_state(
+        self,
+        *,
+        run_id: str,
+        attempt_id: str,
+        expected_state_version: int,
+        idempotency_key: str,
+        actor: str,
+    ) -> dict[str, object]:
+        """Route a target manifest with stale resolution to lockfile recovery.
+
+        This path is deliberately narrower than repair recovery: the current
+        manifest must already be present in the attempt-bound checkpoint, so
+        no proposal, G10, or LLM output is treated as the source of authority.
+        """
+        event_key = "dependency-state-manifest-ahead:" + hashlib.sha256(
+            idempotency_key.encode()
+        ).hexdigest()
+        with self._scope() as session:
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == run_id
+                )
+            )
+            attempt = session.get(RepairAttemptModel, attempt_id)
+            if (
+                continuation is None
+                or attempt is None
+                or continuation.status != "waiting_gate"
+                or continuation.current_node != "wait_g10"
+                or attempt.status != "waiting_g10"
+                or attempt.run_id != run_id
+                or attempt.stage_id != continuation.current_stage_id
+                or continuation.state_version != expected_state_version
+            ):
+                raise RepairApplicationError(
+                    "DEPENDENCY_STATE_RECOVERY_STALE",
+                    "The waiting G10 dependency recovery authority changed",
+                )
+            existing = session.scalar(
+                select(WorkflowEventModel).where(
+                    WorkflowEventModel.run_id == run_id,
+                    WorkflowEventModel.idempotency_key == f"{continuation.id}:{event_key}",
+                )
+            )
+            if existing is not None:
+                return {
+                    "attempt_id": attempt.id,
+                    "status": continuation.status,
+                    "state_version": continuation.state_version,
+                    "idempotent_replay": True,
+                }
+            stage = session.get(MigrationStageModel, continuation.current_stage_id)
+            binding = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == run_id,
+                    StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            if stage is None or binding is None:
+                raise RepairApplicationError(
+                    "DEPENDENCY_STATE_RECOVERY_AUTHORITY_MISSING",
+                    "Stage or workspace authority is missing",
+                )
+            workspace = Path(binding.workspace_path).resolve(strict=True)
+            live = STAGE_FINGERPRINT_PROFILE.fingerprint(workspace)
+            if live != binding.workspace_fingerprint or live != attempt.pre_fingerprint:
+                raise RepairApplicationError(
+                    "REPAIR_WORKSPACE_STALE",
+                    "Repair workspace fingerprint changed",
+                )
+            diagnosis = DependencyRepairPreflightService().classify_current_state(
+                workspace=workspace,
+                source_family=stage.source_version_family,
+                target_family=stage.target_version_family,
+            )
+            if diagnosis.get("classification") != "TARGET_MANIFEST_AHEAD":
+                raise RepairApplicationError(
+                    "DEPENDENCY_STATE_RECONCILIATION_NOT_APPLICABLE",
+                    f"Current dependency state is {diagnosis.get('classification')}",
+                )
+            checkpoint = session.get(StageCheckpointModel, attempt.checkpoint_id)
+            if (
+                checkpoint is None
+                or checkpoint.kind != "pre_repair"
+                or not checkpoint.safe_for_resume
+                or self._stage_checkpoint_fingerprint(session, checkpoint) != attempt.pre_fingerprint
+            ):
+                raise RepairApplicationError(
+                    "DEPENDENCY_STATE_RECOVERY_CHECKPOINT_INVALID",
+                    "The target manifest is not bound to a safe repair checkpoint",
+                )
+            checkpoint_manifest = Path(checkpoint.workspace_path) / "package.json"
+            current_manifest = workspace / "package.json"
+            if (
+                not checkpoint_manifest.is_file()
+                or not current_manifest.is_file()
+                or self._file_checksum(checkpoint_manifest) != self._file_checksum(current_manifest)
+            ):
+                raise RepairApplicationError(
+                    "DEPENDENCY_STATE_RECOVERY_MANIFEST_INVALID",
+                    "Current package.json does not match the authoritative checkpoint",
+                )
+            step = session.scalar(
+                select(StageStepModel).where(
+                    StageStepModel.run_id == run_id,
+                    StageStepModel.stage_id == continuation.current_stage_id,
+                    StageStepModel.name == "lockfile_generation-0",
+                )
+            )
+            execution = session.get(CommandExecutionModel, step.execution_id) if step and step.execution_id else None
+            if not self._valid_lockfile_failure(session, execution, run_id, continuation.current_stage_id):
+                raise RepairApplicationError(
+                    "DEPENDENCY_STATE_CAUSAL_EXECUTION_INVALID",
+                    "The stage has no immutable failed npm lockfile execution to reconcile",
+                )
+            gate = session.get(StageGatePackageModel, attempt.g10_gate_package_id)
+            if gate is None or gate.status != "pending":
+                raise RepairApplicationError(
+                    "DEPENDENCY_STATE_RECOVERY_GATE_STALE",
+                    "The G10 package is not pending",
+                )
+            now = self._now()
+            gate.status = "stale"
+            gate.stale_at = now
+            RepairLifecycleService.transition_in_session(
+                session,
+                attempt,
+                "superseded",
+                reason="deterministic target-manifest reconciliation superseded pending G10",
+                actor=actor,
+                now=now,
+            )
+            step.status = "RUNNING"
+            step.execution_id = execution.id
+            step.completed_at = None
+            continuation.status = "queued"
+            continuation.current_node = "lockfile_generation"
+            continuation.worker_id = None
+            continuation.lease_expires_at = None
+            continuation.waiting_execution_id = None
+            continuation.last_error_code = None
+            continuation.last_error_message = None
+            continuation.wake_sequence += 1
+            continuation.state_version += 1
+            continuation.updated_at = now
+            session.flush()
+            append_continuation_event(
+                session,
+                continuation,
+                event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED,
+                key=event_key,
+                reason="target manifest is ahead of stale dependency resolution; deterministic lockfile reconciliation queued",
+                actor=actor,
+                occurred_at=now,
+                payload={
+                    "attempt_id": attempt.id,
+                    "checkpoint_id": checkpoint.id,
+                    "causal_execution_id": execution.id,
+                    "classification": diagnosis["classification"],
+                    "manifest_checksum": self._file_checksum(current_manifest),
+                    "lockfile_checksum": self._file_checksum(workspace / "package-lock.json"),
+                    "workspace_fingerprint": live,
+                    "expected_state_version": expected_state_version,
+                },
+            )
+            return {
+                "attempt_id": attempt.id,
+                "status": continuation.status,
+                "state_version": continuation.state_version,
+                "classification": diagnosis["classification"],
+                "causal_execution_id": execution.id,
+                "idempotent_replay": False,
+            }
+
+    @staticmethod
+    def _file_checksum(path: Path) -> str:
+        return (
+            "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+            if path.is_file() and not path.is_symlink()
+            else "missing"
+        )
+
+    @staticmethod
+    def _stage_checkpoint_fingerprint(session, checkpoint) -> str | None:
+        from app.services.transformer_stage_service import TransformerStageService
+
+        return TransformerStageService().authoritative_checkpoint_fingerprint(session, checkpoint)
+
+    @staticmethod
+    def _valid_lockfile_failure(session, execution, run_id: str, stage_id: str) -> bool:
+        if (
+            execution is None
+            or execution.run_id != run_id
+            or execution.stage_id != stage_id
+            or execution.command_id != "npm-lockfile-generate"
+            or execution.status != "failed"
+            or execution.exit_code in (None, 0)
+            or not re.search(
+                r"(?im)^\s*npm\s+(?:ERR!|error)\s+(?:code\s+)?ERESOLVE\b",
+                execution.failure_message or "",
+            )
+        ):
+            return False
+        artifact_ids = (
+            execution.result_artifact_id,
+            execution.command_log_artifact_id,
+            execution.manifest_artifact_id,
+        )
+        return all(
+            artifact_id
+            and (metadata := session.get(ArtifactMetadataModel, "metadata-" + str(artifact_id))) is not None
+            and metadata.immutable
+            and metadata.run_id == run_id
+            and metadata.stage_id == stage_id
+            and metadata.execution_id == execution.id
+            for artifact_id in artifact_ids
+        )
+
     @staticmethod
     def _causal_lockfile_execution(session, run, attempt, workspace):
         metadata = session.get(
