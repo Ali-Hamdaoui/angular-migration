@@ -173,6 +173,16 @@ class StageRecoveryService:
         actor: str,
         correlation_id: str | None = None,
     ) -> dict[str, object]:
+        if self._legacy_dependency_recovery_required(run_id, expected_state_version):
+            from app.services.repair_application_service import RepairApplicationService
+
+            return RepairApplicationService(scope=self._scope).recover_stale_dependency_state(
+                run_id=run_id,
+                attempt_id=self._legacy_dependency_attempt_id(run_id),
+                expected_state_version=expected_state_version,
+                idempotency_key=idempotency_key,
+                actor=actor,
+            )
         with self._scope() as session:
             continuation = session.scalar(
                 select(TransformationContinuationModel).where(
@@ -299,6 +309,46 @@ class StageRecoveryService:
                 "durable stage recovery operation created from immutable failure evidence",
             )
             return self._result(operation, continuation, False)
+
+    def _legacy_dependency_recovery_required(
+        self, run_id: str, expected_state_version: int
+    ) -> bool:
+        with self._scope() as session:
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == run_id
+                )
+            )
+            return bool(
+                continuation is not None
+                and continuation.state_version == expected_state_version
+                and continuation.status == "waiting_gate"
+                and continuation.current_node == "wait_g10"
+                and self._active(session, run_id, continuation.current_stage_id) is None
+                and session.scalar(
+                    select(RepairAttemptModel).where(
+                        RepairAttemptModel.run_id == run_id,
+                        RepairAttemptModel.stage_id == continuation.current_stage_id,
+                        RepairAttemptModel.status == "waiting_g10",
+                    ).order_by(RepairAttemptModel.attempt_number.desc())
+                )
+                is not None
+            )
+
+    def _legacy_dependency_attempt_id(self, run_id: str) -> str:
+        with self._scope() as session:
+            attempt = session.scalar(
+                select(RepairAttemptModel).where(
+                    RepairAttemptModel.run_id == run_id,
+                    RepairAttemptModel.status == "waiting_g10",
+                ).order_by(RepairAttemptModel.attempt_number.desc())
+            )
+            if attempt is None:
+                raise StageRecoveryError(
+                    "DEPENDENCY_STATE_RECOVERY_AUTHORITY_MISSING",
+                    "No waiting dependency repair attempt authorizes recovery",
+                )
+            return attempt.id
 
     def retry_failed(
         self,
