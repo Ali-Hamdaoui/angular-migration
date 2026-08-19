@@ -11,21 +11,40 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "stage_recovery_operations",
-        sa.Column(
-            "continuation_id",
-            sa.String(length=64),
-            sa.ForeignKey("transformation_continuations.id"),
-            nullable=True,
-        ),
-    )
-    op.create_index(
-        "ix_stage_recovery_operations_continuation_id",
-        "stage_recovery_operations",
-        ["continuation_id"],
-    )
     connection = op.get_bind()
+    invalid = connection.execute(
+        sa.text(
+            """
+            SELECT recovery.id, COUNT(continuation.id) AS match_count
+            FROM stage_recovery_operations AS recovery
+            LEFT JOIN transformation_continuations AS continuation
+              ON continuation.run_id = recovery.run_id
+             AND continuation.current_stage_id = recovery.stage_id
+            GROUP BY recovery.id
+            HAVING COUNT(continuation.id) <> 1
+            """
+        )
+    ).all()
+    if invalid:
+        details = ", ".join(f"{row[0]}={row[1]}" for row in invalid)
+        raise RuntimeError(
+            "Cannot backfill stage recovery continuation identity: "
+            f"each recovery must have exactly one run/stage continuation ({details})"
+        )
+
+    with op.batch_alter_table("stage_recovery_operations") as batch:
+        batch.add_column(sa.Column("continuation_id", sa.String(length=64), nullable=True))
+        batch.create_foreign_key(
+            "fk_stage_recovery_operations_continuation",
+            "transformation_continuations",
+            ["continuation_id"],
+            ["id"],
+        )
+        batch.create_index(
+            "ix_stage_recovery_operations_continuation_id",
+            ["continuation_id"],
+        )
+
     connection.execute(
         sa.text(
             """
@@ -63,8 +82,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_stage_recovery_operations_continuation_id",
-        table_name="stage_recovery_operations",
-    )
-    op.drop_column("stage_recovery_operations", "continuation_id")
+    with op.batch_alter_table("stage_recovery_operations") as batch:
+        batch.drop_index("ix_stage_recovery_operations_continuation_id")
+        batch.drop_constraint(
+            "fk_stage_recovery_operations_continuation",
+            type_="foreignkey",
+        )
+        batch.drop_column("continuation_id")
