@@ -368,6 +368,7 @@ class StageRecoveryService:
                 "STAGE_RECOVERY_AUTHORITY_MISSING",
                 "RECOVERY_CONTINUATION_AUTHORITY_INVALID",
                 "RECONSTRUCTION_AUTHORIZATION_INVALID",
+                "LOCKFILE_RECONCILIATION_WORKSPACE_STALE",
             }:
                 raise StageRecoveryError(
                     "RECOVERY_RETRY_NOT_SAFE",
@@ -519,6 +520,9 @@ class StageRecoveryService:
             step,
         )
         causal = None
+        causal_evidence = None
+        package_checksum = self.file_checksum(workspace / "package.json")
+        governed_checksum = workspace_excluding_governed_volatile_fingerprint(workspace)
         for candidate in session.scalars(
             select(CommandExecutionModel)
             .where(
@@ -529,20 +533,33 @@ class StageRecoveryService:
             )
             .order_by(CommandExecutionModel.finished_at.desc())
         ):
-            if is_npm_eresolve_failure(candidate):
-                causal = candidate
-                break
+            start = candidate.start_fingerprint or {}
+            if (
+                not is_npm_eresolve_failure(candidate)
+                or start.get("post_apply_pre_command_binding_fingerprint")
+                != binding.workspace_fingerprint
+                or start.get("post_apply_pre_command_package_json_sha256")
+                != package_checksum
+                or start.get("post_apply_pre_command_governed_workspace_fingerprint")
+                != governed_checksum
+            ):
+                continue
+            try:
+                causal_evidence = self._validate_causal_evidence(
+                    session,
+                    run,
+                    continuation.current_stage_id,
+                    candidate,
+                )
+            except StageRecoveryError:
+                continue
+            causal = candidate
+            break
         if causal is None:
             raise StageRecoveryError(
                 "DEPENDENCY_STATE_RECOVERY_EVIDENCE_MISSING",
                 "No immutable failed ERESOLVE lockfile execution authorizes reconciliation",
             )
-        causal_evidence = self._validate_causal_evidence(
-            session,
-            run,
-            continuation.current_stage_id,
-            causal,
-        )
         diagnosis = DependencyRepairPreflightService().classify_current_state(
             workspace=workspace,
             source_family=stage.source_version_family or "",
