@@ -369,6 +369,7 @@ class StageRecoveryService:
                 "RECOVERY_CONTINUATION_AUTHORITY_INVALID",
                 "RECONSTRUCTION_AUTHORIZATION_INVALID",
                 "LOCKFILE_RECONCILIATION_WORKSPACE_STALE",
+                "WORKSPACE_BINDING_STALE",
             }:
                 raise StageRecoveryError(
                     "RECOVERY_RETRY_NOT_SAFE",
