@@ -900,12 +900,25 @@ class RepairApplicationService:
                 )
             )
             attempt = session.get(RepairAttemptModel, attempt_id)
+            legacy_blocked_recovery = bool(
+                continuation is not None
+                and continuation.status == "blocked"
+                and continuation.current_node == "classify_failure"
+                and continuation.last_error_code == "REPAIR_ATTEMPT_LIMIT"
+                and attempt is not None
+                and attempt.status == "superseded"
+            )
             if (
                 continuation is None
                 or attempt is None
-                or continuation.status != "waiting_gate"
-                or continuation.current_node != "wait_g10"
-                or attempt.status != "waiting_g10"
+                or not (
+                    (
+                        continuation.status == "waiting_gate"
+                        and continuation.current_node == "wait_g10"
+                        and attempt.status == "waiting_g10"
+                    )
+                    or legacy_blocked_recovery
+                )
                 or attempt.run_id != run_id
                 or attempt.stage_id != continuation.current_stage_id
                 or continuation.state_version != expected_state_version
@@ -992,23 +1005,24 @@ class RepairApplicationService:
                     "DEPENDENCY_STATE_CAUSAL_EXECUTION_INVALID",
                     "The stage has no immutable failed npm lockfile execution to reconcile",
                 )
-            gate = session.get(StageGatePackageModel, attempt.g10_gate_package_id)
-            if gate is None or gate.status != "pending":
-                raise RepairApplicationError(
-                    "DEPENDENCY_STATE_RECOVERY_GATE_STALE",
-                    "The G10 package is not pending",
-                )
             now = self._now()
-            gate.status = "stale"
-            gate.stale_at = now
-            RepairLifecycleService.transition_in_session(
-                session,
-                attempt,
-                "superseded",
-                reason="deterministic target-manifest reconciliation superseded pending G10",
-                actor=actor,
-                now=now,
-            )
+            if not legacy_blocked_recovery:
+                gate = session.get(StageGatePackageModel, attempt.g10_gate_package_id)
+                if gate is None or gate.status != "pending":
+                    raise RepairApplicationError(
+                        "DEPENDENCY_STATE_RECOVERY_GATE_STALE",
+                        "The G10 package is not pending",
+                    )
+                gate.status = "stale"
+                gate.stale_at = now
+                RepairLifecycleService.transition_in_session(
+                    session,
+                    attempt,
+                    "superseded",
+                    reason="deterministic target-manifest reconciliation superseded pending G10",
+                    actor=actor,
+                    now=now,
+                )
             step.status = "RUNNING"
             step.execution_id = execution.id
             step.completed_at = None

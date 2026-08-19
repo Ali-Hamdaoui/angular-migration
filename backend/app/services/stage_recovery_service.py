@@ -344,11 +344,36 @@ class StageRecoveryService:
                 and continuation.status == "waiting_gate"
                 and continuation.current_node == "wait_g10"
                 and self._active(session, run_id, continuation.current_stage_id) is None
+                and (
+                    session.scalar(
+                        select(RepairAttemptModel).where(
+                            RepairAttemptModel.run_id == run_id,
+                            RepairAttemptModel.stage_id == continuation.current_stage_id,
+                            RepairAttemptModel.status == "waiting_g10",
+                        ).order_by(RepairAttemptModel.attempt_number.desc())
+                    )
+                    is not None
+                    or session.scalar(
+                        select(RepairAttemptModel).where(
+                            RepairAttemptModel.run_id == run_id,
+                            RepairAttemptModel.stage_id == continuation.current_stage_id,
+                            RepairAttemptModel.status == "superseded",
+                        ).order_by(RepairAttemptModel.attempt_number.desc())
+                    )
+                    is not None
+                )
+            ) or bool(
+                continuation is not None
+                and continuation.state_version == expected_state_version
+                and continuation.status == "blocked"
+                and continuation.current_node == "classify_failure"
+                and continuation.last_error_code == "REPAIR_ATTEMPT_LIMIT"
+                and self._active(session, run_id, continuation.current_stage_id) is None
                 and session.scalar(
                     select(RepairAttemptModel).where(
                         RepairAttemptModel.run_id == run_id,
                         RepairAttemptModel.stage_id == continuation.current_stage_id,
-                        RepairAttemptModel.status == "waiting_g10",
+                        RepairAttemptModel.status == "superseded",
                     ).order_by(RepairAttemptModel.attempt_number.desc())
                 )
                 is not None
@@ -359,7 +384,7 @@ class StageRecoveryService:
             attempt = session.scalar(
                 select(RepairAttemptModel).where(
                     RepairAttemptModel.run_id == run_id,
-                    RepairAttemptModel.status == "waiting_g10",
+                    RepairAttemptModel.status.in_(("waiting_g10", "superseded")),
                 ).order_by(RepairAttemptModel.attempt_number.desc())
             )
             if attempt is None:

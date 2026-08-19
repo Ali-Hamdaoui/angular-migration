@@ -198,6 +198,12 @@ class LockfileGenerationRunner:
                     execution.failure_message or "npm reported an unavailable dependency version",
                 )
             if is_npm_eresolve_failure(execution):
+                if self._current_state_reconciliation_allowed(
+                    session, continuation, execution
+                ):
+                    return self._queue_current_state_reconciliation(
+                        session, continuation, execution
+                    )
                 if self._stale_lock_reconciliation_allowed(session, continuation, execution):
                     try:
                         return self._queue_stale_lock_reconciliation(
@@ -333,6 +339,7 @@ class LockfileGenerationRunner:
         start = {
             "fingerprint_scope": LOCKFILE_GENERATION_FINGERPRINT_SCOPE,
             "reconciliation_generation": generation == 3,
+            "current_state_reconciliation": current_state,
             "post_apply_pre_command_package_json_sha256": _file_checksum(workspace / "package.json"),
             "post_apply_pre_command_package_lock_sha256": _file_checksum(workspace / "package-lock.json"),
             "post_apply_pre_command_governed_workspace_fingerprint": workspace_excluding_governed_volatile_fingerprint(workspace),
@@ -362,6 +369,22 @@ class LockfileGenerationRunner:
         if next_node is not None:
             execution.start_fingerprint["post_reconciliation_next_node"] = next_node
         return "queued"
+
+    def _current_state_reconciliation_allowed(self, session, continuation, execution) -> bool:
+        if (execution.start_fingerprint or {}).get("current_state_reconciliation") is True:
+            return False
+        run, _attempt, _binding, workspace = self._authority(session, continuation)
+        stage = session.get(MigrationStageModel, continuation.current_stage_id)
+        if stage is None:
+            return False
+        from app.services.dependency_repair_preflight_service import DependencyRepairPreflightService
+
+        diagnosis = DependencyRepairPreflightService().classify_current_state(
+            workspace=workspace,
+            source_family=stage.source_version_family,
+            target_family=stage.target_version_family,
+        )
+        return diagnosis.get("classification") == "TARGET_MANIFEST_AHEAD"
 
     def _queue_current_state_reconciliation(self, session, continuation, failed_execution) -> str:
         """Queue a fresh lockfile command from the current target manifest.
