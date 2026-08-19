@@ -663,10 +663,20 @@ class StageRecoveryService:
         actual_package = self.file_checksum(workspace / "package.json")
         actual_lock = self.file_checksum(workspace / "package-lock.json")
         actual_governed = workspace_excluding_governed_volatile_fingerprint(workspace)
+        lockfile_drift_proven = (
+            expected_lock == actual_lock
+            or (
+                execution.command_id == "npm-lockfile-generate"
+                and execution.status == "interrupted"
+                and execution.failure_code == "COMMAND_RECOVERY_REQUIRED"
+                and expected_package == actual_package
+                and expected_governed == actual_governed
+            )
+        )
         if (
             expected_binding != binding.workspace_fingerprint
             or expected_package != actual_package
-            or expected_lock != actual_lock
+            or not lockfile_drift_proven
             or expected_governed != actual_governed
         ):
             raise StageRecoveryError(
@@ -691,6 +701,8 @@ class StageRecoveryService:
                 "start_fingerprint": start,
                 "artifact_refs": evidence_refs,
                 "observed_workspace_fingerprint": live,
+                "expected_lockfile_checksum": expected_lock,
+                "observed_lockfile_checksum": actual_lock,
                 "governed_workspace_fingerprint": actual_governed,
             }
         )
