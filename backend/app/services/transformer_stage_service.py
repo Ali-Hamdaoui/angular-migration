@@ -1127,6 +1127,7 @@ class TransformerStageService:
                 binding,
                 live_workspace_fingerprint,
                 interrupted,
+                checkpoint,
             )
             if (
                 operation.continuation_id != continuation.id
@@ -1302,7 +1303,15 @@ class TransformerStageService:
         binding,
         live_workspace_fingerprint: str,
         interrupted,
+        checkpoint,
     ) -> bool:
+        if (
+            operation.drift_classification == "NORMAL_AUTHORITY"
+            and operation.observed_workspace_fingerprint == binding.workspace_fingerprint
+            and operation.source_workspace_fingerprint == checkpoint.workspace_fingerprint
+            and live_workspace_fingerprint == checkpoint.workspace_fingerprint
+        ):
+            return True
         if (
             operation.drift_classification != "PROVEN_INTERRUPTED_PREPARATION_DRIFT"
             or operation.source_workspace_fingerprint != binding.workspace_fingerprint
