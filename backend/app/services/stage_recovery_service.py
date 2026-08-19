@@ -1012,13 +1012,18 @@ class StageRecoveryService:
                 mode=ReconstructionMode.RECOVERY_OPERATION,
                 recovery_operation_id=operation.id,
             )
+            binding_preimages = {
+                operation.source_workspace_fingerprint,
+                operation.observed_workspace_fingerprint,
+            }
             cas = session.execute(
                 update(StageWorkspaceBindingModel)
                 .where(
                     StageWorkspaceBindingModel.id == binding.id,
                     StageWorkspaceBindingModel.active.is_(True),
-                    StageWorkspaceBindingModel.workspace_fingerprint
-                    == operation.source_workspace_fingerprint,
+                    StageWorkspaceBindingModel.workspace_fingerprint.in_(
+                        binding_preimages
+                    ),
                 )
                 .values(
                     workspace_fingerprint=restored,
