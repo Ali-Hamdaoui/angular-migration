@@ -198,11 +198,16 @@ class LockfileGenerationRunner:
                     execution.failure_message or "npm reported an unavailable dependency version",
                 )
             if is_npm_eresolve_failure(execution):
-                if (execution.start_fingerprint or {}).get(
-                    "current_state_reconciliation"
-                ) is True:
+                start = execution.start_fingerprint or {}
+                if start.get("current_state_reconciliation") is True:
                     return self._queue_stale_lock_reconciliation(
                         session, continuation, execution
+                    )
+                if start.get("reconciliation_generation") is True:
+                    raise LockfileGenerationError(
+                        LOCKFILE_GENERATION_ERESOLVE,
+                        execution.failure_message
+                        or "npm reported an unresolved dependency tree",
                     )
                 if self._current_state_reconciliation_allowed(
                     session, continuation, execution
