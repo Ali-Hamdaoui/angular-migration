@@ -324,10 +324,18 @@ class FailureEvidenceService:
             if normalized["command_id"] == "angular-update-exact":
                 normalized["command_allows_dirty"] = "--allow-dirty" in (execution.arguments or [])
             diagnosis = self.diagnose_angular_update_failure(normalized)
-            if isinstance(diagnosis, dict) and isinstance(diagnosis.get("package"), str):
+            installed_package = (
+                diagnosis.get("blocking_dependency")
+                if isinstance(diagnosis, dict)
+                and diagnosis.get("source") == "npm_eresolve_peer_conflict"
+                else diagnosis.get("package")
+                if isinstance(diagnosis, dict)
+                else None
+            )
+            if isinstance(installed_package, str):
                 try:
                     diagnosis["installed_version"] = installed_dependency_version(
-                        Path(binding.workspace_path), diagnosis["package"]
+                        Path(binding.workspace_path), installed_package
                     )
                 except ValueError:
                     pass
