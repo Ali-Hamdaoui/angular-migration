@@ -331,6 +331,7 @@ class StageRecoveryService:
                 "RECOVERY_AUTHORITY_MISSING",
                 "STAGE_RECOVERY_AUTHORITY_MISSING",
                 "RECOVERY_CONTINUATION_AUTHORITY_INVALID",
+                "RECONSTRUCTION_AUTHORIZATION_INVALID",
             }:
                 raise StageRecoveryError(
                     "RECOVERY_RETRY_NOT_SAFE",
