@@ -692,6 +692,25 @@ class WorkerLeaseModel(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
 
+class FactoryRuntimeModel(Base):
+    """Durable provenance and fencing authority for one Factory launcher."""
+
+    __tablename__ = "factory_runtimes"
+    __table_args__ = (
+        Index("uq_factory_runtimes_active_database", "database_identity", unique=True,
+              sqlite_where=text("status = 'active'")),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    factory_git_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    database_identity: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    alembic_head: Mapped[str] = mapped_column(String(128), nullable=False)
+    launcher_pid: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class ActiveRunClaimModel(Base):
     """Durable single-run and target ownership claim."""
 

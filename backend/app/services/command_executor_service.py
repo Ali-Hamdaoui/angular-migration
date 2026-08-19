@@ -1260,9 +1260,11 @@ class CommandExecutorService:
 
     def _run_execution(self, execution_id: str, claimed_worker_id: str | None = None) -> None:
         from app.repositories.session import session_scope
+        from app.services.factory_runtime_service import FactoryRuntimeService
         worker_id = claimed_worker_id or threading.current_thread().name
         stage_runtime_authority: dict[str, object] | None = None
         with session_scope() as session:
+            FactoryRuntimeService().assert_active(session)
             model = session.get(CommandExecutionModel, execution_id)
             if (
                 model is None
@@ -1306,6 +1308,7 @@ class CommandExecutorService:
             # Read and validate all process inputs in a short transaction. The
             # subprocess must never run while a repository session is open.
             with session_scope() as session:
+                FactoryRuntimeService().assert_active(session)
                 model = session.get(CommandExecutionModel, execution_id)
                 run = session.get(MigrationRunModel, model.run_id) if model else None
                 authorization = session.get(CommandAuthorizationAuditModel, model.authorization_id) if model else None
