@@ -58,6 +58,46 @@ def test_parser_prefers_jest_test_count_over_test_suite_count():
 
     assert BaselineValidationApplicationService._test_count(output) == 14
 
+
+def test_parser_karma_success_with_ansi_extracts_count():
+    output = (
+        "18 08 2026 23:36:24.178:INFO [karma-server]: Karma v5.1.1 server started at http://localhost:9876/\n"
+        "Chrome Headless 150.0.0.0 (Windows 10): Executed 0 of 1\x1b[32m SUCCESS\x1b[39m (0 secs / 0 secs)\n"
+        "\x1b[1A\x1b[2KChrome Headless 150.0.0.0 (Windows 10): Executed 1 of 1\x1b[32m SUCCESS\x1b[39m (0.009 secs / 0.002 secs)\n"
+        "\x1b[32mTOTAL: 1 SUCCESS\x1b[39m\n"
+    )
+
+    assert BaselineValidationApplicationService._test_count(output) == 1
+
+
+def test_parser_karma_zero_tests_returns_zero():
+    output = "Chrome Headless 150.0.0.0 (Windows 10): Executed 0 of 0\x1b[32m SUCCESS\x1b[39m (0.004 secs / 0 secs)\n\x1b[32mTOTAL: 0 SUCCESS\x1b[39m\n"
+
+    assert BaselineValidationApplicationService._test_count(output) == 0
+
+
+def test_parser_karma_failed_extracts_count():
+    output = "Chrome Headless 150.0.0.0 (Windows 10): Executed 2 of 2\x1b[31m FAILED\x1b[39m (0.1 secs / 0.1 secs)\n\x1b[31mTOTAL: 2 FAILED\x1b[39m\n"
+
+    assert BaselineValidationApplicationService._test_count(output) == 2
+
+
+def test_parser_karma_mixed_success_and_failed_sums_all():
+    output = "\x1b[32mTOTAL: 1 SUCCESS\x1b[39m, \x1b[31m2 FAILED\x1b[39m\n"
+
+    assert BaselineValidationApplicationService._test_count(output) == 3
+
+
+def test_parser_karma_executed_fallback_without_total():
+    output = "Chrome Headless 150.0.0.0 (Windows 10): Executed 0 of 3\x1b[32m SUCCESS\x1b[39m (0 secs / 0 secs)\n\x1b[1A\x1b[2KChrome Headless 150.0.0.0 (Windows 10): Executed 3 of 3\x1b[32m SUCCESS\x1b[39m (0.123 secs / 0.004 secs)\n"
+
+    assert BaselineValidationApplicationService._test_count(output) == 3
+
+
+def test_parser_unknown_output_returns_none():
+    assert BaselineValidationApplicationService._test_count("some random output\nno tests here") is None
+
+
 def test_cancel_sets_active_matrix_event():
     import threading
     service = BaselineValidationApplicationService()

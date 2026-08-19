@@ -2,6 +2,8 @@ import type { AuthoritativeConnectionStatus } from "@/hooks/useAuthoritativeRun"
 import { gateDefinition, isGateId, type GateId } from "@/presentation/gates";
 import {
   buildJourney,
+  stageJourneyKey,
+  type ApprovedJourneyRoute,
   type JourneyKey,
   type JourneyMilestone,
   type TransformationLoadStatus,
@@ -57,17 +59,8 @@ function confirmedAction(action: Omit<CurrentAction, "authority">): CurrentActio
   return { ...action, authority: CURRENT_AUTHORITY };
 }
 
-function versionMajor(version: string | null): number | null {
-  const match = version?.match(/\d+/);
-  return match ? Number(match[0]) : null;
-}
-
 function stageKeyForTransformation(transformation: TransformationProjection): JourneyKey | undefined {
-  const route = `${versionMajor(transformation.source_version)}-${versionMajor(transformation.target_version)}`;
-  if (route === "18-19") return "18-to-19";
-  if (route === "19-20") return "19-to-20";
-  if (route === "20-21") return "20-to-21";
-  return undefined;
+  return transformation.stage_id ? stageJourneyKey(transformation.stage_id) : undefined;
 }
 
 function stageKeyForGate(gateId: GateId): JourneyKey | undefined {
@@ -348,8 +341,9 @@ export function buildRunWorkspaceProjection(
   transformationStatus: TransformationLoadStatus,
   connection: AuthoritativeConnectionStatus,
   freshness: CurrentAction["authority"]["freshness"] = "current",
+  approvedRoute: ApprovedJourneyRoute | null = null,
 ): RunWorkspaceProjection {
-  const journey = buildJourney(run, transformation, transformationStatus);
+  const journey = buildJourney(run, transformation, transformationStatus, approvedRoute);
   const currentAction = selectCurrentAction(run, transformation, transformationStatus, connection, freshness);
   return {
     journey,

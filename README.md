@@ -11,6 +11,8 @@ commands or mutate a migration workspace directly.
 
 this version also suceeded all stages via llm guidance on poc
 
+this version succeded migration with app 1 through ui
+
 ## Architecture diagram
 
 ```text

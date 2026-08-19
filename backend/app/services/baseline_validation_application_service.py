@@ -208,9 +208,19 @@ class BaselineValidationApplicationService:
         return encoded[:max(0, limit - len(suffix.encode("utf-8")))].decode("utf-8", errors="replace") + suffix
     @staticmethod
     def _test_count(output):
-        match = re.search(r"^\s*Tests:\s+(\d+)\s+(?:passed|failed)", output, re.IGNORECASE | re.MULTILINE)
-        if match is None:
-            match = re.search(r"(\d+)\s+(?:tests?\s+)?(?:passed|failed)", output, re.IGNORECASE)
+        normalized = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output)
+        match = re.search(r"^\s*Tests:\s+(\d+)\s+(?:passed|failed)", normalized, re.IGNORECASE | re.MULTILINE)
+        if match is not None:
+            return int(match.group(1))
+        total_lines = re.findall(r"^\s*TOTAL:\s+(.+)$", normalized, re.IGNORECASE | re.MULTILINE)
+        if total_lines:
+            segments = re.findall(r"(\d+)\s+(?:SUCCESS|FAILED)", total_lines[-1], re.IGNORECASE)
+            if segments:
+                return sum(int(n) for n in segments)
+        executed = re.findall(r"Executed\s+\d+\s+of\s+(\d+)\s+(?:SUCCESS|FAILED)", normalized, re.IGNORECASE)
+        if executed:
+            return int(executed[-1])
+        match = re.search(r"(\d+)\s+(?:tests?\s+)?(?:passed|failed)", normalized, re.IGNORECASE)
         return int(match.group(1)) if match else None
     @staticmethod
     def _failed_tests(output): return tuple(line.strip() for line in output.splitlines() if "fail" in line.lower())

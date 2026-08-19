@@ -8,8 +8,13 @@ import {
   type AuthoritativeConnectionStatus,
 } from "@/hooks/useAuthoritativeRun";
 import { useTransformation } from "@/hooks/useTransformation";
+import { useApprovedJourneyRoute } from "@/hooks/useApprovedJourneyRoute";
 import { buildRunWorkspaceProjection } from "@/presentation/currentAction";
-import type { JourneyKey } from "@/presentation/runJourney";
+import {
+  isStageJourneyKey,
+  type FixedJourneyKey,
+  type JourneyKey,
+} from "@/presentation/runJourney";
 import { presentArtifact } from "@/presentation/artifacts";
 import { retryAuthoritativeSourceIntake } from "@/api/runs";
 import { getG02Review } from "@/api/g02";
@@ -74,7 +79,7 @@ function hasEvent(state: AuthoritativeRunStateDto, ...types: string[]) {
   return state.workflow_events.some((event) => types.includes(event.event_type));
 }
 
-const PIPELINE_GROUP_BY_KEY: Record<JourneyKey, PipelineStageContent["group"]> = {
+const PIPELINE_GROUP_BY_KEY: Partial<Record<FixedJourneyKey, PipelineStageContent["group"]>> = {
   setup: "prepare",
   readiness: "prepare",
   g01: "prepare",
@@ -82,14 +87,15 @@ const PIPELINE_GROUP_BY_KEY: Record<JourneyKey, PipelineStageContent["group"]> =
   discovery: "understand",
   feasibility: "decide",
   plan: "decide",
-  "18-to-19": "transform",
-  "19-to-20": "transform",
-  "20-to-21": "transform",
   validate: "validate",
   complete: "validate",
 };
 
-const PIPELINE_SUMMARIES: Record<JourneyKey, string> = {
+function pipelineGroupForKey(key: JourneyKey): PipelineStageContent["group"] {
+  return PIPELINE_GROUP_BY_KEY[key as FixedJourneyKey] ?? "transform";
+}
+
+const PIPELINE_SUMMARIES: Partial<Record<FixedJourneyKey, string>> = {
   setup: "Prepare the source boundary for authoritative migration work.",
   readiness: "Confirm the immutable source snapshot and G02 source-snapshot decision.",
   g01: "Production readiness was reviewed before this run was created.",
@@ -97,20 +103,37 @@ const PIPELINE_SUMMARIES: Record<JourneyKey, string> = {
   discovery: "Review discovery, parity anchors, and the G04 analysis decision.",
   feasibility: "Resolve compatibility and decide whether the route may proceed through G05.",
   plan: "Review the checksum-bound migration plan and G06 execution contract.",
-  "18-to-19": "Angular 18 to 19 transformation details are available when the backend exposes them.",
-  "19-to-20": "Angular 19 to 20 transformation details are available when the backend exposes them.",
-  "20-to-21": "Angular 20 to 21 transformation details are available when the backend exposes them.",
   validate: "Validation details are available when authoritative validation evidence exists.",
   complete: "Completion is confirmed only by the staged-migration and final-target evidence.",
 };
 
-const GATE_EVENT_BY_KEY: Partial<Record<JourneyKey, string>> = {
+function pipelineSummaryForKey(key: JourneyKey, label: string): string {
+  return isStageJourneyKey(key)
+    ? `${label} transformation details are available when the backend exposes them.`
+    : PIPELINE_SUMMARIES[key] ?? "Details are available when the backend exposes them.";
+}
+
+const GATE_EVENT_BY_KEY: Partial<Record<FixedJourneyKey, string>> = {
   readiness: "G02_CREATED",
   baseline: "G03_CREATED",
   discovery: "G04_CREATED",
   feasibility: "G05_CREATED",
   plan: "G06_CREATED",
 };
+
+const ROUTE_EVENT_TYPES = [
+  "COMPATIBILITY_RESOLUTION_COMPLETED",
+  "G05_APPROVED",
+  "MIGRATION_PLAN_CREATED",
+  "STAGE_PLAN_CREATED",
+  "G06_APPROVED",
+];
+
+const ROUTE_REFRESH_EVENT_TYPE_SET: ReadonlySet<string> = new Set([
+  ...ROUTE_EVENT_TYPES,
+  "G06_CREATED",
+  ...TRANSFORMATION_EVENT_TYPES,
+]);
 
 const BASELINE_COMMAND_EVENTS = new Set([
   "COMMAND_QUEUED",
@@ -204,6 +227,17 @@ export function AuthoritativeRunDashboard({
     enabled: transformationEnabled,
     refreshKey: transformationRefreshKey,
   });
+  const routeRefreshKey = useMemo(
+    () => state.workflow_events.reduce(
+      (latest, event) => ROUTE_REFRESH_EVENT_TYPE_SET.has(event.event_type) && event.sequence > latest
+        ? event.sequence
+        : latest,
+      0,
+    ),
+    [state.workflow_events],
+  );
+  const approvedRouteEnabled = transformationEnabled || routeRefreshKey > 0;
+  const approvedRoute = useApprovedJourneyRoute(runId, approvedRouteEnabled, routeRefreshKey);
   const workspace = useMemo(
     () => buildRunWorkspaceProjection(
       state,
@@ -211,8 +245,9 @@ export function AuthoritativeRunDashboard({
       transformation.status,
       status,
       transformation.refreshError ? "refreshing" : "current",
+      approvedRoute.route,
     ),
-    [state, status, transformation.projection, transformation.refreshError, transformation.status],
+    [state, status, transformation.projection, transformation.refreshError, transformation.status, approvedRoute.route],
   );
   const artifactPresentations = useMemo(() => state.artifacts.map(presentArtifact), [state.artifacts]);
 
@@ -344,7 +379,7 @@ export function AuthoritativeRunDashboard({
       }
       const evidence = [...evidenceIds].map((id) => artifactsById.get(id)).filter((artifact) => artifact != null);
 
-      const gateEventType = GATE_EVENT_BY_KEY[milestone.key];
+      const gateEventType = isStageJourneyKey(milestone.key) ? undefined : GATE_EVENT_BY_KEY[milestone.key];
       const gateEvent = gateEventType
         ? [...state.workflow_events].reverse().find((event) => event.event_type === gateEventType)
         : undefined;
@@ -373,7 +408,7 @@ export function AuthoritativeRunDashboard({
             refreshAuthoritativeState={refresh}
           />
         ) : <div className="pipelineHumanSummary">
-          <p>{milestone.state === "unavailable" ? "Not available from the authoritative state" : PIPELINE_SUMMARIES[milestone.key]}</p>
+          <p>{milestone.state === "unavailable" ? "Not available from the authoritative state" : pipelineSummaryForKey(milestone.key, milestone.label)}</p>
           {milestone.key === "setup" && hasEvent(state, "SOURCE_INTAKE_FAILED") ? (
             <>
               {retryError ? <p role="alert">{retryError}</p> : null}
@@ -452,7 +487,7 @@ export function AuthoritativeRunDashboard({
 
       return {
         milestone,
-        group: PIPELINE_GROUP_BY_KEY[milestone.key],
+        group: pipelineGroupForKey(milestone.key),
         occurredAt: evidenceEvent?.occurred_at ?? gateEvent?.occurred_at ?? null,
         evidenceCount: evidence.length > 0 ? evidence.length : null,
         tabs,

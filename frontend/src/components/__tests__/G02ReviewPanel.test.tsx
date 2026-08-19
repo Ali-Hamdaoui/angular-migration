@@ -9,6 +9,10 @@ import type { BaselineAssessmentResponse, G02ReviewResponse } from "@/types/gene
 
 vi.mock("@/api/g02", () => ({ getG02Review: vi.fn(), decideG02: vi.fn() }));
 vi.mock("@/api/baselineG03", () => ({ getBaselineSummary: vi.fn(), decideG03: vi.fn(), qualifyBaseline: vi.fn() }));
+vi.mock("@/api/baselineMatrix", () => ({ getBaselineValidation: vi.fn().mockResolvedValue(null) }));
+vi.mock("@/api/baselineParity", () => ({ captureBaselineParity: vi.fn() }));
+vi.mock("@/api/baselineRepair", () => ({ applyBaselineRepair: vi.fn() }));
+vi.mock("@/api/runs", () => ({ getAuthoritativeRunState: vi.fn() }));
 
 const state = { run_id: "run-1", status: "SOURCE_VALIDATED", run_phase: "PREFLIGHT_SNAPSHOT", phase_status: "running", approval_status: "pending", state_version: 4, preflight_id: "p1", source_path: "C:/source", target_output_path: "C:/target", graph_thread_id: "thread-1", created_at: "2026-01-01", updated_at: "2026-01-01", artifacts: [], workflow_events: [] } as never;
 const review = { run_id: "run-1", gate_id: "G02", gate_version: "g02-v1", status: "pending", decision: null, package: { run_id: "run-1", gate_id: "G02", gate_version: "g02-v1", state_version: 4, actor: "operator", policy_version: "source-snapshot-policy-v1", snapshot_id: "snapshot-1", source_fingerprint: "sha256:source", snapshot_fingerprint: "sha256:snapshot", artifact_set_checksum: "sha256:artifacts", artifacts: [], integrity: { before_fingerprint: "sha256:source", after_snapshot_fingerprint: "sha256:source", snapshot_fingerprint: "sha256:snapshot", manifest_checksum: "manifest-1", policy_version: "source-snapshot-policy-v1", source_read_only_verified: true }, package_checksum: "sha256:package" }, baseline_input_boundary: null, state_version: 4, event_sequence: 6, idempotent_replay: false, stale_reason: null, comment: null } as unknown as G02ReviewResponse;

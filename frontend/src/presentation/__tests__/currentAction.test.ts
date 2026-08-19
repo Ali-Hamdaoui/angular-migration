@@ -105,29 +105,25 @@ describe("selectCurrentAction", () => {
       gateId: "G11",
       title: "Repair validation acceptance required",
       section: "pipeline",
-      stageKey: "18-to-19",
+      stageKey: "stage:stage-18-19",
     });
   });
 
-  it.each([
-    ["missing", null, null],
-    ["unsupported", "17", "18"],
-  ] as const)("omits stage attribution for a %s transformation route", (_case, sourceVersion, targetVersion) => {
+  it("attributes the transformation stage by backend stage_id regardless of version metadata", () => {
     const action = selectCurrentAction(
       makeAuthoritativeRun(),
       makeTransformation({
         status: "waiting_gate",
         active_gate: "G07",
         active_gate_package_checksum: "sha256:g07",
-        source_version: sourceVersion,
-        target_version: targetVersion,
+        source_version: "11.2.0",
+        target_version: "12.0.0",
       }),
       "ready",
       "open",
     );
 
-    expect(action).toMatchObject({ kind: "gate", gateId: "G07" });
-    expect(action).not.toHaveProperty("stageKey");
+    expect(action).toMatchObject({ kind: "gate", gateId: "G07", stageKey: "stage:stage-18-19" });
   });
 
   it.each([
@@ -459,7 +455,7 @@ describe("buildRunWorkspaceProjection", () => {
     expect(projection.now).toBe("Analysis running");
     expect(projection.completed).toBe("Setup, Readiness, Production readiness");
     expect(projection.next).toBe("Discovery");
-    expect(projection.journey).toHaveLength(12);
+    expect(projection.journey).toHaveLength(9);
   });
 
   it("keeps a rejected G06 blocker as next instead of advancing to transformation", () => {
@@ -480,7 +476,7 @@ describe("buildRunWorkspaceProjection", () => {
     );
 
     expect(projection.next).toBe("Migration plan");
-    expect(projection.journey.find((item) => item.key === "18-to-19")?.state).toBe("not-reached");
+    expect(projection.journey.some((item) => item.key.startsWith("stage:"))).toBe(false);
   });
 
   it("withholds next when no authoritative current, action, or blocker fact exists", () => {

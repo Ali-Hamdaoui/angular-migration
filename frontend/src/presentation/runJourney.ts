@@ -2,7 +2,7 @@ import type { AuthoritativeRunStateDto, StageStatus, WorkflowEventDto } from "@/
 import type { TransformationProjection } from "@/types/transformation";
 import type { GateId } from "@/presentation/gates";
 
-export type JourneyKey =
+export type FixedJourneyKey =
   | "setup"
   | "readiness"
   | "g01"
@@ -10,11 +10,12 @@ export type JourneyKey =
   | "discovery"
   | "feasibility"
   | "plan"
-  | "18-to-19"
-  | "19-to-20"
-  | "20-to-21"
   | "validate"
   | "complete";
+
+export type StageJourneyKey = `stage:${string}`;
+
+export type JourneyKey = FixedJourneyKey | StageJourneyKey;
 
 export type JourneyState =
   | "complete"
@@ -36,7 +37,23 @@ export interface JourneyMilestone {
 export type TransformationLoadStatus = "disabled" | "loading" | "ready" | "empty" | "failed";
 type AuthoritativeRouteStatus = StageStatus | "sealed";
 
-const JOURNEY_LABELS: Record<JourneyKey, string> = {
+export type ApprovedJourneyStage = {
+  stageId: string;
+  sourceMajor: number;
+  targetMajor: number;
+};
+
+export type ApprovedJourneyRoute = ApprovedJourneyStage[];
+
+export function isStageJourneyKey(key: JourneyKey): key is StageJourneyKey {
+  return key.startsWith("stage:");
+}
+
+export function stageJourneyKey(stageId: string): StageJourneyKey {
+  return `stage:${stageId}`;
+}
+
+const JOURNEY_LABELS: Record<FixedJourneyKey, string> = {
   setup: "Setup",
   readiness: "Readiness",
   g01: "Production readiness",
@@ -44,14 +61,24 @@ const JOURNEY_LABELS: Record<JourneyKey, string> = {
   discovery: "Discovery",
   feasibility: "Feasibility",
   plan: "Migration plan",
-  "18-to-19": "Angular 18 to 19",
-  "19-to-20": "Angular 19 to 20",
-  "20-to-21": "Angular 20 to 21",
   validate: "Validate",
   complete: "Complete",
 };
 
-const JOURNEY_ORDER = Object.keys(JOURNEY_LABELS) as JourneyKey[];
+const PRE_TRANSFORMATION_KEYS: FixedJourneyKey[] = [
+  "setup",
+  "readiness",
+  "g01",
+  "baseline",
+  "discovery",
+  "feasibility",
+  "plan",
+];
+
+const POST_TRANSFORMATION_KEYS: FixedJourneyKey[] = ["validate", "complete"];
+
+const FIXED_JOURNEY_KEYS: FixedJourneyKey[] = [...PRE_TRANSFORMATION_KEYS, ...POST_TRANSFORMATION_KEYS];
+
 const TERMINAL_SUFFIXES = [
   "APPROVED",
   "APPROVED_WITH_RISK",
@@ -77,8 +104,8 @@ const ROUTE_STATUS_STATES = {
   DIAGNOSTIC_HOLD: "blocked",
 } satisfies Record<AuthoritativeRouteStatus, JourneyState>;
 
-function milestone(key: JourneyKey, state: JourneyState = "not-reached"): JourneyMilestone {
-  return { key, label: JOURNEY_LABELS[key], state };
+function milestone(key: JourneyKey, label: string, state: JourneyState = "not-reached"): JourneyMilestone {
+  return { key, label, state };
 }
 
 function orderedEvents(run: AuthoritativeRunStateDto): WorkflowEventDto[] {
@@ -122,27 +149,10 @@ function latestGateState(events: WorkflowEventDto[], gateIds: GateId[]): Pick<Jo
   };
 }
 
-function major(version: string | null): number | null {
-  const match = version?.match(/\d+/);
-  return match ? Number(match[0]) : null;
-}
-
-function routeKey(source: string | null, target: string | null): JourneyKey | null {
-  const route = `${major(source)}-${major(target)}`;
-  if (route === "18-19") return "18-to-19";
-  if (route === "19-20") return "19-to-20";
-  if (route === "20-21") return "20-to-21";
-  return null;
-}
-
 function routeState(rawStatus: string): JourneyState {
   return Object.prototype.hasOwnProperty.call(ROUTE_STATUS_STATES, rawStatus)
     ? ROUTE_STATUS_STATES[rawStatus as AuthoritativeRouteStatus]
     : "unavailable";
-}
-
-function hasTransformationEvidence(events: WorkflowEventDto[]): boolean {
-  return events.some((event) => /^(G(?:0[7-9]|1[0-2])_|TRANSFORMATION_|STAGE(?:D)?_|FINAL_TARGET_|CLI_|VERSION_|REPAIR_)/.test(event.event_type));
 }
 
 function latestGateApproved(events: WorkflowEventDto[], gateId: "G09" | "G11" | "G12"): WorkflowEventDto | null {
@@ -176,13 +186,68 @@ function applyExplicitRunCurrent(run: AuthoritativeRunStateDto, byKey: Map<Journ
   if (key && byKey.get(key)?.state === "not-reached") byKey.get(key)!.state = "current";
 }
 
+function stageLabel(sourceMajor: number, targetMajor: number): string {
+  return `Angular ${sourceMajor} to ${targetMajor}`;
+}
+
+function materializedStages(transformation: TransformationProjection | null, runId: string): TransformationProjection["route_stages"] {
+  return transformation?.run_id === runId ? transformation.route_stages : [];
+}
+
+function majorOf(version: string | null): number {
+  const match = version?.match(/\d+/);
+  return match ? Number(match[0]) : 0;
+}
+
+function transformationStageMilestones(
+  transformation: TransformationProjection | null,
+  runId: string,
+  transformationStatus: TransformationLoadStatus,
+  approvedRoute: ApprovedJourneyRoute | null,
+): JourneyMilestone[] {
+  const materialized = new Map(
+    materializedStages(transformation, runId)
+      .filter((stage) => stage.stage_id)
+      .map((stage) => [stage.stage_id, stage]),
+  );
+
+  if (approvedRoute) {
+    return approvedRoute.map((stage) => {
+      const status = materialized.get(stage.stageId)?.status;
+      return {
+        key: stageJourneyKey(stage.stageId),
+        label: stageLabel(stage.sourceMajor, stage.targetMajor),
+        state: status ? routeState(status) : "not-reached",
+        stageId: stage.stageId,
+      };
+    });
+  }
+
+  if (transformation?.run_id === runId && transformationStatus === "ready") {
+    return transformation.route_stages
+      .filter((stage) => stage.stage_id)
+      .map((stage) => ({
+        key: stageJourneyKey(stage.stage_id),
+        label: stageLabel(majorOf(stage.source_version), majorOf(stage.target_version)),
+        state: routeState(stage.status),
+        stageId: stage.stage_id,
+      }));
+  }
+
+  return [];
+}
+
 export function buildJourney(
   run: AuthoritativeRunStateDto,
   transformation: TransformationProjection | null,
   transformationStatus: TransformationLoadStatus,
+  approvedRoute: ApprovedJourneyRoute | null = null,
 ): JourneyMilestone[] {
   const events = orderedEvents(run);
-  const byKey = new Map(JOURNEY_ORDER.map((key) => [key, milestone(key)]));
+  const byKey = new Map<JourneyKey, JourneyMilestone>();
+  for (const key of FIXED_JOURNEY_KEYS) {
+    byKey.set(key, milestone(key, JOURNEY_LABELS[key]));
+  }
   const runCreated = events.some((event) => event.event_type === "RUN_CREATED");
   const preflightEvidence = run.preflight_id.trim();
 
@@ -196,7 +261,7 @@ export function buildJourney(
     }
   }
 
-  const gateMilestones: Array<[JourneyKey, GateId[]]> = [
+  const gateMilestones: Array<[FixedJourneyKey, GateId[]]> = [
     ["readiness", ["G02"]],
     ["baseline", ["G03"]],
     ["discovery", ["G04"]],
@@ -208,24 +273,11 @@ export function buildJourney(
     if (state) Object.assign(byKey.get(key)!, state);
   }
 
-  const routeKeys: JourneyKey[] = ["18-to-19", "19-to-20", "20-to-21"];
   const planBlocked = byKey.get("plan")!.state === "blocked";
-  if (!planBlocked) {
-    if (transformation && transformation.run_id === run.run_id && transformationStatus === "ready") {
-      for (const key of routeKeys) byKey.get(key)!.state = "unavailable";
-      for (const stage of transformation.route_stages) {
-        const key = routeKey(stage.source_version, stage.target_version);
-        if (!key) continue;
-        Object.assign(byKey.get(key)!, { state: routeState(stage.status), stageId: stage.stage_id });
-      }
-    } else if (
-      hasTransformationEvidence(events)
-      || (transformation != null && transformation.run_id !== run.run_id)
-      || (transformationStatus === "failed" && events.some((event) => event.event_type === "STAGED_MIGRATION_COMPLETED"))
-    ) {
-      for (const key of routeKeys) byKey.get(key)!.state = "unavailable";
-    }
-  }
+  const stageMilestones = planBlocked
+    ? []
+    : transformationStageMilestones(transformation, run.run_id, transformationStatus, approvedRoute);
+  for (const stage of stageMilestones) byKey.set(stage.key, stage);
 
   const validationAcceptance = finalValidationAccepted(events);
   if (validationAcceptance && finalValidationPassed(transformation)) {
@@ -243,5 +295,9 @@ export function buildJourney(
   }
 
   applyExplicitRunCurrent(run, byKey);
-  return JOURNEY_ORDER.map((key) => byKey.get(key)!);
+  return [
+    ...PRE_TRANSFORMATION_KEYS.map((key) => byKey.get(key)!),
+    ...stageMilestones,
+    ...POST_TRANSFORMATION_KEYS.map((key) => byKey.get(key)!),
+  ];
 }

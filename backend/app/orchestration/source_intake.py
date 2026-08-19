@@ -15,8 +15,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
+from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.api.baseline_contracts import BaselineInstallAuthorizationRequest, BaselineInstallRequest, BaselinePrequalifyRequest, BaselineWorkspaceRequest
 from app.api.baseline_g03_contracts import BaselineQualifyRequest
@@ -67,17 +68,94 @@ class SourceIntakeDispatcher:
         self._executor.submit(self._run, run_id, thread_id)
 
     def resume_after_g03(self, run_id: str) -> None:
+        thread_id = None
         with session_scope() as session:
             job = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id, SourceIntakeJobModel.status == "waiting_g03"))
-            if job is None:
-                return
-            thread_id = job.thread_id
-        self.start(run_id=run_id, thread_id=thread_id)
+            if job is not None:
+                thread_id = job.thread_id
+            else:
+                thread_id = self._rearm_stranded_after_g03(session, run_id)
+        if thread_id is not None:
+            self.start(run_id=run_id, thread_id=thread_id)
+
+    def _rearm_stranded_after_g03(self, session, run_id: str) -> str | None:
+        """Re-arm the narrow post-restart stranded source-intake condition.
+
+        Only a failed job whose last_error_code is exactly G03_APPROVAL_REQUIRED
+        (the signature of the pre-approval recover() defect) is recoverable here,
+        and only when an approved current G03 exists, the run is BASELINE_QUALIFIED,
+        and no active continuation job already represents the post-G03 work.
+        Returns the thread_id to dispatch, or None when the run is not stranded.
+        """
+        run = session.get(MigrationRunModel, run_id)
+        if run is None or run.status != RunStatus.BASELINE_QUALIFIED.value:
+            return None
+        approval = session.scalar(select(G03ApprovalModel).where(
+            G03ApprovalModel.run_id == run_id,
+            G03ApprovalModel.status == "approved",
+        ).order_by(G03ApprovalModel.updated_at.desc()))
+        if approval is None:
+            return None
+        active = session.scalar(select(SourceIntakeJobModel).where(
+            SourceIntakeJobModel.run_id == run_id,
+            SourceIntakeJobModel.status.in_({
+                "queued", "running", "waiting_g02",
+                "waiting_runtime_selection", "waiting_g03", "waiting_baseline_retry",
+            }),
+        ))
+        if active is not None:
+            return None
+        latest = session.scalar(select(SourceIntakeJobModel).where(
+            SourceIntakeJobModel.run_id == run_id,
+        ).order_by(SourceIntakeJobModel.attempt.desc(), SourceIntakeJobModel.queued_at.desc()))
+        if (
+            latest is None
+            or latest.status != "failed"
+            or latest.last_error_code != "G03_APPROVAL_REQUIRED"
+        ):
+            return None
+        rearm = SourceIntakeJobModel(
+            id=f"intake-{uuid4().hex[:12]}",
+            run_id=run_id,
+            thread_id=latest.thread_id,
+            status="waiting_g03",
+            actor=latest.actor,
+            idempotency_key=f"{latest.idempotency_key}:rearm-g03",
+            attempt=latest.attempt + 1,
+            queued_at=datetime.now(UTC),
+            state_version=run.state_version,
+        )
+        session.add(rearm)
+        StateTransitionService(session).append_audit_event(
+            run_id=run_id,
+            idempotency_key=f"{rearm.idempotency_key}:queued",
+            event_type=WorkflowEventType.SOURCE_INTAKE_QUEUED,
+            actor=rearm.actor,
+            reason="post-G03 continuation re-armed after pre-approval recovery defect",
+            occurred_at=datetime.now(UTC),
+            payload={"job_id": rearm.id, "previous_job_id": latest.id, "attempt": rearm.attempt},
+        )
+        return rearm.thread_id
 
     def recover(self) -> int:
-        """Re-dispatch jobs left queued, running, or waiting at restart."""
+        """Re-dispatch jobs left queued, running, or waiting at restart.
+
+        waiting_g03 is a dormant human-gate state, not crashed work; it is
+        excluded from recovery so a backend restart cannot prematurely
+        dispatch the post-G03 continuation before the human approves G03.
+        resume_after_g03 is the only legitimate trigger for that continuation.
+
+        A second, narrow pass self-heals runs already stranded by the
+        historical pre-approval recovery defect: their latest source-intake
+        job failed with G03_APPROVAL_REQUIRED before G03 was approved, so no
+        normal UI action can reach resume_after_g03.  Candidate selection is
+        intentionally minimal (latest job signature only); the authoritative
+        guards in _rearm_stranded_after_g03 decide whether re-arming is
+        allowed, so arbitrary failed jobs and unrelated error codes are never
+        revived here.
+        """
         with session_scope() as session:
-            jobs = list(session.scalars(select(SourceIntakeJobModel).where(SourceIntakeJobModel.status.in_({"queued", "running", "waiting_g02", "waiting_runtime_selection", "waiting_g03", "waiting_baseline_retry", "waiting_retry"}))))
+            jobs = list(session.scalars(select(SourceIntakeJobModel).where(SourceIntakeJobModel.status.in_({"queued", "running", "waiting_g02", "waiting_runtime_selection", "waiting_baseline_retry", "waiting_retry"}))))
             # A new backend instance owns recovery. Requeue work owned by a
             # previous process before dispatching it; attempt-specific
             # idempotency keys keep resumed steps from creating duplicate
@@ -95,7 +173,51 @@ class SourceIntakeDispatcher:
         dispatchable = [job for job in jobs if job.status != "waiting_retry"]
         for job in dispatchable:
             self.start(run_id=job.run_id, thread_id=job.thread_id)
-        return len(dispatchable)
+        stranded = self._discover_stranded_after_g03()
+        for run_id in stranded:
+            self.resume_after_g03(run_id)
+        return len(dispatchable) + len(stranded)
+
+    def _discover_stranded_after_g03(self) -> list[str]:
+        """Candidate run_ids whose latest source-intake job carries the
+        historical pre-approval-recovery defect signature.
+
+        Selection applies only the cheap structural guards (run is
+        BASELINE_QUALIFIED, an approved current G03 exists, and the latest
+        job is failed with last_error_code == G03_APPROVAL_REQUIRED).  The
+        authoritative decision remains in _rearm_stranded_after_g03, which
+        resume_after_g03 invokes and which re-checks every guard including
+        the absence of active continuation work before re-arming.  This only
+        decides who to *invite* to self-heal; it never re-arms directly, so
+        arbitrary failed jobs and unrelated error codes are never revived.
+        """
+        with session_scope() as session:
+            latest_attempt = (
+                select(
+                    SourceIntakeJobModel.run_id,
+                    func.max(SourceIntakeJobModel.attempt).label("max_attempt"),
+                )
+                .group_by(SourceIntakeJobModel.run_id)
+                .subquery()
+            )
+            approved_g03 = (
+                select(G03ApprovalModel.run_id)
+                .where(G03ApprovalModel.status == "approved")
+                .group_by(G03ApprovalModel.run_id)
+                .subquery()
+            )
+            return list(session.scalars(
+                select(SourceIntakeJobModel.run_id)
+                .join(latest_attempt, latest_attempt.c.run_id == SourceIntakeJobModel.run_id)
+                .join(MigrationRunModel, MigrationRunModel.id == SourceIntakeJobModel.run_id)
+                .join(approved_g03, approved_g03.c.run_id == SourceIntakeJobModel.run_id)
+                .where(
+                    MigrationRunModel.status == RunStatus.BASELINE_QUALIFIED.value,
+                    SourceIntakeJobModel.status == "failed",
+                    SourceIntakeJobModel.last_error_code == "G03_APPROVAL_REQUIRED",
+                    SourceIntakeJobModel.attempt == latest_attempt.c.max_attempt,
+                )
+            ))
 
     def _run(self, run_id: str, thread_id: str) -> None:
         try:
@@ -372,8 +494,19 @@ class SourceIntakeDispatcher:
         with session_scope() as session:
             run = session.get(MigrationRunModel, run_id)
             approval = session.scalar(select(G03ApprovalModel).where(G03ApprovalModel.run_id == run_id, G03ApprovalModel.status == "approved").order_by(G03ApprovalModel.updated_at.desc()))
-            if run is None or approval is None:
-                self._fail(job_id, "G03_APPROVAL_REQUIRED", "Approved G03 is required before discovery.")
+            if run is None:
+                self._fail(job_id, "RUN_NOT_FOUND", "Migration run disappeared before discovery.")
+                return
+            if approval is None:
+                # G03 is not yet approved.  Re-arm the human-gate wait instead
+                # of failing the job: discovery must not start before approval,
+                # but a premature dispatch (e.g. from a stale recovery path) is
+                # a recoverable wait, not a terminal source-intake failure.
+                # resume_after_g03 will dispatch once the human approves G03.
+                job_row = session.get(SourceIntakeJobModel, job_id)
+                if job_row is not None:
+                    job_row.status = "waiting_g03"
+                    job_row.started_at = None
                 return
             metadata = {item.id.removeprefix("metadata-"): item.checksum for item in session.scalars(select(ArtifactMetadataModel).where(ArtifactMetadataModel.run_id == run_id))}
             artifact_ids = tuple(approval.artifact_ids or ())
@@ -495,9 +628,14 @@ class SourceIntakeDispatcher:
                     if lock_path.is_file():
                         lock = json.loads(lock_path.read_text(encoding="utf-8"))
                         locked_packages = lock.get("packages", {})
-                        locked_angular = locked_packages.get("node_modules/@angular/core", {}).get("version")
+                        locked_angular = locked_packages.get("node_modules/@angular/core", {}).get("version") if isinstance(locked_packages, dict) else None
                         if locked_angular:
                             values["angular"] = str(locked_angular)
+                        else:
+                            locked_dependencies = lock.get("dependencies", {})
+                            locked_angular = locked_dependencies.get("@angular/core", {}).get("version") if isinstance(locked_dependencies, dict) else None
+                            if locked_angular:
+                                values["angular"] = str(locked_angular)
                 except (OSError, ValueError, TypeError):
                     pass
         if not values["angular"]:

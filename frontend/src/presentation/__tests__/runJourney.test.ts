@@ -1,4 +1,9 @@
-import { buildJourney, type JourneyKey } from "@/presentation/runJourney";
+import {
+  buildJourney,
+  isStageJourneyKey,
+  type ApprovedJourneyRoute,
+  type JourneyKey,
+} from "@/presentation/runJourney";
 import { makeAuthoritativeRun, makeEvent } from "@/test/authoritativeFixtures";
 import type { TransformationProjection } from "@/types/transformation";
 
@@ -60,6 +65,18 @@ function makeTransformation(
   };
 }
 
+function routeOf(startMajor: number, endMajor: number): ApprovedJourneyRoute {
+  const stages: ApprovedJourneyRoute = [];
+  for (let major = startMajor; major < endMajor; major += 1) {
+    stages.push({
+      stageId: `stage-${major}-${major + 1}`,
+      sourceMajor: major,
+      targetMajor: major + 1,
+    });
+  }
+  return stages;
+}
+
 function stateOf(
   journey: ReturnType<typeof buildJourney>,
   key: JourneyKey,
@@ -67,6 +84,10 @@ function stateOf(
   const milestone = journey.find((item) => item.key === key);
   expect(milestone, `missing journey milestone ${key}`).toBeDefined();
   return milestone!;
+}
+
+function transformationMilestones(journey: ReturnType<typeof buildJourney>) {
+  return journey.filter((item) => isStageJourneyKey(item.key));
 }
 
 describe("buildJourney", () => {
@@ -162,7 +183,7 @@ describe("buildJourney", () => {
     });
   });
 
-  it("blocks the plan on G06 rejection without claiming transformation progress", () => {
+  it("blocks the plan on G06 rejection without inventing transformation milestones", () => {
     const journey = buildJourney(
       makeAuthoritativeRun({
         workflow_events: [
@@ -173,15 +194,134 @@ describe("buildJourney", () => {
       }),
       null,
       "empty",
+      routeOf(11, 21),
     );
 
     expect(stateOf(journey, "plan").state).toBe("blocked");
-    expect(stateOf(journey, "18-to-19").state).toBe("not-reached");
-    expect(stateOf(journey, "19-to-20").state).toBe("not-reached");
-    expect(stateOf(journey, "20-to-21").state).toBe("not-reached");
+    expect(transformationMilestones(journey)).toHaveLength(0);
   });
 
-  it("maps each route stage independently from authoritative transformation data", () => {
+  it.each([
+    [11, 21, 10, "stage:stage-11-12", "Angular 11 to 12", "stage:stage-20-21", "Angular 20 to 21"],
+    [17, 21, 4, "stage:stage-17-18", "Angular 17 to 18", "stage:stage-20-21", "Angular 20 to 21"],
+    [18, 21, 3, "stage:stage-18-19", "Angular 18 to 19", "stage:stage-20-21", "Angular 20 to 21"],
+  ] as const)(
+    "renders the complete approved %s-to-21 route as %s transformation milestones from one code path",
+    (startMajor, endMajor, expectedCount, firstKey, firstLabel, lastKey, lastLabel) => {
+      const journey = buildJourney(
+        makeAuthoritativeRun(),
+        makeTransformation(),
+        "ready",
+        routeOf(startMajor, endMajor),
+      );
+
+      const milestones = transformationMilestones(journey);
+      expect(milestones).toHaveLength(expectedCount);
+      expect(milestones[0]).toMatchObject({ key: firstKey, label: firstLabel, state: "not-reached" });
+      expect(milestones.at(-1)).toMatchObject({ key: lastKey, label: lastLabel, state: "not-reached" });
+      expect(milestones.every((item) => isStageJourneyKey(item.key))).toBe(true);
+    },
+  );
+
+  it("renders the persisted 11-to-21 plan route as ten planned transformation milestones before any transformation materialization", () => {
+    const route: ApprovedJourneyRoute = [
+      { stageId: "angular-11-to-12--38e936ede40ca28c", sourceMajor: 11, targetMajor: 12 },
+      { stageId: "angular-12-to-13--d8117f08b24caed0", sourceMajor: 12, targetMajor: 13 },
+      { stageId: "angular-13-to-14--b9066112bb2c2cb8", sourceMajor: 13, targetMajor: 14 },
+      { stageId: "angular-14-to-15--e80e030bc9108e80", sourceMajor: 14, targetMajor: 15 },
+      { stageId: "angular-15-to-16--46af0d34c4b5f108", sourceMajor: 15, targetMajor: 16 },
+      { stageId: "angular-16-to-17--c4061946ab968291", sourceMajor: 16, targetMajor: 17 },
+      { stageId: "angular-17-to-18--86db4495eb1f9866", sourceMajor: 17, targetMajor: 18 },
+      { stageId: "angular-18-to-19--e417522667652d0a", sourceMajor: 18, targetMajor: 19 },
+      { stageId: "angular-19-to-20--d70ff163a0a918fb", sourceMajor: 19, targetMajor: 20 },
+      { stageId: "angular-20-to-21--9e3a0703f778e629", sourceMajor: 20, targetMajor: 21 },
+    ];
+    const journey = buildJourney(
+      makeAuthoritativeRun(),
+      makeTransformation(),
+      "disabled",
+      route,
+    );
+
+    const milestones = transformationMilestones(journey);
+    expect(milestones).toHaveLength(10);
+    expect(milestones[0]).toMatchObject({
+      key: "stage:angular-11-to-12--38e936ede40ca28c",
+      label: "Angular 11 to 12",
+      state: "not-reached",
+      stageId: "angular-11-to-12--38e936ede40ca28c",
+    });
+    expect(milestones.at(-1)).toMatchObject({ label: "Angular 20 to 21", state: "not-reached" });
+    expect(milestones.every((item) => item.state === "not-reached")).toBe(true);
+  });
+
+  it("orders every dynamic transformation milestone after plan and before validate", () => {
+    const journey = buildJourney(
+      makeAuthoritativeRun(),
+      makeTransformation(),
+      "ready",
+      routeOf(12, 21),
+    );
+
+    expect(journey.map((item) => item.key)).toEqual([
+      "setup",
+      "readiness",
+      "g01",
+      "baseline",
+      "discovery",
+      "feasibility",
+      "plan",
+      "stage:stage-12-13",
+      "stage:stage-13-14",
+      "stage:stage-14-15",
+      "stage:stage-15-16",
+      "stage:stage-16-17",
+      "stage:stage-17-18",
+      "stage:stage-18-19",
+      "stage:stage-19-20",
+      "stage:stage-20-21",
+      "validate",
+      "complete",
+    ]);
+  });
+
+  it("overlays sealed, current, and planned states as route stages materialize", () => {
+    const journey = buildJourney(
+      makeAuthoritativeRun(),
+      makeTransformation({
+        stage_id: "stage-19-20",
+        route_stages: [
+          { stage_id: "stage-18-19", source_version: "18", target_version: "19", status: "sealed" },
+          { stage_id: "stage-19-20", source_version: "19", target_version: "20", status: "RUNNING" },
+        ],
+      }),
+      "ready",
+      routeOf(18, 21),
+    );
+
+    expect(stateOf(journey, "stage:stage-18-19")).toMatchObject({ state: "complete", stageId: "stage-18-19" });
+    expect(stateOf(journey, "stage:stage-19-20")).toMatchObject({ state: "current", stageId: "stage-19-20" });
+    expect(stateOf(journey, "stage:stage-20-21")).toMatchObject({ state: "not-reached", stageId: "stage-20-21" });
+  });
+
+  it("attaches the active backend stage_id to its journey milestone", () => {
+    const journey = buildJourney(
+      makeAuthoritativeRun(),
+      makeTransformation({
+        stage_id: "stage-16-17",
+        route_stages: [
+          { stage_id: "stage-15-16", source_version: "15", target_version: "16", status: "sealed" },
+          { stage_id: "stage-16-17", source_version: "16", target_version: "17", status: "RUNNING" },
+        ],
+      }),
+      "ready",
+      routeOf(15, 21),
+    );
+
+    expect(stateOf(journey, "stage:stage-16-17").stageId).toBe("stage-16-17");
+  });
+
+  it("uses stage_id-derived milestones from materialized stages when the approved route is unavailable", () => {
     const journey = buildJourney(
       makeAuthoritativeRun(),
       makeTransformation({
@@ -194,9 +334,9 @@ describe("buildJourney", () => {
       "ready",
     );
 
-    expect(stateOf(journey, "18-to-19")).toMatchObject({ state: "complete", stageId: "stage-a" });
-    expect(stateOf(journey, "19-to-20")).toMatchObject({ state: "current", stageId: "stage-b" });
-    expect(stateOf(journey, "20-to-21")).toMatchObject({ state: "blocked", stageId: "stage-c" });
+    expect(stateOf(journey, "stage:stage-a")).toMatchObject({ state: "complete", stageId: "stage-a" });
+    expect(stateOf(journey, "stage:stage-b")).toMatchObject({ state: "current", stageId: "stage-b" });
+    expect(stateOf(journey, "stage:stage-c")).toMatchObject({ state: "blocked", stageId: "stage-c" });
   });
 
   it.each([
@@ -224,7 +364,7 @@ describe("buildJourney", () => {
       "ready",
     );
 
-    expect(stateOf(journey, "18-to-19").state).toBe(expectedState);
+    expect(stateOf(journey, `stage:stage-${status}`).state).toBe(expectedState);
   });
 
   it("keeps a sealed lookalike unavailable", () => {
@@ -238,18 +378,16 @@ describe("buildJourney", () => {
       "ready",
     );
 
-    expect(stateOf(journey, "18-to-19").state).toBe("unavailable");
+    expect(stateOf(journey, "stage:stage-sealed-candidate").state).toBe("unavailable");
   });
 
-  it("marks all route milestones unavailable when a ready projection has no route entries", () => {
+  it("renders no transformation milestones without route authority", () => {
     const journey = buildJourney(makeAuthoritativeRun(), makeTransformation({ route_stages: [] }), "ready");
 
-    expect(stateOf(journey, "18-to-19").state).toBe("unavailable");
-    expect(stateOf(journey, "19-to-20").state).toBe("unavailable");
-    expect(stateOf(journey, "20-to-21").state).toBe("unavailable");
+    expect(transformationMilestones(journey)).toHaveLength(0);
   });
 
-  it("marks absent route milestones unavailable in a partial ready projection", () => {
+  it("renders only the materialized stage without an approved route", () => {
     const journey = buildJourney(
       makeAuthoritativeRun(),
       makeTransformation({
@@ -260,12 +398,11 @@ describe("buildJourney", () => {
       "ready",
     );
 
-    expect(stateOf(journey, "18-to-19").state).toBe("current");
-    expect(stateOf(journey, "19-to-20").state).toBe("unavailable");
-    expect(stateOf(journey, "20-to-21").state).toBe("unavailable");
+    expect(stateOf(journey, "stage:stage-18-19").state).toBe("current");
+    expect(transformationMilestones(journey)).toHaveLength(1);
   });
 
-  it("marks route milestones unavailable when ready entries cannot map to the supported route", () => {
+  it("accepts any backend stage_id without a supported-route mapping", () => {
     const journey = buildJourney(
       makeAuthoritativeRun(),
       makeTransformation({
@@ -276,34 +413,7 @@ describe("buildJourney", () => {
       "ready",
     );
 
-    expect(stateOf(journey, "18-to-19").state).toBe("unavailable");
-    expect(stateOf(journey, "19-to-20").state).toBe("unavailable");
-    expect(stateOf(journey, "20-to-21").state).toBe("unavailable");
-  });
-
-  it("marks missing transformation data unavailable when durable transformation evidence exists", () => {
-    const journey = buildJourney(
-      makeAuthoritativeRun({
-        workflow_events: [makeEvent("RUN_CREATED", 1), makeEvent("G07_CREATED", 2)],
-      }),
-      null,
-      "failed",
-    );
-
-    expect(stateOf(journey, "18-to-19").state).toBe("unavailable");
-    expect(stateOf(journey, "18-to-19").state).not.toBe("complete");
-  });
-
-  it("treats staged-migration completion as transformation evidence when projection data is missing", () => {
-    const journey = buildJourney(
-      makeAuthoritativeRun({
-        workflow_events: [makeEvent("RUN_CREATED", 1), makeEvent("STAGED_MIGRATION_COMPLETED", 2)],
-      }),
-      null,
-      "empty",
-    );
-
-    expect(stateOf(journey, "18-to-19").state).toBe("unavailable");
+    expect(stateOf(journey, "stage:stage-17-18").state).toBe("current");
   });
 
   it("projects a sealed completed 20-to-21 route from final validation and completion authority", () => {
@@ -328,11 +438,12 @@ describe("buildJourney", () => {
         },
       }),
       "ready",
+      routeOf(18, 21),
     );
 
-    expect(stateOf(journey, "18-to-19").state).toBe("unavailable");
-    expect(stateOf(journey, "19-to-20").state).toBe("unavailable");
-    expect(stateOf(journey, "20-to-21").state).toBe("complete");
+    expect(stateOf(journey, "stage:stage-18-19").state).toBe("not-reached");
+    expect(stateOf(journey, "stage:stage-19-20").state).toBe("not-reached");
+    expect(stateOf(journey, "stage:stage-20-21").state).toBe("complete");
     expect(stateOf(journey, "validate").state).toBe("complete");
     expect(stateOf(journey, "complete").state).toBe("complete");
   });
@@ -348,9 +459,10 @@ describe("buildJourney", () => {
         validation_results: { npm_ci: { status: "PASSED", execution_id: null, command_status: "succeeded" } },
       }),
       "ready",
+      routeOf(18, 21),
     );
 
-    expect(stateOf(journey, "20-to-21").state).toBe("complete");
+    expect(stateOf(journey, "stage:stage-20-21").state).toBe("complete");
     expect(stateOf(journey, "validate").state).not.toBe("complete");
     expect(stateOf(journey, "complete").state).not.toBe("complete");
   });
@@ -367,24 +479,26 @@ describe("buildJourney", () => {
         },
       }),
       "ready",
+      routeOf(18, 21),
     );
 
     expect(stateOf(journey, "validate").state).toBe("complete");
     expect(stateOf(journey, "complete").state).not.toBe("complete");
   });
 
-  it("counts every applicable transformation in a completed 18-to-21 route", () => {
+  it("counts every applicable transformation in a completed 11-to-21 route", () => {
     const journey = buildJourney(
       makeAuthoritativeRun({
         status: "COMPLETED",
         workflow_events: [makeEvent("G11_CREATED", 1), makeEvent("G11_APPROVED", 2), makeEvent("STAGED_MIGRATION_COMPLETED", 3)],
       }),
       makeTransformation({
-        route_stages: [
-          { stage_id: "stage-18-19", source_version: "18", target_version: "19", status: "sealed" },
-          { stage_id: "stage-19-20", source_version: "19", target_version: "20", status: "sealed" },
-          { stage_id: "stage-20-21", source_version: "20", target_version: "21", status: "sealed" },
-        ],
+        route_stages: routeOf(11, 21).map((stage) => ({
+          stage_id: stage.stageId,
+          source_version: String(stage.sourceMajor),
+          target_version: String(stage.targetMajor),
+          status: "sealed",
+        })),
         validation_results: {
           npm_ci: { status: "PASSED", execution_id: null, command_status: "succeeded" },
           build: { status: "PASSED", execution_id: null, command_status: "succeeded" },
@@ -392,10 +506,14 @@ describe("buildJourney", () => {
         },
       }),
       "ready",
+      routeOf(11, 21),
     );
 
-    for (const key of ["18-to-19", "19-to-20", "20-to-21", "validate", "complete"] as const) {
-      expect(stateOf(journey, key).state).toBe("complete");
+    expect(transformationMilestones(journey)).toHaveLength(10);
+    for (const milestone of transformationMilestones(journey)) {
+      expect(milestone.state).toBe("complete");
     }
+    expect(stateOf(journey, "validate").state).toBe("complete");
+    expect(stateOf(journey, "complete").state).toBe("complete");
   });
 });

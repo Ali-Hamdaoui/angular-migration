@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronRight } from "lucide-react";
-import type { JourneyKey, JourneyMilestone, JourneyState } from "@/presentation/runJourney";
+import type { FixedJourneyKey, JourneyKey, JourneyMilestone, JourneyState } from "@/presentation/runJourney";
 import { PipelineStageDetail, type PipelineStageContent } from "./PipelineStageDetail";
 import styles from "./ControlTowerLayout.module.css";
 
@@ -17,7 +17,7 @@ const GROUPS: Array<{ id: PipelineGroup; label: string }> = [
   { id: "validate", label: "Validate" },
 ];
 
-const DEFAULT_GROUP_BY_KEY: Record<JourneyKey, PipelineGroup> = {
+const DEFAULT_GROUP_BY_KEY: Partial<Record<FixedJourneyKey, PipelineGroup>> = {
   setup: "prepare",
   readiness: "prepare",
   g01: "prepare",
@@ -25,9 +25,6 @@ const DEFAULT_GROUP_BY_KEY: Record<JourneyKey, PipelineGroup> = {
   discovery: "understand",
   feasibility: "decide",
   plan: "decide",
-  "18-to-19": "transform",
-  "19-to-20": "transform",
-  "20-to-21": "transform",
   validate: "validate",
   complete: "validate",
 };
@@ -92,7 +89,7 @@ export function PipelineSection({
         ? { ...content, milestone }
         : {
             milestone,
-            group: DEFAULT_GROUP_BY_KEY[milestone.key],
+            group: DEFAULT_GROUP_BY_KEY[milestone.key as FixedJourneyKey] ?? "transform",
             occurredAt: null,
             evidenceCount: null,
             tabs: [],

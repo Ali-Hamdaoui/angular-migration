@@ -39,6 +39,41 @@ describe("MigrationPlanPanel", () => {
     expect(screen.getByRole("link", { name: "plan-artifact" })).toHaveAttribute("href", "/api/v1/artifacts/plan-artifact");
   });
 
+  it("renders multiple commands sharing a command_id without duplicate React keys", async () => {
+    const command = (arg: string) => ({
+      command_id: "npm-pkg-set",
+      executable: "npm",
+      arguments: ["pkg", "set", arg],
+      shell: false as const,
+      working_directory_alias: "stage_workspace",
+      timeout_seconds: 120,
+      network_profile: "approved-registries-only",
+      conditional: false,
+    });
+    const dupResponse: PlanResponse = {
+      ...response,
+      stage_plan: {
+        ...response.stage_plan,
+        commands: {
+          package_sets: [command("@angular/core"), command("@angular/common"), command("@angular/cli")],
+          bootstraps: [command("@angular/platform-browser")],
+        },
+      },
+    };
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.mocked(getPlan).mockResolvedValue(dupResponse);
+    render(<MigrationPlanPanel {...props} />);
+    expect(await screen.findByText("Major-stage route")).toBeInTheDocument();
+
+    expect(screen.getByText(/"@angular\/core"/)).toBeInTheDocument();
+    expect(screen.getByText(/"@angular\/common"/)).toBeInTheDocument();
+    expect(screen.getByText(/"@angular\/cli"/)).toBeInTheDocument();
+    expect(screen.getByText(/"@angular\/platform-browser"/)).toBeInTheDocument();
+    expect(errorSpy).not.toHaveBeenCalledWith(expect.stringContaining("same key"));
+
+    errorSpy.mockRestore();
+  });
+
   it("preserves the Builder tab after a same-checksum authoritative refresh", async () => {
     let resolveRefresh!: (value: PlanResponse) => void;
     vi.mocked(getPlan).mockResolvedValue(response);

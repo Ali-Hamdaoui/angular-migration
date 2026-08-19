@@ -2,8 +2,10 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { AuthoritativeRunDashboard } from "@/components/AuthoritativeRunDashboard";
 import { getG02Review } from "@/api/g02";
 import { getBaselineSummary } from "@/api/baselineG03";
+import { getBaselineValidation } from "@/api/baselineMatrix";
 import { useAuthoritativeRun } from "@/hooks/useAuthoritativeRun";
 import { useTransformation } from "@/hooks/useTransformation";
+import { useApprovedJourneyRoute } from "@/hooks/useApprovedJourneyRoute";
 import { makeArtifact, makeAuthoritativeRun, makeEvent } from "@/test/authoritativeFixtures";
 import type { AuthoritativeRunStateDto, BaselineAssessmentResponse, G02ReviewResponse } from "@/types/generated/api";
 import type { TransformationProjection } from "@/types/transformation";
@@ -25,6 +27,7 @@ vi.mock("@/hooks/useAuthoritativeRun", async () => {
   return { ...actual, useAuthoritativeRun: vi.fn() };
 });
 vi.mock("@/hooks/useTransformation", () => ({ useTransformation: vi.fn() }));
+vi.mock("@/hooks/useApprovedJourneyRoute", () => ({ useApprovedJourneyRoute: vi.fn() }));
 vi.mock("@/api/g02", async () => {
   const actual = await vi.importActual<typeof import("@/api/g02")>("@/api/g02");
   return { ...actual, getG02Review: vi.fn() };
@@ -32,6 +35,13 @@ vi.mock("@/api/g02", async () => {
 vi.mock("@/api/baselineG03", async () => {
   const actual = await vi.importActual<typeof import("@/api/baselineG03")>("@/api/baselineG03");
   return { ...actual, getBaselineSummary: vi.fn() };
+});
+vi.mock("@/api/baselineMatrix", () => ({ getBaselineValidation: vi.fn().mockResolvedValue(null) }));
+vi.mock("@/api/baselineParity", () => ({ captureBaselineParity: vi.fn() }));
+vi.mock("@/api/baselineRepair", () => ({ applyBaselineRepair: vi.fn() }));
+vi.mock("@/api/runs", async () => {
+  const actual = await vi.importActual<typeof import("@/api/runs")>("@/api/runs");
+  return { ...actual, getAuthoritativeRunState: vi.fn() };
 });
 vi.mock("@/components/control-tower/PipelineSection", () => ({
   PipelineSection: (props: PipelineProps) => {
@@ -68,6 +78,14 @@ function transformationHook(overrides: Partial<ReturnType<typeof useTransformati
     refresh: vi.fn().mockResolvedValue(undefined),
     refreshError: null,
     loadError: null,
+    ...overrides,
+  };
+}
+
+function approvedRouteHook(overrides: Partial<ReturnType<typeof useApprovedJourneyRoute>> = {}) {
+  return {
+    route: null,
+    status: "disabled" as const,
     ...overrides,
   };
 }
@@ -266,6 +284,8 @@ describe("AuthoritativeRunDashboard", () => {
     vi.resetAllMocks();
     latestPipelineProps = null;
     vi.mocked(useTransformation).mockReturnValue(transformationHook());
+    vi.mocked(useApprovedJourneyRoute).mockReturnValue(approvedRouteHook());
+    vi.mocked(getBaselineValidation).mockResolvedValue(null as never);
   });
 
   it("exposes exactly the four Journey Command Center destinations", () => {
@@ -322,6 +342,52 @@ describe("AuthoritativeRunDashboard", () => {
     renderDashboard(run);
 
     expect(useTransformation).toHaveBeenCalledWith(run.run_id, { enabled: true, refreshKey: 0 });
+  });
+
+  it("refreshes the approved route from G06_CREATED before any transformation event", () => {
+    const run = makeAuthoritativeRun({
+      workflow_events: [
+        makeEvent("RUN_CREATED", 1),
+        makeEvent("COMPATIBILITY_RESOLUTION_COMPLETED", 2),
+        makeEvent("MIGRATION_PLAN_CREATED", 3),
+        makeEvent("G06_CREATED", 5),
+      ],
+    });
+
+    renderDashboard(run);
+
+    expect(useApprovedJourneyRoute).toHaveBeenCalledWith(run.run_id, true, 5);
+  });
+
+  it("keeps the approved route refresh key advancing through G06 approval", () => {
+    const run = makeAuthoritativeRun({
+      workflow_events: [
+        makeEvent("RUN_CREATED", 1),
+        makeEvent("COMPATIBILITY_RESOLUTION_COMPLETED", 2),
+        makeEvent("MIGRATION_PLAN_CREATED", 3),
+        makeEvent("G06_CREATED", 4),
+        makeEvent("G06_APPROVED", 5),
+      ],
+    });
+
+    renderDashboard(run);
+
+    expect(useApprovedJourneyRoute).toHaveBeenCalledWith(run.run_id, true, 5);
+  });
+
+  it("keeps transformation events driving the approved route refresh key", () => {
+    const run = makeAuthoritativeRun({
+      workflow_events: [
+        makeEvent("RUN_CREATED", 1),
+        makeEvent("MIGRATION_PLAN_CREATED", 2),
+        makeEvent("G06_APPROVED", 3),
+        makeEvent("G07_CREATED", 9),
+      ],
+    });
+
+    renderDashboard(run);
+
+    expect(useApprovedJourneyRoute).toHaveBeenCalledWith(run.run_id, true, 9);
   });
 
   it("highlights Pipeline for an action without changing the operator's active destination", () => {
@@ -678,5 +744,47 @@ describe("AuthoritativeRunDashboard", () => {
       screen.getByRole("button", { name: "Open Assistant" }),
     );
     expect(screen.getAllByRole("button", { name: "Open Assistant" })).toHaveLength(1);
+  });
+
+  it("attaches the existing repair-capable TransformationPanel to the active backend stage", async () => {
+    const run = makeAuthoritativeRun({
+      run_phase: "STAGED_MIGRATION",
+      workflow_events: [
+        makeEvent("RUN_CREATED", 1),
+        makeEvent("G06_APPROVED", 2),
+        makeEvent("G10_CREATED", 3),
+      ],
+    });
+    const projection = {
+      ...blockedTransformation(run.run_id),
+      route_stages: [
+        { stage_id: "stage-18-19", source_version: "18", target_version: "19", status: "sealed" },
+        { stage_id: "stage-19-20", source_version: "19", target_version: "20", status: "sealed" },
+        { stage_id: "stage-20-21", source_version: "20", target_version: "21", status: "RUNNING" },
+      ],
+    };
+    vi.mocked(useTransformation).mockReturnValue(transformationHook({
+      projection,
+      status: "ready",
+      executionStatus: "ready",
+    }));
+    vi.mocked(useApprovedJourneyRoute).mockReturnValue(approvedRouteHook({
+      route: [
+        { stageId: "stage-18-19", sourceMajor: 18, targetMajor: 19 },
+        { stageId: "stage-19-20", sourceMajor: 19, targetMajor: 20 },
+        { stageId: "stage-20-21", sourceMajor: 20, targetMajor: 21 },
+      ],
+      status: "ready",
+    }));
+    renderDashboard(run);
+    fireEvent.click(screen.getByRole("button", { name: /^Pipeline/ }));
+
+    const active = latestPipelineProps?.stageContent.find((content) => content.milestone.key === "stage:stage-20-21");
+    expect(active?.milestone.stageId).toBe("stage-20-21");
+    const summaryPanel = active?.tabs.find((tab) => tab.id === "summary")?.panel;
+    const panelView = render(<>{summaryPanel}</>);
+    expect(panelView.getByLabelText("Transformer status")).toBeInTheDocument();
+    expect(panelView.getByText(/Policy blocked the stage/i)).toBeInTheDocument();
+    panelView.unmount();
   });
 });

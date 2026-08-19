@@ -28,7 +28,7 @@ const journey: JourneyMilestone[] = [
   { key: "setup", label: "Setup", state: "complete" },
   { key: "readiness", label: "Readiness", state: "complete" },
   { key: "plan", label: "Migration plan", state: "complete" },
-  { key: "20-to-21", label: "Angular 20 to 21", state: "blocked", stageId: "stage-20-21" },
+  { key: "stage:stage-20-to-21", label: "Angular 20 to 21", state: "blocked", stageId: "stage-20-21" },
   { key: "validate", label: "Validate", state: "not-reached" },
   { key: "complete", label: "Complete", state: "not-reached" },
 ];
@@ -41,9 +41,9 @@ const fullJourney: JourneyMilestone[] = [
   { key: "discovery", label: "Discovery", state: "complete" },
   { key: "feasibility", label: "Feasibility", state: "complete" },
   { key: "plan", label: "Migration plan", state: "complete" },
-  { key: "18-to-19", label: "Angular 18 to 19", state: "complete" },
-  { key: "19-to-20", label: "Angular 19 to 20", state: "complete" },
-  { key: "20-to-21", label: "Angular 20 to 21", state: "blocked" },
+  { key: "stage:stage-18-to-19", label: "Angular 18 to 19", state: "complete" },
+  { key: "stage:stage-19-to-20", label: "Angular 19 to 20", state: "complete" },
+  { key: "stage:stage-20-to-21", label: "Angular 20 to 21", state: "blocked" },
   { key: "validate", label: "Validate", state: "not-reached" },
   { key: "complete", label: "Complete", state: "not-reached" },
 ];
@@ -56,9 +56,9 @@ const pipelineJourney: JourneyMilestone[] = [
   { key: "discovery", label: "Discovery", state: "not-reached" },
   { key: "feasibility", label: "Feasibility", state: "not-reached" },
   { key: "plan", label: "Migration plan", state: "not-reached" },
-  { key: "18-to-19", label: "Angular 18 to 19", state: "not-reached" },
-  { key: "19-to-20", label: "Angular 19 to 20", state: "not-reached" },
-  { key: "20-to-21", label: "Angular 20 to 21", state: "not-reached" },
+  { key: "stage:stage-18-to-19", label: "Angular 18 to 19", state: "not-reached" },
+  { key: "stage:stage-19-to-20", label: "Angular 19 to 20", state: "not-reached" },
+  { key: "stage:stage-20-to-21", label: "Angular 20 to 21", state: "not-reached" },
   { key: "validate", label: "Validate", state: "not-reached" },
   { key: "complete", label: "Complete", state: "not-reached" },
 ];
@@ -71,9 +71,9 @@ const pipelineGroups = {
   discovery: "understand",
   feasibility: "decide",
   plan: "decide",
-  "18-to-19": "transform",
-  "19-to-20": "transform",
-  "20-to-21": "transform",
+  "stage:stage-18-to-19": "transform",
+  "stage:stage-19-to-20": "transform",
+  "stage:stage-20-to-21": "transform",
   validate: "validate",
   complete: "validate",
 } as const;
@@ -81,7 +81,7 @@ const pipelineGroups = {
 function pipelineContent(items = pipelineJourney) {
   return items.map((milestone) => ({
     milestone,
-    group: pipelineGroups[milestone.key],
+    group: milestone.key in pipelineGroups ? pipelineGroups[milestone.key as keyof typeof pipelineGroups] : "transform",
     occurredAt: milestone.key === "readiness" ? "2026-07-27T10:02:00Z" : null,
     evidenceCount: milestone.key === "readiness" ? 2 : null,
     tabs: milestone.key === "readiness"
@@ -259,7 +259,7 @@ describe("control tower presentation state", () => {
   it("excludes unavailable route stages from the confirmed-complete denominator", () => {
     const applicableJourney = pipelineJourney.map((milestone) => ({
       ...milestone,
-      state: milestone.key === "18-to-19" || milestone.key === "19-to-20"
+      state: milestone.key === "stage:stage-18-to-19" || milestone.key === "stage:stage-19-to-20"
         ? "unavailable" as const
         : "complete" as const,
     }));
@@ -392,7 +392,7 @@ describe("control tower presentation state", () => {
       summary: "Repair revalidation needs attention.",
       consequence: "Inspect the authoritative blocker before continuing.",
       section: "pipeline",
-      stageKey: "20-to-21",
+      stageKey: "stage:stage-20-to-21",
       evidenceIds: ["failure-evidence"],
       rawSource: "REPAIR_REVALIDATION_FAILED",
       authority: currentAuthority,
@@ -401,12 +401,12 @@ describe("control tower presentation state", () => {
 
     expect(screen.getByRole("heading", { name: "Transformation blocked" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "View in pipeline" }));
-    expect(onNavigate).toHaveBeenCalledWith("pipeline", "20-to-21");
+    expect(onNavigate).toHaveBeenCalledWith("pipeline", "stage:stage-20-to-21");
   });
 
   it.each([
-    ["blocked transformation", { kind: "blocked", title: "Transformation blocked", summary: "Repair revalidation needs attention.", section: "pipeline", stageKey: "20-to-21", evidenceIds: [], rawSource: "blocked", authority: currentAuthority }],
-    ["running command", { kind: "running", title: "Migration command running", summary: "The backend is executing the current migration command.", section: "pipeline", stageKey: "20-to-21", evidenceIds: [], rawSource: "command:running", authority: currentAuthority }],
+    ["blocked transformation", { kind: "blocked", title: "Transformation blocked", summary: "Repair revalidation needs attention.", section: "pipeline", stageKey: "stage:stage-20-to-21", evidenceIds: [], rawSource: "blocked", authority: currentAuthority }],
+    ["running command", { kind: "running", title: "Migration command running", summary: "The backend is executing the current migration command.", section: "pipeline", stageKey: "stage:stage-20-to-21", evidenceIds: [], rawSource: "command:running", authority: currentAuthority }],
     ["verified completion", { kind: "complete", title: "Migration verified complete", summary: "The staged migration and final target verification are durably recorded.", section: "overview", stageKey: "complete", evidenceIds: [], rawSource: "verified", authority: currentAuthority }],
     ["no available data", { kind: "unavailable", title: "Current action unavailable", summary: "No current action can be confirmed.", section: "diagnostics", evidenceIds: [], rawSource: "unavailable", authority: currentAuthority }],
   ] as Array<[string, CurrentAction]>)("presents the %s state without raw event vocabulary", (_case, action) => {
@@ -466,7 +466,7 @@ describe("control tower presentation state", () => {
   it.each([
     ["G02 readiness", "readiness", "Readiness"],
     ["G03 baseline", "baseline", "Baseline"],
-    ["transformation target", "20-to-21", "Angular 20 to 21"],
+    ["transformation target", "stage:stage-20-to-21", "Angular 20 to 21"],
   ] as const)("maps %s action navigation to the available pipeline row", async (_case, stageKey, rowLabel) => {
     const action: CurrentAction = {
       kind: "gate",
