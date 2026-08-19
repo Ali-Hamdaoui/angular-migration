@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -984,6 +985,7 @@ class CommandPolicyEngineService:
             return session.scalar(
                 select(CommandExecutionModel).where(
                     CommandExecutionModel.run_id == request.run_id,
+                    CommandExecutionModel.stage_id == request.stage_id,
                     CommandExecutionModel.idempotency_key
                     == f"{attempt.id}:transition:v2:{suffix}",
                 )
@@ -1004,17 +1006,87 @@ class CommandPolicyEngineService:
                 )
             )
 
+        materialization_key_pattern = re.compile(
+            rf"^{re.escape(attempt.id)}:transition:v2:materialize:"
+            r"(initial|transition|detached)(?::retry-([1-9][0-9]*))?$"
+        )
+
+        def materialization_generation(key: str) -> str | None:
+            match = materialization_key_pattern.fullmatch(key)
+            return match.group(1) if match is not None else None
+
+        def materialization_executions(generation: str) -> list[CommandExecutionModel]:
+            base = f"{attempt.id}:transition:v2:materialize:{generation}"
+            executions = list(
+                session.scalars(
+                    select(CommandExecutionModel).where(
+                        CommandExecutionModel.run_id == request.run_id,
+                        CommandExecutionModel.stage_id == request.stage_id,
+                        CommandExecutionModel.command_id
+                        == NPM_DEPENDENCY_MATERIALIZE_RENDERER.command_id,
+                        CommandExecutionModel.idempotency_key.startswith(base),
+                    )
+                )
+            )
+            return sorted(
+                (
+                    execution
+                    for execution in executions
+                    if materialization_key_pattern.fullmatch(
+                        execution.idempotency_key or ""
+                    ) is not None
+                    and (execution.idempotency_key or "").startswith(
+                        f"{attempt.id}:transition:v2:materialize:{generation}"
+                    )
+                ),
+                key=lambda execution: (execution.requested_at, execution.id),
+            )
+
+        def verified_materialization(execution: CommandExecutionModel) -> bool:
+            metadata = session.scalar(
+                select(ArtifactMetadataModel).where(
+                    ArtifactMetadataModel.run_id == request.run_id,
+                    ArtifactMetadataModel.stage_id == request.stage_id,
+                    ArtifactMetadataModel.owner_reference
+                    == f"{execution.id}:dependency-materialization",
+                )
+            )
+            return bool(
+                execution.run_id == request.run_id
+                and execution.stage_id == request.stage_id
+                and execution.command_id
+                == NPM_DEPENDENCY_MATERIALIZE_RENDERER.command_id
+                and list(execution.arguments or []) == ["ci"]
+                and execution.status == "succeeded"
+                and execution.exit_code == 0
+                and metadata is not None
+                and metadata.immutable
+            )
+
+        def latest_verified_materialization(
+            generation: str,
+        ) -> CommandExecutionModel | None:
+            return next(
+                (
+                    execution
+                    for execution in reversed(materialization_executions(generation))
+                    if verified_materialization(execution)
+                ),
+                None,
+            )
+
         if request.command_id == NPM_DEPENDENCY_MATERIALIZE_RENDERER.command_id:
             key = request.idempotency_key or ""
-            if key.endswith(":materialize:transition") and not verified(
+            generation = materialization_generation(key)
+            if generation is None:
+                return False
+            if generation == "transition" and not verified(
                 "angular-update:fresh", "fresh-angular-update-failure", failed=True
             ):
                 return False
-            if key.endswith(":materialize:detached") and not verified(
+            if generation == "detached" and not verified(
                 "lockfile:detached", "dependency-lockfile"
             ):
-                return False
-            if not key.endswith((":materialize:initial", ":materialize:transition", ":materialize:detached")):
                 return False
             return (
                 request.template_id == NPM_DEPENDENCY_MATERIALIZE_RENDERER.template_id
@@ -1091,13 +1163,9 @@ class CommandPolicyEngineService:
         if request.command_id == "angular-update-exact":
             key = request.idempotency_key or ""
             if key.endswith(":angular-update:fresh"):
-                prerequisite = verified(
-                    "materialize:initial", "dependency-materialization"
-                )
+                prerequisite = latest_verified_materialization("initial") is not None
             elif key.endswith(":angular-update:detached"):
-                prerequisite = verified(
-                    "materialize:detached", "dependency-materialization"
-                )
+                prerequisite = latest_verified_materialization("detached") is not None
             else:
                 return False
             return bool(
@@ -1113,7 +1181,7 @@ class CommandPolicyEngineService:
             )
 
         if request.command_id == NPM_DEPENDENCY_UNINSTALL_RENDERER.command_id:
-            if not verified("materialize:transition", "dependency-materialization"):
+            if latest_verified_materialization("transition") is None:
                 return False
             try:
                 binding = session.scalar(
