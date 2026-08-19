@@ -438,6 +438,17 @@ def verify_npm_eresolve_attempted_resolution_state(
         if isinstance(manifest.get(section), dict)
         and blocking_dependency in manifest[section]
     ]
+    if len(blocking_sections) == 1:
+        return
+    if len(blocking_sections) == 0:
+        try:
+            detached_version = installed_dependency_version(workspace, blocking_dependency)
+        except ValueError as error:
+            raise ValueError(
+                "blocking dependency is missing from the manifest and has no authoritative detached version"
+            ) from error
+        if detached_version == diagnosis.get("installed_version"):
+            return
     if len(blocking_sections) != 1:
         raise ValueError("blocking dependency is missing or ambiguous in root dependency state")
 
