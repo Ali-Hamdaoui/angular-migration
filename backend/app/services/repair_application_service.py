@@ -45,12 +45,14 @@ from app.repositories.models import (
     ArtifactMetadataModel,
     CommandExecutionModel,
     LlmInvocationModel,
+    MigrationStageModel,
     MigrationRunModel,
     RepairAttemptModel,
     RepairFingerprintRecoveryModel,
     StageCheckpointModel,
     StageExecutionPlanModel,
     StageGatePackageModel,
+    StageStepModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
     UsageCostRecordModel,
@@ -73,6 +75,7 @@ from app.services.dependency_closure_service import (
     validate_dependency_transition_evidence,
     verify_dependency_transition_evidence_for_source,
 )
+from app.services.dependency_repair_preflight_service import DependencyRepairPreflightService
 from app.services.failure_evidence_service import (
     CONTEXT_PACK_MAX_BYTES_PER_FILE,
     FailureEvidenceService,
@@ -698,6 +701,204 @@ class RepairApplicationService:
         self._scope = scope
         self._gateway = gateway
         self._now = now_provider or (lambda: datetime.now(UTC))
+
+    def recover_stale_dependency_state(
+        self,
+        *,
+        run_id: str,
+        attempt_id: str,
+        expected_state_version: int,
+        idempotency_key: str,
+        actor: str,
+    ) -> dict[str, object]:
+        """Supersede a repeated failed transition and resume deterministic lock repair."""
+        event_key = "dependency-state-recovery:" + hashlib.sha256(
+            idempotency_key.encode()
+        ).hexdigest()
+        with self._scope() as session:
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == run_id
+                )
+            )
+            event = session.scalar(
+                select(WorkflowEventModel).where(
+                    WorkflowEventModel.run_id == run_id,
+                    WorkflowEventModel.idempotency_key == f"{continuation.id}:{event_key}"
+                    if continuation is not None
+                    else False,
+                )
+            )
+            if event is not None:
+                return {
+                    "attempt_id": attempt_id,
+                    "status": continuation.status,
+                    "state_version": continuation.state_version,
+                    "idempotent_replay": True,
+                }
+            attempt = session.get(RepairAttemptModel, attempt_id)
+            if (
+                continuation is None
+                or attempt is None
+                or attempt.run_id != run_id
+                or attempt.stage_id != continuation.current_stage_id
+                or continuation.state_version != expected_state_version
+                or continuation.status != "waiting_gate"
+                or continuation.current_node != "wait_g10"
+                or attempt.status != "waiting_g10"
+            ):
+                raise RepairApplicationError(
+                    "DEPENDENCY_STATE_RECOVERY_STALE",
+                    "The waiting G10 dependency recovery authority changed",
+                )
+            run = session.get(MigrationRunModel, run_id)
+            stage = session.get(MigrationStageModel, continuation.current_stage_id)
+            binding = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == run_id,
+                    StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            if run is None or stage is None or binding is None:
+                raise RepairApplicationError(
+                    "DEPENDENCY_STATE_RECOVERY_AUTHORITY_MISSING",
+                    "Run, stage, or workspace authority is missing",
+                )
+            workspace = Path(binding.workspace_path).resolve(strict=True)
+            live = STAGE_FINGERPRINT_PROFILE.fingerprint(workspace)
+            if live != binding.workspace_fingerprint or live != attempt.pre_fingerprint:
+                raise RepairApplicationError(
+                    "REPAIR_WORKSPACE_STALE", "Repair workspace fingerprint changed"
+                )
+            diagnosis = DependencyRepairPreflightService().classify_current_state(
+                workspace=workspace,
+                source_family=stage.source_version_family,
+                target_family=stage.target_version_family,
+            )
+            if diagnosis.get("classification") != "TARGET_MANIFEST_AHEAD":
+                raise RepairApplicationError(
+                    "DEPENDENCY_STATE_RECONCILIATION_NOT_APPLICABLE",
+                    f"Current dependency state is {diagnosis.get('classification')}",
+                )
+            proposal = self._recovery_proposal(session, run, attempt)
+            operation = next(iter(proposal.get("operations") or []), {})
+            if not self._same_failed_transition_exists(session, run, attempt, operation):
+                raise RepairApplicationError(
+                    "REPAIR_STRATEGY_NOT_PREVIOUSLY_FAILED",
+                    "The proposed transition has no equivalent applied runtime failure",
+                )
+            gate = session.get(StageGatePackageModel, attempt.g10_gate_package_id)
+            if gate is None or gate.status != "pending":
+                raise RepairApplicationError(
+                    "DEPENDENCY_STATE_RECOVERY_GATE_STALE", "The G10 package is not pending"
+                )
+            now = self._now()
+            gate.status = "stale"
+            gate.stale_at = now
+            attempt.status = "superseded"
+            attempt.completed_at = now
+            attempt.updated_at = now
+            step = session.scalar(
+                select(StageStepModel).where(
+                    StageStepModel.run_id == run_id,
+                    StageStepModel.stage_id == continuation.current_stage_id,
+                    StageStepModel.name == "lockfile_generation-0",
+                )
+            )
+            if step is None:
+                raise RepairApplicationError(
+                    "STAGE_PLAN_COMMAND_AUTHORITY_MISSING",
+                    "The stage has no governed lockfile-generation step",
+                )
+            step.status = "PENDING"
+            step.execution_id = None
+            step.completed_at = None
+            continuation.status = "queued"
+            continuation.current_node = "lockfile_generation"
+            continuation.worker_id = None
+            continuation.lease_expires_at = None
+            continuation.waiting_execution_id = None
+            continuation.last_error_code = None
+            continuation.last_error_message = None
+            continuation.wake_sequence += 1
+            continuation.state_version += 1
+            continuation.updated_at = now
+            session.flush()
+            append_continuation_event(
+                session,
+                continuation,
+                event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED,
+                key=event_key,
+                reason="repeated dependency transition superseded by deterministic state reconciliation",
+                actor=actor,
+                occurred_at=now,
+                payload={
+                    "attempt_id": attempt.id,
+                    "classification": diagnosis["classification"],
+                    "manifest_checksum": self._request_checksum(
+                        json.loads((workspace / "package.json").read_text(encoding="utf-8"))
+                    ),
+                    "lockfile_checksum": "sha256:" + hashlib.sha256(
+                        (workspace / "package-lock.json").read_bytes()
+                    ).hexdigest(),
+                    "workspace_fingerprint": live,
+                    "expected_state_version": expected_state_version,
+                },
+            )
+            return {
+                "attempt_id": attempt.id,
+                "status": continuation.status,
+                "state_version": continuation.state_version,
+                "classification": diagnosis["classification"],
+                "idempotent_replay": False,
+            }
+
+    @staticmethod
+    def _recovery_proposal(session, run, attempt) -> dict[str, object]:
+        metadata = session.get(ArtifactMetadataModel, "metadata-" + str(attempt.proposal_artifact_id))
+        if metadata is None or metadata.checksum != attempt.proposal_checksum:
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Repair proposal is missing")
+        stored = LocalFilesystemArtifactStore(
+            Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+        ).read_artifact(run.id, metadata.relative_path)
+        if stored.ref.checksum != attempt.proposal_checksum:
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Repair proposal checksum changed")
+        value = json.loads(stored.content)
+        return value if isinstance(value, dict) else {}
+
+    @classmethod
+    def _same_failed_transition_exists(cls, session, run, attempt, operation) -> bool:
+        if not isinstance(operation, dict) or operation.get("operation") != "dependency_transition":
+            return False
+        current = (
+            operation.get("strategy"),
+            (operation.get("blocking_dependency") or {}).get("package"),
+            (operation.get("target_state") or {}).get("target_version"),
+        )
+        rows = session.scalars(
+            select(RepairAttemptModel).where(
+                RepairAttemptModel.run_id == attempt.run_id,
+                RepairAttemptModel.stage_id == attempt.stage_id,
+                RepairAttemptModel.attempt_number < attempt.attempt_number,
+                RepairAttemptModel.apply_ledger_artifact_id.is_not(None),
+                RepairAttemptModel.status.in_(("validation_failed", "superseded")),
+            )
+        ).all()
+        for row in rows:
+            try:
+                prior = cls._recovery_proposal(session, run, row)
+                item = next(iter(prior.get("operations") or []), {})
+            except (RepairApplicationError, ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError):
+                continue
+            fingerprint = (
+                item.get("strategy"),
+                (item.get("blocking_dependency") or {}).get("package"),
+                (item.get("target_state") or {}).get("target_version"),
+            )
+            if item.get("operation") == "dependency_transition" and fingerprint == current:
+                return True
+        return False
 
     def propose(self, attempt_id: str) -> dict[str, object]:
         from app.services.repair_lifecycle_reliability_service import RepairLifecycleReliabilityService

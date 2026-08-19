@@ -101,6 +101,101 @@ class DependencyRepairPreflightService:
             )
         return evidence
 
+    def classify_current_state(
+        self, *, workspace: Path, source_family: str, target_family: str
+    ) -> dict[str, object]:
+        """Classify manifest/lock/install drift without asking the repair model."""
+        manifest = self._read_json(workspace / "package.json")
+        try:
+            compatibility = self.validate(
+                workspace=workspace,
+                proposal={
+                    "operations": [
+                        {
+                            "operation": "replace_text_file",
+                            "path": "package.json",
+                            "new_text": json.dumps(manifest, sort_keys=True),
+                        }
+                    ]
+                },
+                source_family=source_family,
+                target_family=target_family,
+            )
+        except DependencyRepairPreflightError as error:
+            return {"classification": "MANIFEST_CONFLICT", "evidence": error.evidence}
+
+        target_major = self._major(target_family)
+        dependencies = self._dependencies(manifest)
+        target_packages = {
+            package: spec
+            for package, spec in dependencies.items()
+            if self._angular_package(package) and self._spec_major(spec) == target_major
+        }
+        lock = self._read_optional_json(workspace / "package-lock.json")
+        lock_versions = {
+            package: self._resolved_version(lock, package) for package in target_packages
+        }
+        installed_versions = {
+            package: self._installed_version(workspace, package) for package in target_packages
+        }
+        stale_lock = sorted(
+            package
+            for package, version in lock_versions.items()
+            if self._spec_major(version or "") != target_major
+        )
+        stale_install = sorted(
+            package
+            for package, version in installed_versions.items()
+            if version is not None and self._spec_major(version) != target_major
+        )
+        classification = (
+            "TARGET_MANIFEST_AHEAD"
+            if stale_lock
+            else "INSTALL_TREE_STALE"
+            if stale_install
+            else "COHERENT_SOURCE_STATE"
+        )
+        return {
+            "classification": classification,
+            "manifest_target_packages": target_packages,
+            "lock_versions": lock_versions,
+            "installed_versions": installed_versions,
+            "stale_lock_packages": stale_lock,
+            "stale_install_packages": stale_install,
+            "compatibility": compatibility,
+        }
+
+    @staticmethod
+    def _read_optional_json(path: Path) -> dict[str, object]:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _resolved_version(lock: dict[str, object], package: str) -> str | None:
+        packages = lock.get("packages")
+        if isinstance(packages, dict):
+            entry = packages.get(f"node_modules/{package}")
+            if isinstance(entry, dict) and isinstance(entry.get("version"), str):
+                return entry["version"]
+        dependencies = lock.get("dependencies")
+        entry = dependencies.get(package) if isinstance(dependencies, dict) else None
+        return entry.get("version") if isinstance(entry, dict) and isinstance(entry.get("version"), str) else None
+
+    @staticmethod
+    def _installed_version(workspace: Path, package: str) -> str | None:
+        try:
+            value = json.loads(
+                (workspace / "node_modules" / Path(package) / "package.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        return value.get("version") if isinstance(value, dict) and isinstance(value.get("version"), str) else None
+
     @staticmethod
     def _read_json(path: Path) -> dict[str, object]:
         try:

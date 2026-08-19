@@ -813,6 +813,30 @@ def recover_exhausted_semantic_retry(
         )
 
 
+@router.post("/{run_id}/transformation/repairs/{attempt_id}/recover-dependency-state")
+def recover_dependency_state(
+    run_id: str,
+    attempt_id: str,
+    body: TransformationRestartRequest,
+    request: Request,
+    actor: str = Depends(authenticated_actor),
+):
+    with session_scope() as session:
+        authorize_run(session, run_id, actor)
+    try:
+        return RepairApplicationService(scope=session_scope).recover_stale_dependency_state(
+            run_id=run_id,
+            attempt_id=attempt_id,
+            expected_state_version=body.expected_state_version,
+            idempotency_key=body.idempotency_key,
+            actor=actor,
+        )
+    except RepairApplicationError as error:
+        return error_response(
+            request, status_code=409, error_code=error.code, message=error.message
+        )
+
+
 @router.post("/{run_id}/transformation/repairs/{attempt_id}/recover-bound-candidate")
 def recover_bound_candidate(
     run_id: str,

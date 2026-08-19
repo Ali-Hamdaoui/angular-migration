@@ -21,6 +21,7 @@ from app.domain.contracts import ArtifactType
 from app.repositories.models import (
     ArtifactMetadataModel,
     CommandExecutionModel,
+    MigrationStageModel,
     MigrationRunModel,
     RepairAttemptModel,
     StageExecutionPlanModel,
@@ -43,6 +44,7 @@ LOCKFILE_GENERATION_FINGERPRINT_SCOPE = "lockfile-generation-mutation-v2"
 #: generation.  The successor idempotency key is derived from this suffix, so
 #: restarts reconstruct the same key and never queue endless successors.
 LOCKFILE_GENERATION_ATTEMPT_2_MARKER = ":attempt-2"
+LOCKFILE_RECONCILIATION_MARKER = ":reconcile-stale-lock"
 LOCKFILE_GENERATION_ETARGET = "LOCKFILE_GENERATION_ETARGET"
 LOCKFILE_GENERATION_ERESOLVE = "LOCKFILE_GENERATION_ERESOLVE"
 
@@ -191,6 +193,10 @@ class LockfileGenerationRunner:
                     execution.failure_message or "npm reported an unavailable dependency version",
                 )
             if is_npm_eresolve_failure(execution):
+                if self._stale_lock_reconciliation_allowed(session, continuation, execution):
+                    return self._queue_stale_lock_reconciliation(
+                        session, continuation, execution
+                    )
                 raise LockfileGenerationError(
                     LOCKFILE_GENERATION_ERESOLVE,
                     execution.failure_message or "npm reported an unresolved dependency tree",
@@ -266,7 +272,7 @@ class LockfileGenerationRunner:
             return
 
     def _queue(self, session, continuation, *, generation: int = 1) -> str:
-        if generation not in {1, 2}:
+        if generation not in {1, 2, 3}:
             raise LockfileGenerationError(
                 "LOCKFILE_GENERATION_FINGERPRINT_INVALID",
                 "Only one v1 -> v2 successor generation is permitted",
@@ -322,7 +328,68 @@ class LockfileGenerationRunner:
     def _attempt_key(attempt, generation: int) -> str:
         if generation == 1:
             return attempt.id
-        return f"{attempt.id}{LOCKFILE_GENERATION_ATTEMPT_2_MARKER}"
+        marker = (
+            LOCKFILE_GENERATION_ATTEMPT_2_MARKER
+            if generation == 2
+            else LOCKFILE_RECONCILIATION_MARKER
+        )
+        return f"{attempt.id}{marker}"
+
+    def _stale_lock_reconciliation_allowed(self, session, continuation, execution) -> bool:
+        if LOCKFILE_RECONCILIATION_MARKER in str(execution.idempotency_key or ""):
+            return False
+        run, _attempt, _binding, workspace = self._authority(session, continuation)
+        stage = session.get(MigrationStageModel, continuation.current_stage_id)
+        if stage is None:
+            return False
+        from app.services.dependency_repair_preflight_service import DependencyRepairPreflightService
+
+        diagnosis = DependencyRepairPreflightService().classify_current_state(
+            workspace=workspace,
+            source_family=stage.source_version_family,
+            target_family=stage.target_version_family,
+        )
+        return diagnosis.get("classification") == "TARGET_MANIFEST_AHEAD"
+
+    def _queue_stale_lock_reconciliation(self, session, continuation, execution) -> str:
+        run, attempt, _binding, workspace = self._authority(session, continuation)
+        lockfile = workspace / "package-lock.json"
+        if not lockfile.is_file() or lockfile.is_symlink():
+            raise LockfileGenerationError(
+                "LOCKFILE_RECONCILIATION_EVIDENCE_MISSING",
+                "The stale authoritative package-lock.json is unavailable",
+            )
+        store = LocalFilesystemArtifactStore(
+            Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+        )
+        stored = store.write_text_artifact(
+            run.id,
+            f"05_repairs/attempt-{attempt.id}/stale-package-lock.json",
+            lockfile.read_text(encoding="utf-8"),
+            ArtifactType.JSON,
+            stage_id=continuation.current_stage_id,
+            attempt_id=attempt.id,
+            created_by="lockfile-generation-runner",
+            created_at=self._now(),
+            input_hashes={"failed_execution": execution.id, "lockfile": _file_checksum(lockfile)},
+            policy_version="dependency-state-reconciliation-v1",
+        )
+        session.add(
+            ArtifactMetadataModel(
+                id="metadata-" + stored.ref.artifact_id,
+                run_id=run.id,
+                stage_id=continuation.current_stage_id,
+                artifact_type=stored.ref.artifact_type.value,
+                relative_path=stored.ref.relative_path,
+                checksum=stored.ref.checksum,
+                created_at=stored.ref.created_at,
+                finalized_at=stored.ref.created_at,
+                immutable=True,
+                owner_reference=f"{execution.id}:stale-lockfile",
+            )
+        )
+        lockfile.unlink()
+        return self._queue(session, continuation, generation=3)
 
     def _queue_successor(self, session, continuation, stale_execution) -> str:
         """Queue the one durable V1 -> V2 successor for a terminal stale-baseline execution.
@@ -373,6 +440,7 @@ class LockfileGenerationRunner:
             .where(
                 RepairAttemptModel.run_id == continuation.run_id,
                 RepairAttemptModel.stage_id == continuation.current_stage_id,
+                RepairAttemptModel.status.in_(("applied", "applied_verified")),
             )
             .order_by(RepairAttemptModel.attempt_number.desc())
         )

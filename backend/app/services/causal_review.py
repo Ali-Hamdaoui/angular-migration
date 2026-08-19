@@ -469,12 +469,47 @@ def g10_eligibility(session, run_id: str, stage_id: str, attempt_id: str) -> tup
     )
     if review is None or review.get("decision") != "accept":
         return False, "reviewer request_changes requires a supported revision"
+    current_strategy = _semantic_strategy(proposal)
+    if current_strategy is not None:
+        prior_attempts = session.scalars(
+            select(RepairAttemptModel).where(
+                RepairAttemptModel.run_id == run_id,
+                RepairAttemptModel.stage_id == stage_id,
+                RepairAttemptModel.attempt_number < attempt.attempt_number,
+                RepairAttemptModel.apply_ledger_artifact_id.is_not(None),
+                RepairAttemptModel.status.in_(("validation_failed", "superseded")),
+            )
+        ).all()
+        for prior in prior_attempts:
+            prior_proposal = _load_attempt_artifact(
+                session, store, prior, run_id, stage_id,
+                "proposal_artifact_id", "proposal_checksum", pre_attempt=False,
+            )
+            if _semantic_strategy(prior_proposal) == current_strategy:
+                return False, "REPAIR_STRATEGY_ALREADY_FAILED"
     rejection = causal_rejection(
         evidence, proposal, stage_plan_commands=_stage_plan_commands(session, run_id, stage_id)
     )
     if rejection is not None:
         return False, rejection.reason
     return True, None
+
+
+def _semantic_strategy(proposal: dict | None) -> tuple[str, str, str, str] | None:
+    operations = proposal.get("operations") if isinstance(proposal, dict) else None
+    if not isinstance(operations, list) or len(operations) != 1 or not isinstance(operations[0], dict):
+        return None
+    operation = operations[0]
+    if operation.get("operation") != "dependency_transition":
+        return None
+    blocking = operation.get("blocking_dependency")
+    target = operation.get("target_state")
+    return (
+        "dependency_transition",
+        str(operation.get("strategy") or ""),
+        str(blocking.get("package") or "") if isinstance(blocking, dict) else "",
+        str(target.get("target_version") or "") if isinstance(target, dict) else "",
+    )
 
 
 def _angular_update_successors(session, run_id: str, stage_id: str) -> list | None:
