@@ -11,7 +11,11 @@ from pathlib import Path
 
 from sqlalchemy import select, update
 
-from app.artifact_store import LocalFilesystemArtifactStore
+from app.artifact_store import (
+    ArtifactNotFoundError,
+    ArtifactStoreError,
+    LocalFilesystemArtifactStore,
+)
 from app.domain.baseline import (
     BaselineQualificationError,
     LockfilePrequalificationService,
@@ -356,6 +360,46 @@ class LockfileGenerationRunner:
         )
         return diagnosis.get("classification") == "TARGET_MANIFEST_AHEAD"
 
+    def _reusable_preparation(self, session, continuation, execution, package_checksum, governed):
+        run, _attempt, _binding, workspace = self._authority(session, continuation)
+        if (workspace / "package-lock.json").exists():
+            return None
+        for candidate in session.scalars(
+            select(ArtifactMetadataModel)
+            .where(
+                ArtifactMetadataModel.run_id == run.id,
+                ArtifactMetadataModel.stage_id == continuation.current_stage_id,
+                ArtifactMetadataModel.owner_reference.like("%:stale-lock:%"),
+                ArtifactMetadataModel.immutable.is_(True),
+            )
+            .order_by(ArtifactMetadataModel.created_at.desc())
+        ):
+            metadata = candidate.safe_metadata or {}
+            failed = session.get(
+                CommandExecutionModel, metadata.get("failed_execution_id")
+            )
+            if (
+                metadata.get("package_json_checksum") != package_checksum
+                or metadata.get("governed_workspace_fingerprint") != governed
+                or failed is None
+                or failed.run_id != run.id
+                or failed.stage_id != continuation.current_stage_id
+                or failed.command_id != "npm-lockfile-generate"
+                or failed.status != "failed"
+                or failed.exit_code in (None, 0)
+            ):
+                continue
+            try:
+                stored = LocalFilesystemArtifactStore(
+                    Path(run.artifact_root).parent,
+                    fixed_run_root=Path(run.artifact_root),
+                ).read_artifact(run.id, candidate.relative_path)
+            except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError):
+                continue
+            if stored.ref.checksum == candidate.checksum:
+                return metadata
+        return None
+
     def _queue_stale_lock_reconciliation(
         self,
         session,
@@ -403,6 +447,23 @@ class LockfileGenerationRunner:
                 ArtifactMetadataModel.immutable.is_(True),
             )
         )
+        if preparation is None and expected_lock == "missing":
+            reusable = self._reusable_preparation(
+                session,
+                continuation,
+                execution,
+                expected_package,
+                start.get("post_apply_pre_command_governed_workspace_fingerprint"),
+            )
+            if reusable is not None:
+                return self._queue(
+                    session,
+                    continuation,
+                    generation=3,
+                    reconciliation_key=(
+                        f"resume:{reusable['reconciliation_checksum']}:{execution.id}"
+                    ),
+                )
         if preparation is None:
             if (
                 not lockfile.is_file()
