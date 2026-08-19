@@ -752,11 +752,11 @@ class DependencyTransitionRunner:
 
     def _next_install_key(self, session, context, member_prefix: str) -> str:
         generation = 1
-        for execution in self._install_executions(session, context):
-            match = re.match(
-                re.escape(member_prefix) + r":attempt-(\d+)$",
-                execution.idempotency_key or "",
-            )
+        pattern = re.compile(re.escape(member_prefix) + r":attempt-([1-9][0-9]*)$")
+        for key in self._consumed_idempotency_keys(
+            session, context, member_prefix, pattern
+        ):
+            match = pattern.fullmatch(key)
             if match is not None:
                 generation = max(generation, int(match.group(1)) + 1)
         return f"{member_prefix}:attempt-{generation}"
@@ -1022,12 +1022,34 @@ class DependencyTransitionRunner:
         executions = self._materialization_executions(session, context, generation)
         return executions[-1] if executions else None
 
+    def _consumed_idempotency_keys(
+        self, session, context, prefix: str, pattern: re.Pattern[str]
+    ) -> set[str]:
+        """Return strictly shaped keys reserved by authorization or execution."""
+        run_id = context["run"].id
+        stage_id = context["attempt"].stage_id
+        keys: set[str] = set()
+        for model in (CommandExecutionModel, CommandAuthorizationAuditModel):
+            keys.update(
+                key
+                for key in session.scalars(
+                    select(model.idempotency_key).where(
+                        model.run_id == run_id,
+                        model.stage_id == stage_id,
+                        model.idempotency_key.startswith(prefix),
+                    )
+                )
+                if isinstance(key, str) and pattern.fullmatch(key)
+            )
+        return keys
+
     def _next_materialization_key(self, session, context, generation: str) -> str:
         base = self._key(context, f"materialize:{generation}")
         retry = 1
-        for execution in self._materialization_executions(session, context, generation):
-            match = re.match(re.escape(base) + r":retry-(\d+)$", execution.idempotency_key or "")
-            if match is not None:
+        pattern = re.compile(re.escape(base) + r"(?::retry-([1-9][0-9]*))?$")
+        for key in self._consumed_idempotency_keys(session, context, base, pattern):
+            match = pattern.fullmatch(key)
+            if match is not None and match.group(1) is not None:
                 retry = max(retry, int(match.group(1)) + 1)
         return f"{base}:retry-{retry}"
 
