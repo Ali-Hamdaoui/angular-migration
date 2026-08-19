@@ -1110,13 +1110,27 @@ class TransformerStageService:
                     "Live workspace cannot be fingerprinted for recovery reconstruction",
                 ) from error
             governed_workspace = (run.workspace_aliases or {}).get(binding.alias)
-            lineage_execution_ids = {
-                operation.causal_execution_id,
-                operation.interrupted_execution_id,
-                checkpoint.created_from_execution_id,
-            }
+            interrupted = (
+                session.get(CommandExecutionModel, operation.interrupted_execution_id)
+                if operation.interrupted_execution_id
+                else None
+            )
+            checkpoint_execution = (
+                session.get(CommandExecutionModel, checkpoint.created_from_execution_id)
+                if checkpoint.created_from_execution_id
+                else None
+            )
+            interrupted_drift_authorized = self._recovery_drift_authorized(
+                session,
+                continuation,
+                operation,
+                binding,
+                live_workspace_fingerprint,
+                interrupted,
+            )
             if (
-                operation.run_id != continuation.run_id
+                operation.continuation_id != continuation.id
+                or operation.run_id != continuation.run_id
                 or operation.stage_id != continuation.current_stage_id
                 or operation.status not in {"PLANNED", "RECONSTRUCTING"}
                 or operation.checkpoint_id != checkpoint.id
@@ -1130,7 +1144,10 @@ class TransformerStageService:
                 or binding.fingerprint_profile_id != STAGE_FINGERPRINT_PROFILE.profile_id
                 or governed_workspace is None
                 or Path(governed_workspace).resolve() != Path(binding.workspace_path).resolve()
-                or live_workspace_fingerprint != binding.workspace_fingerprint
+                or (
+                    live_workspace_fingerprint != binding.workspace_fingerprint
+                    and not interrupted_drift_authorized
+                )
                 or checkpoint.run_id != continuation.run_id
                 or checkpoint.stage_id != continuation.current_stage_id
                 or checkpoint.workspace_alias != binding.alias
@@ -1139,7 +1156,11 @@ class TransformerStageService:
                 or self.authoritative_checkpoint_fingerprint(session, checkpoint) is None
                 or (
                     checkpoint.created_from_execution_id is not None
-                    and checkpoint.created_from_execution_id not in lineage_execution_ids
+                    and (
+                        checkpoint_execution is None
+                        or checkpoint_execution.run_id != continuation.run_id
+                        or checkpoint_execution.stage_id != continuation.current_stage_id
+                    )
                 )
             ):
                 raise TransformerStageError(
@@ -1272,6 +1293,41 @@ class TransformerStageService:
                 else None
             )
         return False
+
+    @staticmethod
+    def _recovery_drift_authorized(
+        session,
+        continuation,
+        operation,
+        binding,
+        live_workspace_fingerprint: str,
+        interrupted,
+    ) -> bool:
+        if (
+            operation.drift_classification != "PROVEN_INTERRUPTED_PREPARATION_DRIFT"
+            or operation.source_workspace_fingerprint != binding.workspace_fingerprint
+            or operation.observed_workspace_fingerprint != live_workspace_fingerprint
+            or not operation.governed_workspace_fingerprint
+            or not operation.interrupted_evidence_checksum
+            or interrupted is None
+            or interrupted.run_id != continuation.run_id
+            or interrupted.stage_id != continuation.current_stage_id
+            or interrupted.command_id != "npm-lockfile-generate"
+            or interrupted.status != "interrupted"
+            or interrupted.failure_code != "COMMAND_RECOVERY_REQUIRED"
+        ):
+            return False
+        try:
+            from app.services.lockfile_generation_runner import (
+                workspace_excluding_governed_volatile_fingerprint,
+            )
+
+            governed = workspace_excluding_governed_volatile_fingerprint(
+                Path(binding.workspace_path)
+            )
+        except OSError:
+            return False
+        return governed == operation.governed_workspace_fingerprint
 
     def record_reconstruction(
         self,
