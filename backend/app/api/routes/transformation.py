@@ -805,6 +805,36 @@ def recover_stage(
         )
 
 
+@router.post("/{run_id}/transformation/recovery/{recovery_id}/retry")
+def retry_stage_recovery(
+    run_id: str,
+    recovery_id: str,
+    body: TransformationRestartRequest,
+    request: Request,
+    actor: str = Depends(authenticated_actor),
+):
+    with session_scope() as session:
+        authorize_run(session, run_id, actor)
+    try:
+        return StageRecoveryService(scope=session_scope).retry_failed(
+            run_id=run_id,
+            recovery_id=recovery_id,
+            expected_state_version=body.expected_state_version,
+            idempotency_key=body.idempotency_key,
+            actor=actor,
+            correlation_id=body.correlation_id,
+        )
+    except StageRecoveryError as error:
+        return error_response(
+            request,
+            status_code=409,
+            error_code=error.code,
+            message=error.message,
+            details=error.details,
+            correlation_id=body.correlation_id,
+        )
+
+
 @router.post("/{run_id}/transformation/repairs/{attempt_id}/revisions")
 def request_repair_revision(
     run_id: str,

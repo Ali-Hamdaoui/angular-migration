@@ -19,11 +19,13 @@ from app.repositories.models import (
     MigrationStageModel,
     RepairAttemptModel,
     StageCheckpointModel,
+    StageGateDecisionModel,
     StageGatePackageModel,
     StageRecoveryOperationModel,
     StageStepModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
+    WorkflowEventModel,
 )
 from app.repositories.session import session_scope
 from app.services.dependency_repair_preflight_service import (
@@ -35,6 +37,8 @@ from app.services.lockfile_generation_runner import (
     is_npm_eresolve_failure,
     workspace_excluding_governed_volatile_fingerprint,
 )
+from app.services.patch_apply_service import PatchApplyService
+from app.services.repair_application_service import RepairApplicationError
 from app.services.repair_lifecycle_service import RepairLifecycleService
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformer_stage_service import (
@@ -102,6 +106,7 @@ class StageRecoveryService:
         self._now = now_provider or (lambda: datetime.now(UTC))
         self._stage = TransformerStageService(scope=scope)
         self._lockfiles = LockfileGenerationRunner(stage_service=self._stage)
+        self._patches = PatchApplyService(now_provider=self._now)
 
     @staticmethod
     def checksum(value: object) -> str:
@@ -211,6 +216,7 @@ class StageRecoveryService:
             operation = StageRecoveryOperationModel(
                 id="recovery-" + recovery_checksum.removeprefix("sha256:")[:32],
                 run_id=run_id,
+                continuation_id=continuation.id,
                 stage_id=continuation.current_stage_id,
                 kind=context["kind"],
                 status="PLANNED",
@@ -255,6 +261,139 @@ class StageRecoveryService:
                 "created",
                 actor,
                 "durable stage recovery operation created from immutable failure evidence",
+            )
+            return self._result(operation, continuation, False)
+
+    def retry_failed(
+        self,
+        *,
+        run_id: str,
+        recovery_id: str,
+        expected_state_version: int,
+        idempotency_key: str,
+        actor: str,
+        correlation_id: str | None = None,
+    ) -> dict[str, object]:
+        """Reactivate a failed pre-external-work recovery without a new operation."""
+        with self._scope() as session:
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == run_id
+                )
+            )
+            operation = session.get(StageRecoveryOperationModel, recovery_id)
+            if operation is None or operation.run_id != run_id:
+                raise StageRecoveryError(
+                    "RECOVERY_NOT_FOUND", "Stage recovery operation is missing"
+                )
+            if continuation is None:
+                raise StageRecoveryError(
+                    "TRANSFORMATION_NOT_FOUND", "Transformer continuation is missing"
+                )
+            self._continuation_for_operation(session, operation)
+            request_payload = {
+                "run_id": run_id,
+                "recovery_id": recovery_id,
+                "continuation_id": continuation.id,
+                "expected_state_version": expected_state_version,
+                "idempotency_key": idempotency_key,
+                "correlation_id": correlation_id,
+                "recovery_checksum": operation.recovery_checksum,
+                "actor": actor,
+            }
+            request_checksum = self.checksum(request_payload)
+            retry_suffix = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:16]
+            event_key = f"stage-recovery:{operation.id}:retry:{retry_suffix}"
+            event = session.scalar(
+                select(WorkflowEventModel).where(
+                    WorkflowEventModel.run_id == run_id,
+                    WorkflowEventModel.idempotency_key == f"{continuation.id}:{event_key}",
+                )
+            )
+            if event is not None:
+                if (event.payload or {}).get("request_checksum") != request_checksum:
+                    raise StageRecoveryError(
+                        "IDEMPOTENCY_PAYLOAD_MISMATCH",
+                        "Recovery retry key was already used with a different payload",
+                    )
+                return self._result(operation, continuation, True)
+            if operation.status != "FAILED":
+                raise StageRecoveryError(
+                    "RECOVERY_RETRY_NOT_ELIGIBLE",
+                    "Only a failed stage recovery can be retried",
+                )
+            if continuation.state_version != expected_state_version:
+                raise StageRecoveryError(
+                    "TRANSFORMATION_STATE_CONFLICT",
+                    "Transformer state changed; refresh authoritative state",
+                )
+            if operation.last_error_code not in {
+                "RECOVERY_AUTHORITY_MISSING",
+                "STAGE_RECOVERY_AUTHORITY_MISSING",
+                "RECOVERY_CONTINUATION_AUTHORITY_INVALID",
+            }:
+                raise StageRecoveryError(
+                    "RECOVERY_RETRY_NOT_SAFE",
+                    "Recovery progressed beyond a safely replayable pre-external-work boundary",
+                )
+            if any(
+                getattr(operation, field) is not None
+                for field in (
+                    "command_execution_id",
+                    "preparation_artifact_id",
+                    "prepared_workspace_fingerprint",
+                )
+            ):
+                raise StageRecoveryError(
+                    "RECOVERY_RETRY_NOT_SAFE",
+                    "Recovery has durable external-work evidence and cannot restart blindly",
+                )
+            active_command = session.scalar(
+                select(CommandExecutionModel.id).where(
+                    CommandExecutionModel.run_id == run_id,
+                    CommandExecutionModel.stage_id == operation.stage_id,
+                    CommandExecutionModel.status.in_(("queued", "pending", "running")),
+                )
+            )
+            if active_command is not None:
+                raise StageRecoveryError(
+                    "RECOVERY_RETRY_NOT_SAFE",
+                    "An active command still owns the recovery boundary",
+                )
+            now = self._now()
+            operation.status = "RECONSTRUCTING"
+            operation.last_error_code = None
+            operation.last_error_message = None
+            operation.updated_at = now
+            continuation.status = "blocked"
+            continuation.current_node = "lockfile_generation"
+            continuation.worker_id = None
+            continuation.lease_expires_at = None
+            continuation.waiting_execution_id = None
+            continuation.last_error_code = "RECOVERY_ACTION_REQUIRED"
+            continuation.last_error_message = (
+                f"Stage recovery {operation.id} retry is active; use RECOVER_STAGE"
+            )
+            previous_state_version = continuation.state_version
+            continuation.state_version += 1
+            continuation.updated_at = now
+            append_continuation_event(
+                session,
+                continuation,
+                event_type=WorkflowEventType.STAGE_RECOVERY_OPERATION_RETRIED,
+                key=event_key,
+                reason="failed stage recovery retried from its durable pre-external-work boundary",
+                actor=actor,
+                occurred_at=now,
+                payload={
+                    "recovery_id": operation.id,
+                    "request_checksum": request_checksum,
+                    "recovery_checksum": operation.recovery_checksum,
+                    "previous_state_version": previous_state_version,
+                    "next_state_version": continuation.state_version,
+                    "retry_status": operation.status,
+                    "correlation_id": correlation_id,
+                },
             )
             return self._result(operation, continuation, False)
 
@@ -683,7 +822,7 @@ class StageRecoveryService:
             operation = session.get(StageRecoveryOperationModel, operation_id)
             if operation is None or operation.status != "RECONSTRUCTING":
                 return
-            continuation = session.get(TransformationContinuationModel, operation.run_id)
+            continuation = self._continuation_for_operation(session, operation)
             checkpoint = session.get(StageCheckpointModel, operation.checkpoint_id)
             run = session.get(MigrationRunModel, operation.run_id)
             if continuation is None or checkpoint is None or run is None:
@@ -726,7 +865,7 @@ class StageRecoveryService:
             )
         with self._scope() as session:
             operation = session.get(StageRecoveryOperationModel, operation_id)
-            continuation = session.get(TransformationContinuationModel, operation.run_id)
+            continuation = self._continuation_for_operation(session, operation)
             checkpoint = session.get(StageCheckpointModel, operation.checkpoint_id)
             binding = session.scalar(
                 select(StageWorkspaceBindingModel).where(
@@ -777,11 +916,12 @@ class StageRecoveryService:
             operation.updated_at = self._now()
 
     def _advance_classification(self, operation_id: str) -> None:
+        replay_context = None
         with self._scope() as session:
             operation = session.get(StageRecoveryOperationModel, operation_id)
             if operation is None or operation.status != "RECONSTRUCTED":
                 return
-            continuation = session.get(TransformationContinuationModel, operation.run_id)
+            continuation = self._continuation_for_operation(session, operation)
             stage = session.get(MigrationStageModel, operation.stage_id)
             binding = session.scalar(
                 select(StageWorkspaceBindingModel).where(
@@ -790,6 +930,126 @@ class StageRecoveryService:
                     StageWorkspaceBindingModel.active.is_(True),
                 )
             )
+            if stage is None or binding is None:
+                raise StageRecoveryError(
+                    "RECOVERY_AUTHORITY_MISSING",
+                    "Recovery stage or workspace binding is missing",
+                )
+            replay_context = self._approved_repair_replay_context(
+                session, operation, continuation, binding
+            )
+
+        replay_artifacts = ()
+        if replay_context is not None and replay_context["needs_apply"]:
+            try:
+                prepared, ledger, fingerprint = self._patches.apply(
+                    proposal=replay_context["proposal"],
+                    workspace_path=replay_context["workspace_path"],
+                    expected_fingerprint=replay_context["pre_fingerprint"],
+                    run_id=replay_context["run_id"],
+                    stage_id=replay_context["stage_id"],
+                    artifact_root=replay_context["artifact_root"],
+                    attempt_id=replay_context["attempt_id"],
+                    approved_proposal_checksum=replay_context["proposal_checksum"],
+                    proposal_artifact_checksum=replay_context["proposal_checksum"],
+                )
+            except RepairApplicationError as error:
+                raise StageRecoveryError(
+                    "REPAIR_RECOVERY_REPLAY_INVALID",
+                    error.message,
+                ) from error
+            if fingerprint != replay_context["post_fingerprint"]:
+                raise StageRecoveryError(
+                    "REPAIR_RECOVERY_REPLAY_INVALID",
+                    "Approved repair replay produced an unexpected workspace fingerprint",
+                )
+            replay_artifacts = (prepared, ledger)
+
+        with self._scope() as session:
+            operation = session.get(StageRecoveryOperationModel, operation_id)
+            if operation is None or operation.status != "RECONSTRUCTED":
+                return
+            continuation = self._continuation_for_operation(session, operation)
+            binding = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == operation.run_id,
+                    StageWorkspaceBindingModel.stage_id == operation.stage_id,
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            if replay_context is not None:
+                live = STAGE_FINGERPRINT_PROFILE.fingerprint(
+                    Path(replay_context["workspace_path"])
+                )
+                if live != replay_context["post_fingerprint"]:
+                    raise StageRecoveryError(
+                        "REPAIR_RECOVERY_REPLAY_INVALID",
+                        "Approved repair replay post-state is not authoritative",
+                    )
+                if binding.workspace_fingerprint not in {
+                    replay_context["pre_fingerprint"],
+                    replay_context["post_fingerprint"],
+                }:
+                    raise StageRecoveryError(
+                        "WORKSPACE_BINDING_STALE",
+                        "Workspace binding changed during approved repair replay",
+                    )
+                if binding.workspace_fingerprint != live:
+                    changed = session.execute(
+                        update(StageWorkspaceBindingModel)
+                        .where(
+                            StageWorkspaceBindingModel.id == binding.id,
+                            StageWorkspaceBindingModel.active.is_(True),
+                            StageWorkspaceBindingModel.workspace_fingerprint
+                            == replay_context["pre_fingerprint"],
+                        )
+                        .values(
+                            workspace_fingerprint=live,
+                            last_verified_fingerprint=live,
+                            last_verified_at=self._now(),
+                        )
+                    )
+                    if changed.rowcount != 1:
+                        raise StageRecoveryError(
+                            "WORKSPACE_BINDING_STALE",
+                            "Workspace binding changed before repair replay commit",
+                        )
+                for artifact in replay_artifacts:
+                    self._stage.register_artifact(session, artifact, continuation)
+                replay_event_key = f"stage-recovery:{operation.id}:repair-replay"
+                replay_event = session.scalar(
+                    select(WorkflowEventModel).where(
+                        WorkflowEventModel.run_id == operation.run_id,
+                        WorkflowEventModel.idempotency_key
+                        == f"{continuation.id}:{replay_event_key}",
+                    )
+                )
+                if replay_event is None:
+                    append_continuation_event(
+                        session,
+                        continuation,
+                        event_type=WorkflowEventType.STAGE_RECOVERY_REPAIR_REPLAYED,
+                        key=replay_event_key,
+                        reason="replayed the immutable approved repair postimage during stage recovery",
+                        payload={
+                            "recovery_id": operation.id,
+                            "attempt_id": replay_context["attempt_id"],
+                            "proposal_checksum": replay_context["proposal_checksum"],
+                            "source_fingerprint": replay_context["pre_fingerprint"],
+                            "restored_fingerprint": replay_context["post_fingerprint"],
+                            "prepared_artifact_id": (
+                                replay_artifacts[0].ref.artifact_id
+                                if replay_artifacts
+                                else None
+                            ),
+                            "ledger_artifact_id": (
+                                replay_artifacts[1].ref.artifact_id
+                                if replay_artifacts
+                                else None
+                            ),
+                        },
+                    )
+            stage = session.get(MigrationStageModel, operation.stage_id)
             diagnosis = DependencyRepairPreflightService().classify_current_state(
                 workspace=Path(binding.workspace_path),
                 source_family=stage.source_version_family or "",
@@ -804,12 +1064,200 @@ class StageRecoveryService:
             operation.status = "PREPARING"
             operation.updated_at = self._now()
 
+    def _approved_repair_replay_context(
+        self, session, operation, continuation, binding
+    ) -> dict[str, object] | None:
+        attempt = session.get(RepairAttemptModel, operation.repair_attempt_id)
+        if attempt is None or attempt.checkpoint_id != operation.checkpoint_id:
+            raise StageRecoveryError(
+                "REPAIR_RECOVERY_REPLAY_INVALID",
+                "Recovery repair attempt is not bound to its checkpoint",
+            )
+        if not all(
+            (
+                attempt.proposal_artifact_id,
+                attempt.proposal_checksum,
+                attempt.apply_ledger_artifact_id,
+                attempt.apply_ledger_checksum,
+                attempt.post_fingerprint,
+            )
+        ):
+            raise StageRecoveryError(
+                "REPAIR_RECOVERY_REPLAY_INVALID",
+                "Approved repair replay evidence is incomplete",
+            )
+        gate = session.get(StageGatePackageModel, attempt.g10_gate_package_id)
+        decision = session.scalar(
+            select(StageGateDecisionModel).where(
+                StageGateDecisionModel.gate_package_id == attempt.g10_gate_package_id,
+                StageGateDecisionModel.accepted.is_(True),
+                StageGateDecisionModel.decision == "approve",
+                StageGateDecisionModel.package_checksum == gate.package_checksum
+                if gate is not None
+                else False,
+            )
+        )
+        if (
+            gate is None
+            or gate.gate_id != "G10"
+            or gate.status != "approved"
+            or gate.stale_at is not None
+            or decision is None
+        ):
+            raise StageRecoveryError(
+                "REPAIR_RECOVERY_REPLAY_INVALID",
+                "Approved G10 repair authority is missing or stale",
+            )
+        checkpoint = session.get(StageCheckpointModel, operation.checkpoint_id)
+        pre_fingerprint = self._checkpoint_authority(session, checkpoint, binding)
+        if pre_fingerprint is None or attempt.pre_fingerprint != pre_fingerprint:
+            raise StageRecoveryError(
+                "REPAIR_RECOVERY_REPLAY_INVALID",
+                "Repair preimage is not bound to the authoritative checkpoint",
+            )
+        run = session.get(MigrationRunModel, operation.run_id)
+        proposal = self._read_json_artifact(
+            session,
+            run,
+            operation.stage_id,
+            attempt.proposal_artifact_id,
+            attempt.proposal_checksum,
+        )
+        ledger = self._read_json_artifact(
+            session,
+            run,
+            operation.stage_id,
+            attempt.apply_ledger_artifact_id,
+            attempt.apply_ledger_checksum,
+        )
+        if (
+            ledger.get("schema_version") != "repair-apply-ledger-v1"
+            or ledger.get("attempt_id") != attempt.id
+            or ledger.get("status") not in {"applied", "ledger_only"}
+            or ledger.get("pre_fingerprint") != pre_fingerprint
+            or ledger.get("post_fingerprint") != attempt.post_fingerprint
+        ):
+            raise StageRecoveryError(
+                "REPAIR_RECOVERY_REPLAY_INVALID",
+                "Immutable repair ledger is not bound to the recovery checkpoint",
+            )
+        package_operation = next(
+            (
+                item
+                for item in ledger.get("operations", [])
+                if isinstance(item, dict) and item.get("path") == "package.json"
+            ),
+            None,
+        )
+        package_postimage = (
+            package_operation.get("postimage_sha256")
+            if isinstance(package_operation, dict)
+            else None
+        )
+        if not isinstance(package_postimage, str):
+            raise StageRecoveryError(
+                "REPAIR_RECOVERY_REPLAY_INVALID",
+                "Approved repair ledger has no package.json postimage",
+            )
+        workspace = Path(binding.workspace_path)
+        live = STAGE_FINGERPRINT_PROFILE.fingerprint(workspace)
+        package_checksum = self.file_checksum(workspace / "package.json")
+        if live == attempt.post_fingerprint:
+            if package_checksum != package_postimage:
+                raise StageRecoveryError(
+                    "REPAIR_RECOVERY_REPLAY_INVALID",
+                    "Workspace fingerprint claims the repair postimage but package.json differs",
+                )
+            return {
+                "needs_apply": False,
+                "run_id": operation.run_id,
+                "stage_id": operation.stage_id,
+                "attempt_id": attempt.id,
+                "proposal": proposal,
+                "proposal_checksum": attempt.proposal_checksum,
+                "pre_fingerprint": pre_fingerprint,
+                "post_fingerprint": attempt.post_fingerprint,
+                "workspace_path": str(workspace),
+                "artifact_root": run.artifact_root,
+            }
+        if live != pre_fingerprint:
+            raise StageRecoveryError(
+                "REPAIR_RECOVERY_REPLAY_INVALID",
+                "Workspace is neither the approved repair preimage nor postimage",
+            )
+        proposal_operation = next(
+            (
+                item
+                for item in proposal.get("operations", [])
+                if isinstance(item, dict) and item.get("path") == "package.json"
+            ),
+            None,
+        )
+        if not isinstance(proposal_operation, dict) or proposal_operation.get(
+            "preimage_sha256"
+        ) != package_checksum:
+            raise StageRecoveryError(
+                "REPAIR_RECOVERY_REPLAY_INVALID",
+                "Workspace package.json is not the approved repair preimage",
+            )
+        return {
+            "needs_apply": True,
+            "run_id": operation.run_id,
+            "stage_id": operation.stage_id,
+            "attempt_id": attempt.id,
+            "proposal": proposal,
+            "proposal_checksum": attempt.proposal_checksum,
+            "pre_fingerprint": pre_fingerprint,
+            "post_fingerprint": attempt.post_fingerprint,
+            "workspace_path": str(workspace),
+            "artifact_root": run.artifact_root,
+        }
+
+    @staticmethod
+    def _read_json_artifact(session, run, stage_id, artifact_id, checksum):
+        metadata = session.get(ArtifactMetadataModel, "metadata-" + str(artifact_id))
+        if (
+            metadata is None
+            or metadata.run_id != run.id
+            or metadata.stage_id != stage_id
+            or not metadata.immutable
+            or metadata.checksum != checksum
+        ):
+            raise StageRecoveryError(
+                "REPAIR_RECOVERY_REPLAY_INVALID",
+                "Immutable repair artifact metadata is missing or stale",
+            )
+        try:
+            stored = LocalFilesystemArtifactStore(
+                Path(run.artifact_root).parent,
+                fixed_run_root=Path(run.artifact_root),
+            ).read_artifact(run.id, metadata.relative_path)
+            if stored.ref.artifact_id != artifact_id or stored.ref.checksum != checksum:
+                raise StageRecoveryError(
+                    "REPAIR_RECOVERY_REPLAY_INVALID",
+                    "Immutable repair artifact identity changed",
+                )
+            payload = json.loads(stored.content)
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError) as error:
+            if isinstance(error, StageRecoveryError):
+                raise
+            raise StageRecoveryError(
+                "REPAIR_RECOVERY_REPLAY_INVALID",
+                "Immutable repair artifact cannot be verified",
+            ) from error
+        if not isinstance(payload, dict):
+            raise StageRecoveryError(
+                "REPAIR_RECOVERY_REPLAY_INVALID",
+                "Immutable repair artifact is not a JSON object",
+            )
+        return payload
+
     def _advance_preparation(self, operation_id: str) -> None:
         with self._scope() as session:
             operation = session.get(StageRecoveryOperationModel, operation_id)
             if operation is None or operation.status != "PREPARING":
                 return
-            continuation = session.get(TransformationContinuationModel, operation.run_id)
+            continuation = self._continuation_for_operation(session, operation)
             causal = session.get(CommandExecutionModel, operation.causal_execution_id)
             step = session.scalar(
                 select(StageStepModel).where(
@@ -882,7 +1330,7 @@ class StageRecoveryService:
             operation = session.get(StageRecoveryOperationModel, operation_id)
             if operation is None or operation.status != "VERIFYING":
                 return
-            continuation = session.get(TransformationContinuationModel, operation.run_id)
+            continuation = self._continuation_for_operation(session, operation)
             step = session.scalar(
                 select(StageStepModel).where(
                     StageStepModel.run_id == operation.run_id,
@@ -947,7 +1395,7 @@ class StageRecoveryService:
             operation = session.get(StageRecoveryOperationModel, operation_id)
             if operation is None or operation.status in {"COMPLETED", "FAILED"}:
                 return
-            continuation = session.get(TransformationContinuationModel, operation.run_id)
+            continuation = self._continuation_for_operation(session, operation)
             operation.status = "FAILED"
             operation.last_error_code = code
             operation.last_error_message = message[:4000]
@@ -985,6 +1433,25 @@ class StageRecoveryService:
             )
 
     @staticmethod
+    def _continuation_for_operation(session, operation):
+        continuation_id = getattr(operation, "continuation_id", None)
+        continuation = (
+            session.get(TransformationContinuationModel, continuation_id)
+            if continuation_id
+            else None
+        )
+        if (
+            continuation is None
+            or continuation.run_id != operation.run_id
+            or continuation.current_stage_id != operation.stage_id
+        ):
+            raise StageRecoveryError(
+                "RECOVERY_CONTINUATION_AUTHORITY_INVALID",
+                "Recovery operation is not bound to the authoritative stage continuation",
+            )
+        return continuation
+
+    @staticmethod
     def _active(session, run_id: str, stage_id: str):
         return session.scalar(
             select(StageRecoveryOperationModel)
@@ -1020,6 +1487,7 @@ class StageRecoveryService:
             payload={
                 "recovery_id": operation.id,
                 "stage_id": operation.stage_id,
+                "continuation_id": operation.continuation_id,
                 "kind": operation.kind,
                 "status": operation.status,
                 "causal_execution_id": operation.causal_execution_id,
@@ -1035,6 +1503,7 @@ class StageRecoveryService:
             "run_id": operation.run_id,
             "stage_id": operation.stage_id,
             "recovery_id": operation.id,
+            "continuation_id": operation.continuation_id,
             "kind": operation.kind,
             "status": operation.status,
             "state_version": continuation.state_version,

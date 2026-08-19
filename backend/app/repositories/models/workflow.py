@@ -731,6 +731,9 @@ class StageRecoveryOperationModel(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    continuation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("transformation_continuations.id"), nullable=True, index=True
+    )
     stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
