@@ -18,7 +18,8 @@ from app.api.router import api_router
 from app.core.application import APP_DESCRIPTION, APP_NAME, APP_VERSION
 from app.core.config import get_settings
 from app.core.database import assert_schema_compatible
-from app.repositories.session import check_database_connection, engine, resolved_database_path
+from app.repositories.session import check_database_connection, engine, resolved_database_path, session_scope
+from app.services.factory_runtime_service import FactoryRuntimeService
 
 
 @asynccontextmanager
@@ -28,6 +29,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     path = resolved_database_path()
     print(f"Backend database: {path or '<non-file database>'}", flush=True)
     assert_schema_compatible(engine, get_settings())
+    runtime = FactoryRuntimeService()
+    with session_scope() as session:
+        runtime.assert_active(session)
     settings = get_settings()
     try:
         commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=settings.platform_repository_root, capture_output=True, text=True, timeout=2, check=False).stdout.strip()
@@ -37,6 +41,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     print({
         "startup_provenance": {
             "commit_sha": commit,
+            "runtime_generation_id": runtime.generation,
             "repository_root": str(settings.platform_repository_root),
             "database_path": str(path or "<non-file database>"),
             "artifact_root": str(settings.artifact_root),

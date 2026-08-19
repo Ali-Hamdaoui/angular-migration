@@ -15,6 +15,7 @@ from app.services.failure_evidence_service import (
     FailureEvidenceService,
     validate_context_pack,
 )
+from app.services import repair_application_service
 from app.services.repair_application_service import RepairApplicationError, RepairApplicationService
 
 
@@ -402,3 +403,14 @@ def test_dependency_transition_still_rejects_unproven_npm_package(tmp_path: Path
         )
 
     assert raised.value.code == "REPAIR_DEPENDENCY_EVIDENCE_INVALID"
+
+
+def test_unproven_dependency_transition_is_bounded_semantic_retry():
+    assert "REPAIR_DEPENDENCY_EVIDENCE_INVALID" in repair_application_service._SEMANTIC_RETRY_CODES
+    feedback = repair_application_service._semantic_retry_feedback(
+        "REPAIR_DEPENDENCY_EVIDENCE_INVALID",
+        "field=normalized_failure.failure_diagnosis.package; observed=null",
+    )
+
+    assert "does not prove an Angular peer-dependency conflict" in feedback
+    assert "smallest causal source or configuration repair" in feedback

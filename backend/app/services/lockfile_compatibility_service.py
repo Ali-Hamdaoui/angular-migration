@@ -48,6 +48,52 @@ class LockfileCompatibilityService:
         self._now_provider = now_provider or (lambda: datetime.now(UTC))
 
     @staticmethod
+    def detect_lockfile_format(payload: object) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        version = payload.get("lockfileVersion")
+        return {1: "v1", 2: "v2", 3: "v3"}.get(version)
+
+    @staticmethod
+    def resolve_package_version(payload: object, package_name: str) -> str | None:
+        """Resolve one package from npm v1/v2/v3 shapes, fail-closed."""
+        if not isinstance(payload, dict) or not package_name:
+            return None
+        packages = payload.get("packages")
+        if isinstance(packages, dict):
+            entry = packages.get(f"node_modules/{package_name}")
+            if isinstance(entry, dict) and isinstance(entry.get("version"), str):
+                return entry["version"]
+
+        def walk(node: object) -> str | None:
+            if not isinstance(node, dict):
+                return None
+            entry = node.get(package_name)
+            if isinstance(entry, dict) and isinstance(entry.get("version"), str):
+                return entry["version"]
+            for value in node.values():
+                if isinstance(value, dict):
+                    found = walk(value.get("dependencies"))
+                    if found:
+                        return found
+            return None
+
+        return walk(payload.get("dependencies"))
+
+    @staticmethod
+    def resolve_root_package_version(payload: object, package_name: str) -> str | None:
+        """Resolve only the project's root package, never a nested copy."""
+        if not isinstance(payload, dict) or not package_name:
+            return None
+        packages = payload.get("packages")
+        if isinstance(packages, dict):
+            entry = packages.get(f"node_modules/{package_name}")
+            return entry.get("version") if isinstance(entry, dict) and isinstance(entry.get("version"), str) else None
+        dependencies = payload.get("dependencies")
+        entry = dependencies.get(package_name) if isinstance(dependencies, dict) else None
+        return entry.get("version") if isinstance(entry, dict) and isinstance(entry.get("version"), str) else None
+
+    @staticmethod
     def inspect_lockfile(workspace: Path) -> LockfileDependencySet:
         """Parse package-lock.json into a deterministic dependency set.
 
@@ -67,6 +113,9 @@ class LockfileCompatibilityService:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return LockfileDependencySet(checksum=checksum)
         packages = payload.get("packages", {}) if isinstance(payload, dict) else {}
+        lockfile_version = payload.get("lockfileVersion") if isinstance(payload, dict) else None
+        if isinstance(lockfile_version, int) and lockfile_version not in {1, 2, 3}:
+            return LockfileDependencySet(lockfile_version=lockfile_version, checksum=checksum)
         resolved: dict[str, str] = {}
         if isinstance(packages, dict):
             for key, entry in packages.items():
@@ -97,7 +146,7 @@ class LockfileCompatibilityService:
 
             walk(payload.get("dependencies", {}))
         return LockfileDependencySet(
-            lockfile_version=payload.get("lockfileVersion") if isinstance(payload, dict) and isinstance(payload.get("lockfileVersion"), int) else None,
+            lockfile_version=lockfile_version if isinstance(lockfile_version, int) else None,
             root_dependencies={k: v for k, v in root_deps.items() if isinstance(v, str)},
             resolved_packages=resolved,
             checksum=checksum,
@@ -117,6 +166,13 @@ class LockfileCompatibilityService:
         entry = self._catalogue_entry(source_family, target_family, catalogue_version)
         target_major = _target_major(target_family)
         dependency_set = self.inspect_lockfile(workspace)
+        if dependency_set.lockfile_version is not None and dependency_set.lockfile_version not in {1, 2, 3}:
+            return LockfileCompatibilityVerdict(
+                source_family=source_family,
+                target_family=target_family,
+                status="blocked",
+                blockers=("LOCKFILE_FORMAT_UNSUPPORTED",),
+            )
         expected: dict[str, str | None] = {
             "@angular/core": entry.target_angular_exact,
             "@angular/cli": entry.target_cli_exact,

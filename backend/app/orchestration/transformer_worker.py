@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import traceback
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -18,6 +19,8 @@ from app.services.transformation_continuation_service import (
     TransformationContinuationService,
     append_continuation_event,
 )
+from app.services.factory_runtime_service import FactoryRuntimeService, StaleFactoryRuntimeError
+from app.services.stage_recovery_service import StageRecoveryService
 from app.orchestration.transformer_graph import TransformerWorkflow
 from app.domain.contracts import WorkflowEventType
 
@@ -40,9 +43,13 @@ class TransformerWorker:
         poll_seconds: float | None = None,
     ) -> None:
         settings = get_settings()
-        self.worker_id = worker_id or f"transformer-{os.getpid()}-{uuid4().hex[:8]}"
+        self.factory_runtime = FactoryRuntimeService()
+        self.worker_id = worker_id or (
+            f"transformer-{self.factory_runtime.worker_identity}-{os.getpid()}-{uuid4().hex[:8]}"
+        )
         self.command_executor = command_executor or CommandExecutorService()
         self.continuations = continuation_service or TransformationContinuationService()
+        self.recovery = StageRecoveryService(scope=scope)
         self.workflow = workflow or TransformerWorkflow()
         self._scope = scope
         self.poll_seconds = poll_seconds or settings.transformer_worker_poll_seconds
@@ -50,6 +57,7 @@ class TransformerWorker:
     def run_once(self) -> bool:
         now = datetime.now(UTC)
         with self._scope() as session:
+            self.factory_runtime.assert_active(session)
             self.command_executor.reconcile_expired_executions(session, now)
             self.reconcile_stuck_command_waiters(session, now)
             self._wake_terminal_command_waiters(session, now)
@@ -60,15 +68,60 @@ class TransformerWorker:
                 lease_seconds=get_settings().worker_lease_seconds,
             )
         if execution_id is not None:
+            with self._scope() as session:
+                self.factory_runtime.assert_active(session)
             self.command_executor.execute_claimed_execution(execution_id, self.worker_id)
             self._wake_command_waiter(execution_id)
             return True
+        if self.recovery.advance_next():
+            return True
         with self._scope() as session:
+            self.factory_runtime.assert_active(session)
             continuation = self.continuations.claim_next(session, self.worker_id, now)
-            continuation_id = continuation.id if continuation else None
+            if continuation is None:
+                continuation_id = None
+                claim_snapshot = None
+            else:
+                continuation_id = continuation.id
+                claim_snapshot = {
+                    "continuation_id": continuation.id,
+                    "run_id": continuation.run_id,
+                    "stage_id": continuation.current_stage_id,
+                    "current_node": continuation.current_node,
+                    "state_version": continuation.state_version,
+                    "worker_id": continuation.worker_id,
+                    "claim_count": continuation.claim_count,
+                    "claimed_at": now.isoformat(),
+                }
         if continuation_id is None:
             return False
-        self.workflow.invoke(continuation_id, self.worker_id)
+        try:
+            with self._scope() as session:
+                self.factory_runtime.assert_active(session)
+            self.workflow.invoke(continuation_id, self.worker_id)
+        except Exception as exc:
+            LOGGER.exception(
+                "Transformer workflow invocation failed",
+                extra={"continuation_id": continuation_id, "worker_id": self.worker_id},
+            )
+            try:
+                with self._scope() as session:
+                    self.continuations.record_unhandled_workflow_fault(
+                        session,
+                        continuation_id=continuation_id,
+                        claimed_worker_id=self.worker_id,
+                        claim_snapshot=claim_snapshot or {},
+                        exception_type=type(exc).__name__,
+                        sanitized_message=" ".join(str(exc).split())[:2000],
+                        traceback_text=traceback.format_exc(),
+                    )
+            except StaleFactoryRuntimeError:
+                raise
+            except Exception:
+                LOGGER.exception(
+                    "Failed to persist Transformer workflow fault",
+                    extra={"continuation_id": continuation_id, "worker_id": self.worker_id},
+                )
         return True
 
     def reconcile_stuck_command_waiters(self, session, now: datetime | None = None) -> list[str]:
@@ -339,6 +392,9 @@ class TransformerWorker:
         while not stop.is_set():
             try:
                 worked = self.run_once()
+            except StaleFactoryRuntimeError:
+                LOGGER.error("STALE_FACTORY_RUNTIME: worker is fenced and will stop")
+                return
             except Exception:
                 LOGGER.exception("Transformer worker iteration failed")
                 worked = False

@@ -17,7 +17,10 @@ from app.artifact_store import (
 )
 from app.domain.contracts import ArtifactType
 from app.domain.transformation import FailureRoute
-from app.services.dependency_closure_service import installed_dependency_version
+from app.services.dependency_closure_service import (
+    installed_dependency_version,
+    is_exact_version,
+)
 
 
 CONTEXT_PACK_SCHEMA_VERSION = "repair-context-pack-v1"
@@ -126,7 +129,7 @@ class FailureEvidenceService:
         normalized: dict[str, object],
     ) -> dict[str, object] | None:
         """Deterministic peer-conflict diagnosis for a failed Angular update."""
-        if normalized.get("command_id") == "npm-lockfile-generate":
+        if str(normalized.get("command_id") or "").startswith("npm-"):
             return FailureEvidenceService.diagnose_npm_eresolve_failure(normalized)
         if normalized.get("command_id") != "angular-update-exact":
             return None
@@ -134,6 +137,9 @@ class FailureEvidenceService:
         message = _ANSI_ESCAPE.sub("", message)
         if not message:
             return None
+        npm_diagnosis = FailureEvidenceService.diagnose_npm_eresolve_failure(normalized)
+        if npm_diagnosis is not None:
+            return npm_diagnosis
         lowered = message.lower()
         if not any(marker in lowered for marker in _ANGULAR_PEER_CONFLICT_MARKERS):
             return None
@@ -191,7 +197,10 @@ class FailureEvidenceService:
         normalized: dict[str, object],
     ) -> dict[str, object] | None:
         """Parse only npm's persisted ERESOLVE peer-conflict structure."""
-        if normalized.get("command_id") != "npm-lockfile-generate":
+        command_id = str(normalized.get("command_id") or "")
+        if not (
+            command_id.startswith("npm-") or command_id == "angular-update-exact"
+        ):
             return None
         message = _ANSI_ESCAPE.sub(
             "", str(normalized.get("failure_message") or "")
@@ -214,7 +223,7 @@ class FailureEvidenceService:
                 "blocking_dependency": blocking,
                 "package_version": package_version,
                 "required_peer_range": required,
-                "installed_version": None,
+                "installed_version": _installed_version_of(message, blocking),
                 "required_ranges": {blocking: required},
                 "proposed_angular_version": None,
             }
@@ -235,9 +244,23 @@ class FailureEvidenceService:
                 not isinstance(diagnosis, dict)
                 or not isinstance(diagnosis.get("package"), str)
                 or not diagnosis.get("required_ranges")
+                or (
+                    _NPM_ERESOLVE_MARKER_RE.search(
+                        str(normalized.get("failure_message") or "")
+                    )
+                    and diagnosis.get("source") != "npm_eresolve_peer_conflict"
+                )
+                or (
+                    diagnosis.get("source") == "npm_eresolve_peer_conflict"
+                    and not is_exact_version(diagnosis.get("installed_version"))
+                )
             )
         ):
-            reparsed = FailureEvidenceService.diagnose_angular_update_failure(normalized)
+            reparsed = (
+                FailureEvidenceService.diagnose_npm_eresolve_failure(normalized)
+                if str(normalized.get("command_id") or "").startswith("npm-")
+                else FailureEvidenceService.diagnose_angular_update_failure(normalized)
+            )
             if reparsed is not None:
                 normalized = {**normalized, "failure_diagnosis": reparsed}
                 evidence = {**evidence, "normalized_failure": normalized}
@@ -295,14 +318,24 @@ class FailureEvidenceService:
             "failure_code": execution.failure_code if execution else None,
             "failure_message": (execution.failure_message or "")[:2000] if execution else None,
         }
-        if normalized["command_id"] in {"angular-update-exact", "npm-lockfile-generate"}:
+        if normalized["command_id"] == "angular-update-exact" or str(
+            normalized["command_id"] or ""
+        ).startswith("npm-"):
             if normalized["command_id"] == "angular-update-exact":
                 normalized["command_allows_dirty"] = "--allow-dirty" in (execution.arguments or [])
             diagnosis = self.diagnose_angular_update_failure(normalized)
-            if isinstance(diagnosis, dict) and isinstance(diagnosis.get("package"), str):
+            installed_package = (
+                diagnosis.get("blocking_dependency")
+                if isinstance(diagnosis, dict)
+                and diagnosis.get("source") == "npm_eresolve_peer_conflict"
+                else diagnosis.get("package")
+                if isinstance(diagnosis, dict)
+                else None
+            )
+            if isinstance(installed_package, str):
                 try:
                     diagnosis["installed_version"] = installed_dependency_version(
-                        Path(binding.workspace_path), diagnosis["package"]
+                        Path(binding.workspace_path), installed_package
                     )
                 except ValueError:
                     pass

@@ -46,6 +46,13 @@ class DependencyTransitionBundle:
 # False) are installed only when the authoritative package.json already declares
 # them. Order is the install order: required companions first, primary last.
 _COMPATIBLE_REINSTALL_BUNDLES: dict[tuple[str, int], tuple[tuple[str, str, bool], ...]] = {
+    # Angular 13's build tool declares a TypeScript ~4.4.3 peer.  npm may
+    # select build-angular 13.0.4 for the planned 13.0.x transition, so the
+    # governed detach/update/reattach path binds both exact package versions.
+    ("@angular-devkit/build-angular", 13): (
+        ("typescript", "4.4.4", True),
+        ("@angular-devkit/build-angular", "13.0.4", True),
+    ),
     ("@angular-builders/jest", 19): (("@angular-builders/jest", "19.0.0", True),),
     ("jest-preset-angular", 19): (("jest-preset-angular", "14.4.0", True),),
     ("jest-preset-angular", 20): (("jest-preset-angular", "14.6.2", True),),
@@ -58,10 +65,60 @@ _COMPATIBLE_REINSTALL_BUNDLES: dict[tuple[str, int], tuple[tuple[str, str, bool]
 }
 
 
+def _range_lower_bound(value: str) -> str | None:
+    # npm peer ranges commonly omit the patch component (for example >=3.8).
+    # Keep the lower-bound derivation conservative: only accept a range that
+    # starts with a lower-bound-compatible comparator, never an upper bound.
+    match = re.match(
+        r"\s*(?:\^|~|>=|>|=)?\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?",
+        value or "",
+    )
+    if not match:
+        return None
+    major, minor, patch = match.groups()
+    return f"{major}.{minor or '0'}.{patch or '0'}"
+
+
+def _derived_reinstall_authority(
+    package: str,
+    required_ranges: dict[str, str] | None,
+    installed_version: str | None,
+) -> tuple[tuple[str, str, bool], ...] | None:
+    """Derive one exact peer target from immutable peer-range evidence."""
+    if not isinstance(required_ranges, dict):
+        return None
+    range_value = required_ranges.get(package)
+    if not isinstance(range_value, str) or not range_value.strip():
+        return None
+    candidates = [
+        version
+        for branch in range_value.split("||")
+        if (version := _range_lower_bound(branch.strip())) is not None
+    ]
+    if not candidates:
+        return None
+    installed_major = _major(installed_version)
+    same_major = [version for version in candidates if _major(version) == installed_major]
+    selected = max(same_major or candidates, key=_version_key)
+    return ((package, selected, True),)
+
+
+def _version_key(value: str) -> tuple[int, int, int]:
+    return tuple(int(part) for part in value.split("."))
+
+
 def _compatible_reinstall_authority(
-    package: str, target_major: int
+    package: str,
+    target_major: int,
+    *,
+    required_ranges: dict[str, str] | None = None,
+    installed_version: str | None = None,
 ) -> tuple[tuple[str, str, bool], ...]:
     authority = _COMPATIBLE_REINSTALL_BUNDLES.get((package, target_major))
+    if authority is None:
+        authority = _derived_reinstall_authority(
+            package, required_ranges, installed_version
+        )
     if authority is None:
         raise ValueError(
             "field=operations.0.target_state.target_version; "
@@ -89,9 +146,20 @@ def is_exact_version(value: object) -> bool:
     return isinstance(value, str) and _EXACT_VERSION.fullmatch(value) is not None
 
 
-def compatible_reinstall_version(package: str, target_major: int) -> str:
+def compatible_reinstall_version(
+    package: str,
+    target_major: int,
+    *,
+    required_ranges: dict[str, str] | None = None,
+    installed_version: str | None = None,
+) -> str:
     """Resolve the backend-approved exact primary reinstall version, or fail closed."""
-    authority = _compatible_reinstall_authority(package, target_major)
+    authority = _compatible_reinstall_authority(
+        package,
+        target_major,
+        required_ranges=required_ranges,
+        installed_version=installed_version,
+    )
     primary = next((entry for entry in authority if entry[0] == package), None)
     if primary is None or not is_exact_version(primary[1]):
         raise ValueError(
@@ -104,7 +172,12 @@ def compatible_reinstall_version(package: str, target_major: int) -> str:
 
 
 def compatible_reinstall_bundle(
-    package: str, target_major: int, workspace: Path
+    package: str,
+    target_major: int,
+    workspace: Path,
+    *,
+    required_ranges: dict[str, str] | None = None,
+    installed_version: str | None = None,
 ) -> DependencyTransitionBundle:
     """Resolve the deterministic backend-owned transition bundle, or fail closed.
 
@@ -113,7 +186,12 @@ def compatible_reinstall_bundle(
     package.json already declares them. Unknown package/Angular-major
     combinations fail closed.
     """
-    authority = _compatible_reinstall_authority(package, target_major)
+    authority = _compatible_reinstall_authority(
+        package,
+        target_major,
+        required_ranges=required_ranges,
+        installed_version=installed_version,
+    )
     manifest = _read_json(Path(workspace) / "package.json")
     if manifest is None:
         raise ValueError("authoritative package.json is missing or invalid")
@@ -165,13 +243,39 @@ def _evidence_error(
 
 
 def installed_dependency_version(workspace: Path, package: str) -> str:
-    """Resolve the exact installed package version from backend-owned state."""
+    """Resolve the exact installed package version from backend-owned state.
+
+    npm lockfile v1 stores dependency records under ``dependencies`` rather
+    than the npm v2+ ``packages`` map.  Check that authoritative lockfile
+    shape before consulting ``node_modules``; recovery checkpoints deliberately
+    omit the mutable install tree.
+    """
     lock = _read_json(Path(workspace) / "package-lock.json") or {}
     lock_packages = lock.get("packages")
     lock_entry = lock_packages.get(f"node_modules/{package}") if isinstance(lock_packages, dict) else None
     lock_version = lock_entry.get("version") if isinstance(lock_entry, dict) else None
     if is_exact_version(lock_version):
         return lock_version
+
+    def find_legacy_entry(dependencies: object) -> dict | None:
+        if not isinstance(dependencies, dict):
+            return None
+        direct = dependencies.get(package)
+        if isinstance(direct, dict):
+            return direct
+        for entry in dependencies.values():
+            if not isinstance(entry, dict):
+                continue
+            nested = find_legacy_entry(entry.get("dependencies"))
+            if nested is not None:
+                return nested
+        return None
+
+    legacy_entry = find_legacy_entry(lock.get("dependencies"))
+    legacy_version = legacy_entry.get("version") if legacy_entry else None
+    if is_exact_version(legacy_version):
+        return legacy_version
+
     installed = _read_json(Path(workspace) / "node_modules" / package / "package.json")
     installed_version = installed.get("version") if installed is not None else None
     if is_exact_version(installed_version):
@@ -197,7 +301,7 @@ def validate_dependency_transition_evidence(
         and (
             normalized.get("command_id") == "angular-update-exact"
             or (
-                normalized.get("command_id") == "npm-lockfile-generate"
+                str(normalized.get("command_id") or "").startswith("npm-")
                 and isinstance(diagnosis, dict)
                 and diagnosis.get("source") == "npm_eresolve_peer_conflict"
             )
@@ -212,7 +316,12 @@ def validate_dependency_transition_evidence(
         or diagnosis.get("kind") != "peer_dependency_conflict"
     ):
         raise ValueError("backend evidence does not prove an Angular peer-dependency conflict")
-    authority_package = diagnosis.get("package")
+    source = diagnosis.get("source")
+    authority_package = (
+        diagnosis.get("blocking_dependency")
+        if source == "npm_eresolve_peer_conflict"
+        else diagnosis.get("package")
+    )
     evidence_installed_version = diagnosis.get("installed_version")
     peer_ranges = diagnosis.get("required_ranges")
     if not isinstance(authority_package, str) or not authority_package.strip():
@@ -258,7 +367,12 @@ def validate_dependency_transition_evidence(
     ):
         raise ValueError("backend evidence proposed Angular version is invalid")
     try:
-        target_version = compatible_reinstall_version(authority_package, target_major)
+        target_version = compatible_reinstall_version(
+            authority_package,
+            target_major,
+            required_ranges=peer_ranges,
+            installed_version=installed_version,
+        )
     except ValueError as error:
         raise _evidence_error(
             evidence,
@@ -324,6 +438,17 @@ def verify_npm_eresolve_attempted_resolution_state(
         if isinstance(manifest.get(section), dict)
         and blocking_dependency in manifest[section]
     ]
+    if len(blocking_sections) == 1:
+        return
+    if len(blocking_sections) == 0:
+        try:
+            detached_version = installed_dependency_version(workspace, blocking_dependency)
+        except ValueError as error:
+            raise ValueError(
+                "blocking dependency is missing from the manifest and has no authoritative detached version"
+            ) from error
+        if detached_version == diagnosis.get("installed_version"):
+            return
     if len(blocking_sections) != 1:
         raise ValueError("blocking dependency is missing or ambiguous in root dependency state")
 
@@ -345,13 +470,25 @@ def verify_dependency_transition_evidence_for_source(
         package=package,
         installed_version=installed_version,
         peer_ranges=peer_ranges,
+        allow_missing_installed_metadata=diagnosis.get("source") is None,
     )
 
 
 def verify_dependency_transition_state(
-    workspace: Path, *, package: str, installed_version: str, peer_ranges: dict[str, str]
+    workspace: Path,
+    *,
+    package: str,
+    installed_version: str,
+    peer_ranges: dict[str, str],
+    allow_missing_installed_metadata: bool = False,
 ) -> None:
-    """Prove the package was present in the authoritative pre-transition state."""
+    """Prove the package was present in the authoritative pre-transition state.
+
+    Immutable recovery checkpoints may omit ``node_modules``. In that case
+    the exact lockfile version is authoritative; installed metadata is still
+    checked whenever it is present. Both npm v1 and npm v2+ lockfile layouts
+    are supported.
+    """
     manifest = _read_json(Path(workspace) / "package.json")
     if manifest is None:
         raise ValueError("authoritative package.json is missing or invalid")
@@ -370,13 +507,25 @@ def verify_dependency_transition_state(
         else None
     )
     lock_root = lock_packages.get("") if isinstance(lock_packages, dict) else None
-    lock_present = [
-        section
-        for section in ("dependencies", "devDependencies")
-        if isinstance(lock_root, dict)
-        and isinstance(lock_root.get(section), dict)
-        and package in lock_root[section]
-    ]
+    if isinstance(lock_root, dict):
+        lock_present = [
+            section
+            for section in ("dependencies", "devDependencies")
+            if isinstance(lock_root.get(section), dict) and package in lock_root[section]
+        ]
+    else:
+        legacy_dependencies = lock.get("dependencies") if isinstance(lock, dict) else None
+        lock_present = [
+            "dependencies"
+            if isinstance(legacy_dependencies, dict) and package in legacy_dependencies
+            else ""
+        ]
+        lock_present = [item for item in lock_present if item]
+        lock_entry = (
+            legacy_dependencies.get(package)
+            if isinstance(legacy_dependencies, dict)
+            else None
+        )
     if (
         not isinstance(lock_entry, dict)
         or lock_entry.get("version") != installed_version
@@ -384,6 +533,8 @@ def verify_dependency_transition_state(
     ):
         raise ValueError("package-lock.json blocking package state does not match backend evidence")
     installed = _read_json(Path(workspace) / "node_modules" / package / "package.json")
+    if installed is None and allow_missing_installed_metadata:
+        return
     if installed is None or installed.get("version") != installed_version:
         raise ValueError("installed blocking package version does not match backend evidence")
     if not peer_ranges:

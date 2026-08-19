@@ -60,6 +60,23 @@ class BaselineTargetInventory:
     angular_json_present: bool
 
 
+def latest_records_by_key(records: Iterable[Any], key) -> tuple[Any, ...]:
+    """Select the newest durable attempt for each evidence key."""
+    latest: dict[Any, Any] = {}
+    for record in records:
+        record_key = key(record)
+        if record_key is None:
+            continue
+        current = latest.get(record_key)
+        if current is None or _record_order(record) > _record_order(current):
+            latest[record_key] = record
+    return tuple(latest.values())
+
+
+def _record_order(record: Any) -> tuple[str, str, str]:
+    return tuple(str(getattr(record, name, "") or "") for name in ("updated_at", "created_at", "id"))
+
+
 @dataclass(frozen=True)
 class BaselineTargetResult:
     target_id: str
@@ -116,7 +133,9 @@ class BaselineTargetDiscoveryService:
             if isinstance(script, str) and script.strip():
                 target_id = f"script:{script_name}"
                 if not any(item.target_id == target_id for item in targets):
-                    targets.append(BaselineTarget(target_id, kind, None, None, target_id.replace(":", "__"), "npm", ("run", script_name)))
+                    non_watching = kind is BaselineTargetKind.TEST and self._is_angular_test_script(script)
+                    arguments = ("run", script_name, "--", "--watch=false") if non_watching else ("run", script_name)
+                    targets.append(BaselineTarget(target_id, kind, None, None, target_id.replace(":", "__"), "npm", arguments))
 
         # Keep the matrix honest: absent test/lint configuration is represented
         # explicitly and never interpreted as a successful command.
@@ -145,6 +164,8 @@ class BaselineTargetDiscoveryService:
             arguments = ["ng", kind.value, project]
             if configuration:
                 arguments.extend(("--configuration", configuration))
+            if kind is BaselineTargetKind.TEST:
+                arguments.append("--watch=false")
             yield BaselineTarget(target_id, kind, project, configuration, target_id.replace(":", "__"), "npx", tuple(arguments), builder=builder)
 
     @staticmethod
@@ -160,6 +181,11 @@ class BaselineTargetDiscoveryService:
             return False
         options = definition.get("options", {})
         return not options or isinstance(options, dict) and not any(key in options for key in ("config", "jestConfig", "runInBand", "watch", "coverage"))
+
+    @staticmethod
+    def _is_angular_test_script(script: str) -> bool:
+        normalized = script.strip().lower()
+        return normalized.startswith(("ng test", "ng.cmd test", "npx ng test", "npx.cmd ng test"))
 
     @staticmethod
     def _supported_builder(kind: BaselineTargetKind, builder: str) -> bool:

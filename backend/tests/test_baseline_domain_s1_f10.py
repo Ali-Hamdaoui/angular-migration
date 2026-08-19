@@ -56,6 +56,22 @@ def test_lockfile_mismatch_is_blocked_without_rewriting_metadata(tmp_path: Path)
     assert (tmp_path / "package-lock.json").read_bytes() == lockfile_before
 
 
+def test_legacy_v1_lockfile_resolves_root_dependencies(tmp_path: Path):
+    (tmp_path / "package.json").write_text(json.dumps({"dependencies": {"example": "^1.0.0"}}), encoding="utf-8")
+    (tmp_path / "package-lock.json").write_text(json.dumps({
+        "lockfileVersion": 1,
+        "requires": True,
+        "dependencies": {"example": {"version": "1.2.3", "resolved": "https://registry.npmjs.org/example/-/example-1.2.3.tgz"}},
+    }), encoding="utf-8")
+
+    package = PackageMetadataInspector().inspect(tmp_path)
+    result = LockfilePrequalificationService().inspect(tmp_path, package)
+
+    assert result.status == "valid"
+    assert result.lockfile_version == 1
+    assert result.blockers == ()
+
+
 def test_source_inventory_classifies_non_registry_sources(tmp_path: Path):
     (tmp_path / "package.json").write_text(json.dumps({"dependencies": {
         "git-dep": "git+https://example.test/repo.git",

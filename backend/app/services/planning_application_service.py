@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Callable
 
-from app.domain.command import ANGULAR_UPDATE_V3_RENDERER, TRANSFORMATION_COMMAND_CATALOGUE
+from app.domain.command import ANGULAR_INSTALLED_MIGRATION_RENDERER, ANGULAR_UPDATE_V5_RENDERER, TRANSFORMATION_COMMAND_CATALOGUE
 from app.domain.planning import (
     BuildSystemDecision,
     CommandTemplateReference,
@@ -20,6 +20,7 @@ from app.domain.planning import (
     ValidationPolicy,
     checksum_model,
 )
+from app.services.stage_knowledge_service import StageKnowledgeRegistry
 
 
 class PlanningApplicationError(ValueError):
@@ -87,14 +88,40 @@ class StageExecutionPlanService:
             "tests": (self._command("npm-script-test-ci", request, {"test_script": request.resolved_scripts["test"], "test_watch_flag": "--watch=false"}),),
             "lint": (self._command("npm-script-lint", request, {"lint_script": request.resolved_scripts["lint"]}),) if "lint" in request.resolved_scripts else (),
         }
-        draft = StageExecutionPlan(stage_plan_id=f"stage-plan-{request.run_id}-{stage_id}-v{plan_version}", stage_id=stage_id, plan_version=plan_version, input_fingerprint=request.input_fingerprint, evidence_set_checksum=request.evidence_set_checksum, input_workspace_fingerprint=request.input_workspace_fingerprint, source_family=source_family, source_exact=request.source_exact, target_family=target_family, target_exact=target_exact, target_cli_exact=target_cli_exact, execution_profile_id=request.execution_profile_id, package_manager=request.package_manager, resolved_scripts=dict(request.resolved_scripts), project_targets=dict(request.project_targets), commands=commands, build_system_decision=decision, validation_policy=validation, recovery_policy=recovery, repair_policy=repair, forbidden_change_policy=forbidden, checksum="sha256:" + "0" * 64)
+        if request.installed_migration_fallback and not StageKnowledgeRegistry.allows_installed_migration_fallback(
+            StageKnowledgeRegistry().entry(_major(source_family), _major(target_family)),
+            request.capability_facts,
+        ):
+            raise PlanningApplicationError(
+                "INSTALLED_MIGRATION_FALLBACK_NOT_AUTHORIZED",
+                "Installed Angular migrations require an approved stage-plan policy.",
+                409,
+            )
+        if request.installed_migration_fallback:
+            commands["installed_migration_fallback"] = (
+                self._command(
+                    "angular-migrate-installed",
+                    request,
+                    {
+                        "package": "@angular/core",
+                        "from_version": request.source_exact,
+                        "to_version": target_exact,
+                    },
+                ),
+            )
+        knowledge = StageKnowledgeRegistry().entry(_major(source_family), _major(target_family))
+        dispositions = StageKnowledgeRegistry.dependency_dispositions(knowledge, request.capability_facts)
+        draft = StageExecutionPlan(stage_plan_id=f"stage-plan-{request.run_id}-{stage_id}-v{plan_version}", stage_id=stage_id, plan_version=plan_version, input_fingerprint=request.input_fingerprint, evidence_set_checksum=request.evidence_set_checksum, input_workspace_fingerprint=request.input_workspace_fingerprint, source_family=source_family, source_exact=request.source_exact, target_family=target_family, target_exact=target_exact, target_cli_exact=target_cli_exact, execution_profile_id=request.execution_profile_id, capability_snapshot_id=request.capability_snapshot_id, capability_snapshot_checksum=request.capability_snapshot_checksum, expected_dependency_changes=dispositions, package_manager=request.package_manager, resolved_scripts=dict(request.resolved_scripts), project_targets=dict(request.project_targets), commands=commands, build_system_decision=decision, validation_policy=validation, recovery_policy=recovery, repair_policy=repair, forbidden_change_policy=forbidden, checksum="sha256:" + "0" * 64)
         return draft.model_copy(update={"checksum": checksum_model(draft)})
 
     @staticmethod
     def _command(command_id, request, parameter_bindings=None):
         if command_id == "angular-update-exact":
-            definition = ANGULAR_UPDATE_V3_RENDERER
-            template_version = 3
+            definition = ANGULAR_UPDATE_V5_RENDERER
+            template_version = 5
+        elif command_id == "angular-migrate-installed":
+            definition = ANGULAR_INSTALLED_MIGRATION_RENDERER
+            template_version = 1
         else:
             definition = TRANSFORMATION_COMMAND_CATALOGUE[command_id]
             template_version = 1
@@ -123,7 +150,14 @@ class MigrationPlanService:
             run_scoped_stage_id(request.run_id, item[2])
             for item in request.stage_route
         )
-        draft = MigrationPlan(plan_id=f"plan-{request.run_id}-v{plan_version}", run_id=request.run_id, version=plan_version, source_family=request.source_family, source_exact=request.source_exact, target_family=request.target_family, route=route, catalogue_version=request.catalogue_version, repair_policy=repair, checksum="sha256:" + "0" * 64)
+        dispositions = {
+            item[2]: StageKnowledgeRegistry.dependency_dispositions(
+                StageKnowledgeRegistry().entry(_major(item[0]), _major(item[1])),
+                request.capability_facts,
+            )
+            for item in request.stage_route
+        }
+        draft = MigrationPlan(plan_id=f"plan-{request.run_id}-v{plan_version}", run_id=request.run_id, version=plan_version, source_family=request.source_family, source_exact=request.source_exact, target_family=request.target_family, route=route, catalogue_version=request.catalogue_version, repair_policy=repair, capability_snapshot_id=request.capability_snapshot_id, capability_snapshot_checksum=request.capability_snapshot_checksum, stage_dependency_dispositions=dispositions, checksum="sha256:" + "0" * 64)
         return draft.model_copy(update={"checksum": checksum_model(draft)})
 
 
@@ -175,3 +209,7 @@ class PlanningApplicationService:
     @staticmethod
     def _request_checksum(request: PlanGenerationRequest) -> str:
         return "sha256:" + hashlib.sha256(json.dumps(request.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _major(family: str) -> int:
+    return int(family.removeprefix("angular-").removesuffix(".x"))

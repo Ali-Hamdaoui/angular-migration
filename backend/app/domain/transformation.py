@@ -229,3 +229,8 @@ class RepairRevisionRequest(RepairDecisionRequest):
         if any(_UNSAFE_PATH_TOKEN.search(token) for token in tokens if token):
             raise ValueError("filesystem paths are forbidden")
         return value
+
+
+class LegacyRepairOverrideRecoveryRequest(RepairRevisionRequest):
+    expected_state_version: int = Field(ge=1)
+    correlation_id: str = Field(min_length=1, max_length=128)

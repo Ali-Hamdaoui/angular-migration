@@ -32,10 +32,17 @@ def test_generates_immutable_plan_and_exact_first_stage_contract():
     )
     assert result.first_stage_plan.target_exact == "19.2.0"
     assert result.first_stage_plan.commands["angular_update"][0].shell is False
+    update = result.first_stage_plan.commands["angular_update"][0]
+    assert update.template_id == "tpl-angular-update-exact-v5"
+    assert update.template_version == 5
+    assert "--allow-dirty" not in update.arguments
+    assert "--force" not in update.arguments
+    assert "--legacy-peer-deps" not in update.arguments
     assert result.first_stage_plan.forbidden_change_policy.actions
     assert result.plan.checksum.startswith("sha256:")
     assert result.first_stage_plan.checksum.startswith("sha256:")
     assert result.first_stage_plan.commands["lint"] == ()
+    assert "installed_migration_fallback" not in result.first_stage_plan.commands
     assert {
         command.runtime_profile_checksum
         for commands in result.first_stage_plan.commands.values()
@@ -43,9 +50,70 @@ def test_generates_immutable_plan_and_exact_first_stage_contract():
     } == {"sha256:" + "4" * 64}
 
 
+def test_stage_knowledge_changes_only_capability_applicable_dispositions():
+    legacy = PlanningApplicationService().generate(
+        request(
+            run_id="run-capabilities-legacy",
+            idempotency_key="plan-capabilities-legacy",
+            capability_facts=(
+                {"key": "package:tslint", "value": "present"},
+                {"key": "package:codelyzer", "value": "present"},
+                {"key": "lockfile_format:v1", "value": "present"},
+            ),
+        )
+    )
+    clean = PlanningApplicationService().generate(
+        request(
+            run_id="run-capabilities-clean",
+            idempotency_key="plan-capabilities-clean",
+            capability_facts=({"key": "lockfile_format:v3", "value": "present"},),
+        )
+    )
+
+    legacy_changes = legacy.first_stage_plan.expected_dependency_changes
+    clean_changes = clean.first_stage_plan.expected_dependency_changes
+    assert {item["package"] for item in legacy_changes} >= {"tslint", "codelyzer", "package-lock"}
+    assert not {"tslint", "codelyzer", "package-lock"} & {item["package"] for item in clean_changes}
+    assert legacy.plan.stage_dependency_dispositions
+    assert legacy.plan.checksum != clean.plan.checksum
+
+
 def test_accepts_current_catalogue_version():
     result = PlanningApplicationService().generate(request(catalogue_version="catalog-v3"))
     assert result.status == "generated"
+
+
+def test_fallback_is_opt_in_and_uses_bounded_installed_migration_command():
+    result = PlanningApplicationService().generate(
+        request(
+            installed_migration_fallback=True,
+            capability_facts=({"key": "policy:installed-migration-fallback", "value": "approved"},),
+        )
+    )
+    fallback = result.first_stage_plan.commands["installed_migration_fallback"][0]
+    assert fallback.command_id == "angular-migrate-installed"
+    assert fallback.executable == "node"
+    assert fallback.arguments == (
+        "backend/app/command_execution/run_installed_migrations.cjs",
+        "@angular/core",
+        "18.2.13",
+        "19.2.0",
+    )
+    assert fallback.shell is False
+
+
+def test_fallback_requires_an_approved_stage_policy():
+    with pytest.raises(PlanningApplicationError, match="approved stage-plan policy"):
+        PlanningApplicationService().generate(request(installed_migration_fallback=True))
+
+
+def test_fallback_rejects_unbounded_bindings():
+    from app.domain.command import ANGULAR_INSTALLED_MIGRATION_RENDERER
+
+    with pytest.raises(ValueError):
+        ANGULAR_INSTALLED_MIGRATION_RENDERER.render_arguments(
+            {"package": "../../package.json", "from_version": "18.2.13", "to_version": "19.2.0"}
+        )
 
 
 def test_generates_checksum_bound_lockfile_generation_authority():

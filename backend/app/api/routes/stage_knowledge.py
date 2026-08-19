@@ -28,6 +28,8 @@ def _entry_dto(entry) -> StageKnowledgeEntryDto:
         expected_transforms=list(entry.expected_transforms),
         validation_expectations=list(entry.validation_expectations),
         expected_dependency_changes=[dict(item) for item in entry.expected_dependency_changes],
+        dependency_rules=[dict(item) for item in entry.dependency_rules],
+        migration_actions=[dict(item) for item in entry.migration_actions],
         known_risks=list(entry.known_risks), version=entry.version, notes=entry.notes,
     )
 
@@ -37,6 +39,7 @@ def _record_dto(row) -> StageKnowledgeEntryRecordDto:
         id=row.id, source_major=row.source_major, target_major=row.target_major,
         expected_transforms=row.expected_transforms, validation_expectations=row.validation_expectations,
         expected_dependency_changes=row.expected_dependency_changes, known_risks=row.known_risks,
+        dependency_rules=row.dependency_rules, migration_actions=row.migration_actions,
         version=row.version, created_by=row.created_by, change_reason=row.change_reason,
         notes=row.notes, created_at=row.created_at,
     )

@@ -25,7 +25,7 @@ from app.artifact_store import (
     LocalFilesystemArtifactStore,
 )
 from app.domain.command import (
-    NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
+    NPM_DEPENDENCY_MATERIALIZE_RENDERER,
     NPM_DEPENDENCY_INSTALL_RENDERER,
     NPM_DEPENDENCY_UNINSTALL_RENDERER,
     TRANSFORMATION_COMMAND_CATALOGUE,
@@ -53,9 +53,13 @@ from app.services.dependency_closure_service import (
     is_exact_version,
     verify_dependency_closure,
     verify_dependency_transition_evidence_for_source,
-    installed_dependency_version,
 )
 from app.services.failure_evidence_service import FailureEvidenceService
+from app.services.lockfile_generation_runner import (
+    LockfileGenerationError,
+    validate_generated_lockfile,
+    workspace_excluding_governed_volatile_fingerprint,
+)
 
 from app.services.repair_application_service import RepairProposal
 from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
@@ -198,14 +202,28 @@ class DependencyTransitionRunner:
             context["attempt"].status = "executing"
             context["attempt"].updated_at = self._now()
         phase = self._current_phase(session, continuation, context)
-        if phase == "uninstall":
+        if phase == "materialize_initial":
+            outcome = self._phase_materialize(session, continuation, context, "initial")
+        elif phase == "fresh_angular_update":
+            outcome = self._phase_update_command(
+                session, continuation, context, "fresh", fresh_evidence=True
+            )
+        elif phase == "materialize_transition":
+            outcome = self._phase_materialize(session, continuation, context, "transition")
+        elif phase == "uninstall":
             outcome = self._phase_uninstall(session, continuation, context)
+        elif phase == "lockfile_detached":
+            outcome = self._phase_lockfile(session, continuation, context, "detached")
+        elif phase == "materialize_detached":
+            outcome = self._phase_materialize(session, continuation, context, "detached")
         elif phase == "angular_update":
-            outcome = self._phase_update(session, continuation, context)
-        elif phase == "normalize_lockfile":
-            outcome = self._phase_normalize_lockfile(session, continuation, context)
+            outcome = self._phase_update_command(
+                session, continuation, context, "detached", fresh_evidence=False
+            )
         elif phase == "reinstall":
             outcome = self._phase_install(session, continuation, context)
+        elif phase == "lockfile_final":
+            outcome = self._phase_lockfile(session, continuation, context, "final")
         elif phase == "npm_ci":
             outcome = self._phase_ci(session, continuation, context)
         elif phase == "dependency_closure":
@@ -221,9 +239,23 @@ class DependencyTransitionRunner:
         return "queued"
 
     def _current_phase(self, session, continuation, context) -> str:
-        uninstall = self._execution(
-            session, context, f"{context['attempt'].id}:transition:uninstall"
-        )
+        initial = self._latest_materialization_execution(session, context, "initial")
+        if not self._verified(session, initial, "dependency-materialization"):
+            return "materialize_initial"
+        fresh = self._execution(session, context, self._key(context, "angular-update:fresh"))
+        if fresh is None or fresh.status in {"pending", "queued", "running"}:
+            return "fresh_angular_update"
+        if fresh.status == "succeeded" and fresh.exit_code == 0:
+            lockfile = self._execution(session, context, self._key(context, "lockfile:final"))
+            if not self._verified(session, lockfile, "dependency-lockfile"):
+                return "lockfile_final"
+            return self._final_phase(session, continuation, context)
+        if not self._has_evidence(session, fresh, "fresh-angular-update-failure"):
+            return "fresh_angular_update"
+        transition = self._latest_materialization_execution(session, context, "transition")
+        if not self._verified(session, transition, "dependency-materialization"):
+            return "materialize_transition"
+        uninstall = self._execution(session, context, self._key(context, "uninstall"))
         uninstall_verified = uninstall is not None and session.scalar(
             select(ArtifactMetadataModel.id).where(
                 ArtifactMetadataModel.owner_reference
@@ -232,14 +264,22 @@ class DependencyTransitionRunner:
         )
         if uninstall is None or uninstall.status != "succeeded" or not uninstall_verified:
             return "uninstall"
-        angular_step = session.scalar(
-            select(StageStepModel).where(
-                StageStepModel.run_id == continuation.run_id,
-                StageStepModel.stage_id == continuation.current_stage_id,
-                StageStepModel.name == "angular_update-0",
-            )
+        detached_lock = self._execution(
+            session, context, self._key(context, "lockfile:detached")
         )
-        if angular_step is None or angular_step.status != "PASSED":
+        if not self._verified(session, detached_lock, "dependency-lockfile"):
+            return "lockfile_detached"
+        detached_materialization = self._execution(
+            session, context, self._key(context, "materialize:detached")
+        )
+        if not self._verified(
+            session, detached_materialization, "dependency-materialization"
+        ):
+            return "materialize_detached"
+        angular = self._execution(
+            session, context, self._key(context, "angular-update:detached")
+        )
+        if angular is None or angular.status != "succeeded" or angular.exit_code != 0:
             return "angular_update"
         install = self._latest_install_execution(session, context)
         install_verified = install is not None and session.scalar(
@@ -249,25 +289,13 @@ class DependencyTransitionRunner:
             )
         )
         if install is None or install.status != "succeeded" or not install_verified:
-            if (
-                install is not None
-                and install.failure_code == "COMMAND_EXIT_NONZERO"
-                and "ERESOLVE" in (install.failure_message or "")
-                and self._install_generation(install) == 1
-            ):
-                if self._normalization_succeeded_after(session, context, install) is None:
-                    return "normalize_lockfile"
-                consistent = False
-                try:
-                    consistent = installed_dependency_version(
-                        context["workspace"], "@angular/platform-browser-dynamic"
-                    ) == installed_dependency_version(
-                        context["workspace"], "@angular/core"
-                    )
-                except ValueError:
-                    consistent = False
-                return "reinstall" if consistent else "normalize_lockfile"
             return "reinstall"
+        final_lock = self._execution(session, context, self._key(context, "lockfile:final"))
+        if not self._verified(session, final_lock, "dependency-lockfile"):
+            return "lockfile_final"
+        return self._final_phase(session, continuation, context)
+
+    def _final_phase(self, session, continuation, context) -> str:
         ci_step = session.scalar(
             select(StageStepModel).where(
                 StageStepModel.run_id == continuation.run_id,
@@ -275,7 +303,115 @@ class DependencyTransitionRunner:
                 StageStepModel.name == "final_install-0",
             )
         )
-        return "npm_ci" if ci_step is None or ci_step.status != "PASSED" else "dependency_closure"
+        ci_execution = (
+            session.get(CommandExecutionModel, ci_step.execution_id)
+            if ci_step is not None and ci_step.execution_id
+            else None
+        )
+        final_lock = self._execution(
+            session, context, self._key(context, "lockfile:final")
+        )
+        fresh_ci = bool(
+            ci_step is not None
+            and ci_step.status == "PASSED"
+            and ci_execution is not None
+            and ci_execution.status == "succeeded"
+            and final_lock is not None
+            and (ci_execution.requested_at or self._now())
+            > (final_lock.finished_at or final_lock.requested_at)
+        )
+        return "dependency_closure" if fresh_ci else "npm_ci"
+
+    @staticmethod
+    def _key(context, suffix: str) -> str:
+        return f"{context['attempt'].id}:transition:v2:{suffix}"
+
+    @staticmethod
+    def _verified(session, execution, owner_suffix: str) -> bool:
+        return bool(
+            execution is not None
+            and execution.status == "succeeded"
+            and execution.exit_code == 0
+            and session.scalar(
+                select(ArtifactMetadataModel.id).where(
+                    ArtifactMetadataModel.owner_reference
+                    == f"{execution.id}:{owner_suffix}"
+                )
+            )
+        )
+
+    @staticmethod
+    def _has_evidence(session, execution, owner_suffix: str) -> bool:
+        return bool(
+            execution is not None
+            and session.scalar(
+                select(ArtifactMetadataModel.id).where(
+                    ArtifactMetadataModel.owner_reference
+                    == f"{execution.id}:{owner_suffix}"
+                )
+            )
+        )
+
+    def requires_safe_restore(self, session, continuation) -> bool:
+        """Return whether the next materialization lacks a restored-state proof."""
+        attempt = session.scalar(
+            select(RepairAttemptModel)
+            .where(
+                RepairAttemptModel.run_id == continuation.run_id,
+                RepairAttemptModel.stage_id == continuation.current_stage_id,
+            )
+            .order_by(RepairAttemptModel.attempt_number.desc())
+        )
+        if attempt is None:
+            raise DependencyTransitionError(
+                "DEPENDENCY_TRANSITION_AUTHORITY_MISSING",
+                "Dependency-transition repair attempt is missing",
+            )
+
+        def execution(suffix: str):
+            return session.scalar(
+                select(CommandExecutionModel).where(
+                    CommandExecutionModel.run_id == continuation.run_id,
+                    CommandExecutionModel.idempotency_key
+                    == f"{attempt.id}:transition:v2:{suffix}",
+                )
+            )
+
+        context = {"run": session.get(MigrationRunModel, continuation.run_id), "attempt": attempt}
+        initial = self._latest_materialization_execution(session, context, "initial")
+        if initial is None:
+            return True
+        if initial.status in {"succeeded", "failed", "timed_out", "cancelled"}:
+            runtime = self._stage.runtime_binding(session, continuation)
+            start = initial.start_fingerprint or {}
+            if (
+                initial.runtime_checksum != runtime["checksum"]
+                or start.get("runtime_checksum") != runtime["checksum"]
+                or start.get("runtime_profile_id") != runtime["profile_id"]
+            ):
+                return True
+        fresh = execution("angular-update:fresh")
+        transition = execution("materialize:transition")
+        binding = self._stage._binding(session, continuation)
+        if (
+            fresh is not None
+            and fresh.status == "failed"
+            and self._has_evidence(session, fresh, "fresh-angular-update-failure")
+            and (fresh.start_fingerprint or {}).get("binding_fingerprint")
+            == binding.workspace_fingerprint
+        ):
+            live = STAGE_FINGERPRINT_PROFILE.fingerprint(Path(binding.workspace_path))
+            fresh.end_fingerprint = {"canonical_source": live}
+            if live != binding.workspace_fingerprint:
+                self._update_binding_fingerprint(
+                    session, continuation, binding, live
+                )
+        return bool(
+            fresh is not None
+            and fresh.status == "failed"
+            and self._has_evidence(session, fresh, "fresh-angular-update-failure")
+            and transition is None
+        )
 
     def _context(self, session, continuation) -> dict[str, object]:
         run = session.get(MigrationRunModel, continuation.run_id)
@@ -471,7 +607,10 @@ class DependencyTransitionRunner:
         angular_major = target_state.angular_major if target_state is not None else None
         try:
             approved_target_version = compatible_reinstall_version(
-                str(blocking_package or ""), int(angular_major) if isinstance(angular_major, int) else -1
+                str(blocking_package or ""),
+                int(angular_major) if isinstance(angular_major, int) else -1,
+                required_ranges=peer_ranges,
+                installed_version=installed_version,
             )
         except ValueError as error:
             raise DependencyTransitionError(
@@ -495,7 +634,11 @@ class DependencyTransitionRunner:
             )
         try:
             bundle = compatible_reinstall_bundle(
-                str(blocking_package), int(angular_major), workspace
+                str(blocking_package),
+                int(angular_major),
+                workspace,
+                required_ranges=peer_ranges,
+                installed_version=installed_version,
             )
         except ValueError as error:
             raise DependencyTransitionError(
@@ -532,6 +675,14 @@ class DependencyTransitionRunner:
         if (
             planned is None
             or planned.get("command_id") != "angular-update-exact"
+            or not planned.get("template_id")
+            or not isinstance(planned.get("template_version"), int)
+            or planned.get("executable") != "npx"
+            or not isinstance(planned.get("arguments"), list)
+            or any(
+                forbidden in (planned.get("arguments") or [])
+                for forbidden in ("--force", "--legacy-peer-deps", "--allow-dirty")
+            )
             or not is_exact_version(target_exact)
             or not is_exact_version(target_cli_exact)
             or target_major is None
@@ -550,6 +701,16 @@ class DependencyTransitionRunner:
             "transition_targets": transition_targets,
             "target_exact": str(target_exact or ""),
             "target_cli_exact": str(target_cli_exact or ""),
+            "angular_command": {
+                "command_id": planned["command_id"],
+                "template_id": planned["template_id"],
+                "template_version": planned["template_version"],
+                "executable": planned["executable"],
+                "arguments": list(planned["arguments"]),
+                "network_profile": planned.get("network_profile")
+                or "approved-registries-only",
+                "timeout_seconds": planned.get("timeout_seconds") or 1800,
+            },
             "execution_profile_id": str(stage_data.get("execution_profile_id") or ""),
             "plan_id": plan.id,
             "plan_version": plan.version,
@@ -572,7 +733,7 @@ class DependencyTransitionRunner:
         keys (``{attempt}:transition:install`` and ``{attempt}:transition:install-v3``)
         which are read for resume compatibility but never written again.
         """
-        prefix = f"{context['attempt'].id}:transition:install"
+        prefix = self._key(context, "install")
         executions = list(
             session.scalars(
                 select(CommandExecutionModel).where(
@@ -590,7 +751,7 @@ class DependencyTransitionRunner:
 
     def _member_install_prefix(self, context, member_index: int) -> str:
         targets = context["intent"]["transition_targets"]
-        base = f"{context['attempt'].id}:transition:install"
+        base = self._key(context, "install")
         if len(targets) == 1:
             return base
         return f"{base}:{member_index}:{targets[member_index]['package'].replace('/', '_')}"
@@ -605,53 +766,398 @@ class DependencyTransitionRunner:
 
     def _next_install_key(self, session, context, member_prefix: str) -> str:
         generation = 1
-        for execution in self._install_executions(session, context):
-            match = re.match(
-                re.escape(member_prefix) + r":attempt-(\d+)$",
-                execution.idempotency_key or "",
-            )
+        pattern = re.compile(re.escape(member_prefix) + r":attempt-([1-9][0-9]*)$")
+        for key in self._consumed_idempotency_keys(
+            session, context, member_prefix, pattern
+        ):
+            match = pattern.fullmatch(key)
             if match is not None:
                 generation = max(generation, int(match.group(1)) + 1)
         return f"{member_prefix}:attempt-{generation}"
 
-    @staticmethod
-    def _install_generation(execution) -> int:
-        match = re.search(r":attempt-(\d+)$", execution.idempotency_key or "")
-        return int(match.group(1)) if match is not None else 1
+    def _phase_materialize(self, session, continuation, context, generation: str) -> str:
+        key = self._key(context, f"materialize:{generation}")
+        execution = self._latest_materialization_execution(session, context, generation)
+        if execution is None:
+            try:
+                validate_generated_lockfile(context["workspace"])
+            except LockfileGenerationError as error:
+                raise DependencyTransitionError(
+                    "DEPENDENCY_MATERIALIZATION_FAILED", error.message
+                ) from error
+            return self._queue_transition_command(
+                session, continuation, context, "materialize", key
+            )
+        if execution.status in {"pending", "queued", "running"}:
+            self._stage._wait_for_command(session, continuation, execution.id)
+            return "waiting"
+        if execution.status != "succeeded" or execution.exit_code != 0:
+            if self._retryable_prelaunch_failure(session, context, generation, execution):
+                retry_key = self._next_materialization_key(session, context, generation)
+                return self._queue_transition_command(
+                    session, continuation, context, "materialize", retry_key
+                )
+            raise DependencyTransitionError(
+                execution.failure_code or "DEPENDENCY_MATERIALIZATION_FAILED",
+                execution.failure_message or "Checkpoint dependency state cannot be materialized with npm ci",
+            )
+        if not self._command_evidence_complete(session, execution):
+            raise DependencyTransitionError(
+                "DEPENDENCY_MATERIALIZATION_EVIDENCE_INVALID",
+                "npm ci terminal evidence is incomplete",
+            )
+        try:
+            self._verify_materialization(session, continuation, context, execution)
+        except DependencyTransitionError as error:
+            if error.code != "DEPENDENCY_MATERIALIZATION_EVIDENCE_INVALID":
+                raise
+            retry_key = self._next_materialization_key(session, context, generation)
+            return self._queue_transition_command(
+                session, continuation, context, "materialize", retry_key
+            )
+        return "continue"
 
-    def _latest_successful_normalization(self, session, context):
-        execution = self._execution(
-            session,
-            context,
-            f"{context['attempt'].id}:transition:normalize-angular-lockfile-v5",
+    def _retryable_prelaunch_failure(self, session, context, generation: str, execution) -> bool:
+        """Allow one durable successor when the Factory failed before spawning npm."""
+        if (
+            execution.status != "failed"
+            or execution.process_id is not None
+            or execution.exit_code is not None
+            or any(
+                (
+                    execution.stdout_artifact_id,
+                    execution.stderr_artifact_id,
+                    execution.command_log_artifact_id,
+                    execution.result_artifact_id,
+                    execution.manifest_artifact_id,
+                )
+            )
+        ):
+            return False
+        return not any(
+            candidate.id != execution.id
+            and candidate.status == "failed"
+            and candidate.process_id is None
+            and candidate.exit_code is None
+            for candidate in self._materialization_executions(
+                session, context, generation
+            )
+        )
+
+    def _verify_materialization(self, session, continuation, context, execution) -> None:
+        workspace = context["workspace"]
+        start = execution.start_fingerprint or {}
+        runtime = self._stage.runtime_binding(session, continuation)
+        required_artifacts = (
+            execution.stdout_artifact_id,
+            execution.stderr_artifact_id,
+            execution.command_log_artifact_id,
+            execution.result_artifact_id,
+            execution.manifest_artifact_id,
         )
         if (
-            execution is not None
-            and execution.status == "succeeded"
-            and execution.exit_code == 0
+            execution.command_id != NPM_DEPENDENCY_MATERIALIZE_RENDERER.command_id
+            or list(execution.arguments or []) != ["ci"]
+            or execution.runtime_checksum != runtime["checksum"]
+            or start.get("runtime_checksum") != runtime["checksum"]
+            or start.get("runtime_profile_id") != runtime["profile_id"]
+            or _file_checksum(workspace / "package.json") != start.get("package_json_sha256")
+            or _file_checksum(workspace / "package-lock.json") != start.get("package_lock_sha256")
+            or _file_checksum(workspace / ".npmrc") != start.get("npmrc_sha256")
+            or any(not artifact_id for artifact_id in required_artifacts)
+            or any(
+                session.get(ArtifactMetadataModel, "metadata-" + str(artifact_id)) is None
+                for artifact_id in required_artifacts
+            )
         ):
-            return execution
-        return None
+            raise DependencyTransitionError(
+                "DEPENDENCY_MATERIALIZATION_EVIDENCE_INVALID",
+                "npm ci materialization is not bound to the manifest, lockfile, npm configuration, and exact stage runtime",
+            )
+        try:
+            lock_status = validate_generated_lockfile(workspace)
+        except LockfileGenerationError as error:
+            raise DependencyTransitionError(
+                "DEPENDENCY_MATERIALIZATION_FAILED", error.message
+            ) from error
+        payload = {
+            "schema_version": "dependency-materialization-verification.v1",
+            "execution_id": execution.id,
+            "attempt_id": context["attempt"].id,
+            "command": {"arguments": list(execution.arguments or []), "exit_code": execution.exit_code},
+            "package_json_sha256": start["package_json_sha256"],
+            "package_lock_sha256": start["package_lock_sha256"],
+            "npmrc_sha256": start["npmrc_sha256"],
+            "runtime_profile_id": runtime["profile_id"],
+            "runtime_checksum": runtime["checksum"],
+            "lockfile_status": lock_status,
+            "artifact_ids": list(required_artifacts),
+        }
+        stored = self._write_or_recover_verification(
+            session, context["run"], continuation, f"{execution.id}.dependency-materialization", payload
+        )
+        self._register_verification_metadata(
+            session,
+            continuation,
+            stored,
+            execution_id=execution.id,
+            owner_reference=f"{execution.id}:dependency-materialization",
+        )
+        execution.end_fingerprint = dict(start)
 
-    def _normalization_succeeded_after(self, session, context, install_execution):
-        """The successful normalization whose completion is newer than the failed install."""
-        normalized = self._latest_successful_normalization(session, context)
-        if normalized is None:
-            return None
-        install_at = install_execution.finished_at or install_execution.requested_at
-        normalize_at = normalized.finished_at or normalized.requested_at
-        if install_at is None or normalize_at is None:
-            return None
-        return normalized if normalize_at > install_at else None
+    def _phase_lockfile(self, session, continuation, context, generation: str) -> str:
+        key = self._key(context, f"lockfile:{generation}")
+        execution = self._execution(session, context, key)
+        if execution is None:
+            return self._queue_transition_command(
+                session, continuation, context, "lockfile", key
+            )
+        if execution.status in {"pending", "queued", "running"}:
+            self._stage._wait_for_command(session, continuation, execution.id)
+            return "waiting"
+        if execution.status != "succeeded" or execution.exit_code != 0:
+            raise DependencyTransitionError(
+                "DEPENDENCY_TRANSITION_LOCKFILE_FAILED",
+                execution.failure_message or "Generic npm lockfile reconciliation failed",
+            )
+        self._verify_lockfile(session, continuation, context, execution)
+        return "continue"
+
+    def _verify_lockfile(self, session, continuation, context, execution) -> None:
+        workspace = context["workspace"]
+        start = execution.start_fingerprint or {}
+        runtime = self._stage.runtime_binding(session, continuation)
+        required_artifacts = (
+            execution.stdout_artifact_id,
+            execution.stderr_artifact_id,
+            execution.command_log_artifact_id,
+            execution.result_artifact_id,
+            execution.manifest_artifact_id,
+        )
+        if (
+            execution.command_id != "npm-lockfile-generate"
+            or list(execution.arguments or [])
+            != ["install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"]
+            or execution.runtime_checksum != runtime["checksum"]
+            or start.get("runtime_checksum") != runtime["checksum"]
+            or start.get("runtime_profile_id") != runtime["profile_id"]
+            or _file_checksum(workspace / "package.json") != start.get("package_json_sha256")
+            or _file_checksum(workspace / ".npmrc") != start.get("npmrc_sha256")
+            or workspace_excluding_governed_volatile_fingerprint(workspace)
+            != start.get("workspace_without_lockfile")
+            or any(not artifact_id for artifact_id in required_artifacts)
+            or any(
+                session.get(ArtifactMetadataModel, "metadata-" + str(artifact_id)) is None
+                for artifact_id in required_artifacts
+            )
+        ):
+            raise DependencyTransitionError(
+                "DEPENDENCY_TRANSITION_LOCKFILE_EVIDENCE_INVALID",
+                "Generic lockfile reconciliation changed unauthorized state or lacks exact runtime evidence",
+            )
+        try:
+            lock_status = validate_generated_lockfile(workspace)
+        except LockfileGenerationError as error:
+            raise DependencyTransitionError(error.code, error.message) from error
+        live = STAGE_FINGERPRINT_PROFILE.fingerprint(workspace)
+        payload = {
+            "schema_version": "dependency-transition-lockfile-verification.v1",
+            "execution_id": execution.id,
+            "attempt_id": context["attempt"].id,
+            "package_json_sha256": start["package_json_sha256"],
+            "package_lock_sha256": _file_checksum(workspace / "package-lock.json"),
+            "npmrc_sha256": start["npmrc_sha256"],
+            "runtime_checksum": runtime["checksum"],
+            "lockfile_status": lock_status,
+            "workspace_fingerprint": live,
+        }
+        stored = self._write_or_recover_verification(
+            session, context["run"], continuation, f"{execution.id}.dependency-lockfile", payload
+        )
+        self._register_verification_metadata(
+            session,
+            continuation,
+            stored,
+            execution_id=execution.id,
+            owner_reference=f"{execution.id}:dependency-lockfile",
+        )
+        execution.end_fingerprint = payload
+        if live != context["binding"].workspace_fingerprint:
+            self._update_binding_fingerprint(
+                session, continuation, context["binding"], live
+            )
+
+    def _phase_update_command(
+        self, session, continuation, context, generation: str, *, fresh_evidence: bool
+    ) -> str:
+        key = self._key(context, f"angular-update:{generation}")
+        execution = self._execution(session, context, key)
+        if execution is None:
+            return self._queue_transition_command(
+                session, continuation, context, "angular_update", key
+            )
+        if execution.status in {"pending", "queued", "running"}:
+            self._stage._wait_for_command(session, continuation, execution.id)
+            return "waiting"
+        if not self._command_evidence_complete(session, execution):
+            raise DependencyTransitionError(
+                "DEPENDENCY_TRANSITION_ANGULAR_EVIDENCE_MISSING",
+                "Angular update terminal evidence is incomplete",
+            )
+        live = STAGE_FINGERPRINT_PROFILE.fingerprint(context["workspace"])
+        execution.end_fingerprint = {"canonical_source": live}
+        if live != context["binding"].workspace_fingerprint:
+            self._update_binding_fingerprint(
+                session, continuation, context["binding"], live
+            )
+        if execution.status == "succeeded" and execution.exit_code == 0:
+            step = session.scalar(
+                select(StageStepModel).where(
+                    StageStepModel.run_id == continuation.run_id,
+                    StageStepModel.stage_id == continuation.current_stage_id,
+                    StageStepModel.name == "angular_update-0",
+                )
+            )
+            if step is not None:
+                step.execution_id = execution.id
+                step.status = "PASSED"
+                step.completed_at = self._now()
+                step.workspace_fingerprint = live
+                step.updated_at = self._now()
+            return "continue"
+        if not fresh_evidence:
+            raise DependencyTransitionError(
+                "DEPENDENCY_TRANSITION_ANGULAR_UPDATE_FAILED",
+                execution.failure_message or "Angular update failed after dependency detach",
+            )
+        self._record_fresh_failure(session, continuation, context, execution)
+        return "continue"
+
+    @staticmethod
+    def _command_evidence_complete(session, execution) -> bool:
+        artifact_ids = (
+            execution.stdout_artifact_id,
+            execution.stderr_artifact_id,
+            execution.command_log_artifact_id,
+            execution.result_artifact_id,
+            execution.manifest_artifact_id,
+        )
+        return bool(
+            all(artifact_ids)
+            and all(
+                session.get(ArtifactMetadataModel, "metadata-" + str(artifact_id))
+                is not None
+                for artifact_id in artifact_ids
+            )
+        )
+
+    def _materialization_executions(self, session, context, generation: str) -> list:
+        prefix = self._key(context, f"materialize:{generation}")
+        executions = list(
+            session.scalars(
+                select(CommandExecutionModel).where(
+                    CommandExecutionModel.run_id == context["run"].id,
+                    CommandExecutionModel.idempotency_key.startswith(prefix),
+                )
+            )
+        )
+        executions.sort(key=lambda execution: (execution.requested_at, execution.id))
+        return executions
+
+    def _latest_materialization_execution(self, session, context, generation: str):
+        executions = self._materialization_executions(session, context, generation)
+        return executions[-1] if executions else None
+
+    def _consumed_idempotency_keys(
+        self, session, context, prefix: str, pattern: re.Pattern[str]
+    ) -> set[str]:
+        """Return strictly shaped keys reserved by authorization or execution."""
+        run_id = context["run"].id
+        stage_id = context["attempt"].stage_id
+        keys: set[str] = set()
+        for model in (CommandExecutionModel, CommandAuthorizationAuditModel):
+            keys.update(
+                key
+                for key in session.scalars(
+                    select(model.idempotency_key).where(
+                        model.run_id == run_id,
+                        model.stage_id == stage_id,
+                        model.idempotency_key.startswith(prefix),
+                    )
+                )
+                if isinstance(key, str) and pattern.fullmatch(key)
+            )
+        return keys
+
+    def _next_materialization_key(self, session, context, generation: str) -> str:
+        base = self._key(context, f"materialize:{generation}")
+        retry = 1
+        pattern = re.compile(re.escape(base) + r"(?::retry-([1-9][0-9]*))?$")
+        for key in self._consumed_idempotency_keys(session, context, base, pattern):
+            match = pattern.fullmatch(key)
+            if match is not None and match.group(1) is not None:
+                retry = max(retry, int(match.group(1)) + 1)
+        return f"{base}:retry-{retry}"
+
+    def _record_fresh_failure(self, session, continuation, context, execution) -> None:
+        normalized = {
+            "error_code": execution.failure_code or "ANGULAR_UPDATE_FAILED",
+            "command_id": execution.command_id,
+            "exit_code": execution.exit_code,
+            "failure_code": execution.failure_code,
+            "failure_message": (execution.failure_message or "")[:2000],
+            "command_allows_dirty": "--allow-dirty" in (execution.arguments or []),
+        }
+        diagnosis = FailureEvidenceService.diagnose_angular_update_failure(normalized)
+        normalized["failure_diagnosis"] = diagnosis
+        approved = context["intent"]["evidence_diagnosis"]
+        matches = not (
+            not isinstance(diagnosis, dict)
+            or diagnosis.get("kind") != "peer_dependency_conflict"
+            or context["intent"]["blocking_package"]
+            not in dict(diagnosis.get("required_ranges") or {})
+            or dict(diagnosis.get("required_ranges") or {})
+            != dict(context["intent"]["peer_ranges"])
+        )
+        payload = {
+            "schema_version": "dependency-transition-fresh-failure.v1",
+            "execution_id": execution.id,
+            "attempt_id": context["attempt"].id,
+            "approved_failure_artifact_id": context["attempt"].failure_evidence_artifact_id,
+            "approved_diagnosis": approved,
+            "normalized_failure": normalized,
+            "artifact_ids": list(execution.artifact_ids or []),
+            "matches_approved_blocker": matches,
+        }
+        suffix = (
+            "fresh-angular-update-failure"
+            if matches
+            else "fresh-angular-update-blocker-changed"
+        )
+        stored = self._write_or_recover_verification(
+            session, context["run"], continuation, f"{execution.id}.{suffix}", payload
+        )
+        self._register_verification_metadata(
+            session,
+            continuation,
+            stored,
+            execution_id=execution.id,
+            owner_reference=f"{execution.id}:{suffix}",
+        )
+        if not matches:
+            raise DependencyTransitionError(
+                "DEPENDENCY_TRANSITION_FRESH_BLOCKER_CHANGED",
+                "The restored Angular update produced a different blocker; stale repair evidence cannot authorize mutation",
+            )
 
     def _phase_uninstall(self, session, continuation, context) -> str:
-        key = f"{context['attempt'].id}:transition:uninstall"
+        key = self._key(context, "uninstall")
         execution = self._execution(session, context, key)
         if execution is None:
             try:
                 verify_dependency_transition_evidence_for_source(
                     context["workspace"],
-                    diagnosis=context["intent"]["evidence_diagnosis"],
+                    diagnosis=self._fresh_failure_diagnosis(session, context),
                     package=context["intent"]["blocking_package"],
                     installed_version=context["intent"]["installed_version"],
                     peer_ranges=context["intent"]["peer_ranges"],
@@ -672,6 +1178,50 @@ class DependencyTransitionRunner:
         self._verify_uninstall(session, continuation, context, execution)
         return "continue"
 
+    def _fresh_failure_diagnosis(self, session, context) -> dict[str, object]:
+        execution = self._execution(
+            session, context, self._key(context, "angular-update:fresh")
+        )
+        metadata = (
+            session.scalar(
+                select(ArtifactMetadataModel).where(
+                    ArtifactMetadataModel.owner_reference
+                    == f"{execution.id}:fresh-angular-update-failure"
+                )
+            )
+            if execution is not None
+            else None
+        )
+        if metadata is None:
+            raise DependencyTransitionError(
+                "DEPENDENCY_TRANSITION_FRESH_EVIDENCE_MISSING",
+                "Fresh Angular update failure evidence is missing",
+            )
+        try:
+            stored = LocalFilesystemArtifactStore(
+                Path(str(context["run"].artifact_root)).parent,
+                fixed_run_root=Path(str(context["run"].artifact_root)),
+            ).read_artifact(context["run"].id, metadata.relative_path)
+            payload = json.loads(stored.content)
+            _, diagnosis = FailureEvidenceService.normalize_dependency_transition_evidence(
+                payload
+            )
+            if (
+                stored.ref.artifact_id != metadata.id.removeprefix("metadata-")
+                or stored.ref.checksum != metadata.checksum
+                or stored.envelope is None
+                or stored.envelope.run_id != context["run"].id
+                or stored.envelope.stage_id != context["attempt"].stage_id
+                or stored.envelope.input_hashes.get("execution") != execution.id
+                or not isinstance(diagnosis, dict)
+            ):
+                raise ValueError("Fresh dependency diagnosis binding is invalid")
+            return diagnosis
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError, TypeError, ValueError) as error:
+            raise DependencyTransitionError(
+                "DEPENDENCY_TRANSITION_FRESH_EVIDENCE_INVALID", str(error)
+            ) from error
+
     def _queue_transition_command(
         self, session, continuation, context, phase, key, member=None
     ) -> str:
@@ -680,16 +1230,32 @@ class DependencyTransitionRunner:
         binding = context["binding"]
         workspace = context["workspace"]
         intent = context["intent"]
-        if phase == "uninstall":
+        npmrc = workspace / ".npmrc"
+        npmrc_text = (
+            npmrc.read_text(encoding="utf-8", errors="replace").casefold()
+            if npmrc.is_file()
+            else ""
+        )
+        if "legacy-peer-deps=true" in npmrc_text or "force=true" in npmrc_text:
+            raise DependencyTransitionError(
+                "DEPENDENCY_TRANSITION_NPM_CONFIG_FORBIDDEN",
+                "Dependency transition forbids force and legacy-peer-deps npm configuration",
+            )
+        template_version = 1
+        if phase == "materialize":
+            renderer = NPM_DEPENDENCY_MATERIALIZE_RENDERER
+            bindings = {}
+        elif phase == "lockfile":
+            renderer = TRANSFORMATION_COMMAND_CATALOGUE["npm-lockfile-generate"]
+            bindings = {}
+        elif phase == "angular_update":
+            command = intent["angular_command"]
+            renderer = None
+            bindings = {}
+            template_version = command["template_version"]
+        elif phase == "uninstall":
             renderer = NPM_DEPENDENCY_UNINSTALL_RENDERER
             bindings = {"package": intent["blocking_package"]}
-        elif phase == "normalize_lockfile":
-            renderer = NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER
-            bindings = {
-                "target_angular_patch": installed_dependency_version(
-                    workspace, "@angular/core"
-                )
-            }
         else:
             renderer = NPM_DEPENDENCY_INSTALL_RENDERER
             member = member or {
@@ -701,20 +1267,26 @@ class DependencyTransitionRunner:
                 "target_version": member["exact_version"],
             }
         try:
-            arguments = list(renderer.render_arguments(bindings))
+            arguments = (
+                list(command["arguments"])
+                if phase == "angular_update"
+                else list(renderer.render_arguments(bindings))
+            )
             authorization_id = self._command_executor.authorize_dependency_transition_command(
                 session,
                 attempt_id=attempt.id,
-                command_id=renderer.command_id,
-                executable=renderer.executable,
+                command_id=(command["command_id"] if phase == "angular_update" else renderer.command_id),
+                template_id=(command["template_id"] if phase == "angular_update" else renderer.template_id),
+                template_version=template_version,
+                executable=(command["executable"] if phase == "angular_update" else renderer.executable),
                 arguments=arguments,
                 working_directory_alias=binding.alias,
                 working_directory=binding.workspace_path,
                 plan_id=intent["plan_id"],
                 plan_version=intent["plan_version"],
                 execution_profile_id=intent["execution_profile_id"],
-                network_profile=renderer.network_profile,
-                timeout_seconds=renderer.timeout_seconds,
+                network_profile=(command["network_profile"] if phase == "angular_update" else renderer.network_profile),
+                timeout_seconds=(command["timeout_seconds"] if phase == "angular_update" else renderer.timeout_seconds),
                 idempotency_key=key,
             )
         except CommandExecutorError as error:
@@ -739,7 +1311,7 @@ class DependencyTransitionRunner:
                 idempotency_key=key,
                 requested_by="transformer",
                 correlation_id=authorization.correlation_id,
-                timeout_seconds=renderer.timeout_seconds,
+                timeout_seconds=(command["timeout_seconds"] if phase == "angular_update" else renderer.timeout_seconds),
             )
         except CommandExecutorError as error:
             raise DependencyTransitionError(error.code, error.message) from error
@@ -749,36 +1321,28 @@ class DependencyTransitionRunner:
                 "DEPENDENCY_TRANSITION_QUEUE_FAILED",
                 "Queued transition command evidence is missing",
             )
-        evidence_package = (
-            member["package"] if member is not None else intent["blocking_package"]
-        )
+        evidence_package = member["package"] if member is not None else intent["blocking_package"]
         dependency = _dependency_evidence(workspace, (evidence_package,))
+        runtime = self._stage.runtime_binding(session, continuation)
         execution.start_fingerprint = {
             "canonical_source": binding.workspace_fingerprint,
             "dependency": dependency,
             "package_json_sha256": _file_checksum(workspace / "package.json"),
+            "package_lock_sha256": _file_checksum(workspace / "package-lock.json"),
+            "npmrc_sha256": _file_checksum(workspace / ".npmrc"),
+            "runtime_profile_id": runtime["profile_id"],
+            "runtime_checksum": runtime["checksum"],
             f"node_modules_{evidence_package.replace('/', '_')}_package_json_sha256": (
                 _file_checksum(workspace / "node_modules" / evidence_package / "package.json")
             ),
             "binding_fingerprint": binding.workspace_fingerprint,
         }
+        if phase == "lockfile":
+            execution.start_fingerprint["workspace_without_lockfile"] = (
+                workspace_excluding_governed_volatile_fingerprint(workspace)
+            )
         self._stage._wait_for_command(session, continuation, execution.id)
         return "queued"
-
-    def _phase_normalize_lockfile(self, session, continuation, context) -> str:
-        key = f"{context['attempt'].id}:transition:normalize-angular-lockfile-v5"
-        execution = self._execution(session, context, key)
-        if execution is None:
-            return self._queue_transition_command(session, continuation, context, "normalize_lockfile", key)
-        if execution.status in {"pending", "queued", "running"}:
-            self._stage._wait_for_command(session, continuation, execution.id)
-            return "waiting"
-        if execution.status != "succeeded" or execution.exit_code != 0:
-            raise DependencyTransitionError(
-                execution.failure_code or "DEPENDENCY_TRANSITION_LOCKFILE_FAILED",
-                execution.failure_message or "npm lockfile generation did not succeed",
-            )
-        return "continue"
 
     def _verify_uninstall(self, session, continuation, context, execution) -> None:
         run = context["run"]
@@ -793,10 +1357,10 @@ class DependencyTransitionRunner:
             for section in ("dependencies", "devDependencies")
         )
         installed_present = (workspace / "node_modules" / package / "package.json").is_file()
-        if manifest_has or installed_present:
+        if manifest_has:
             raise DependencyTransitionError(
                 "DEPENDENCY_TRANSITION_UNINSTALL_VERIFICATION_FAILED",
-                "npm uninstall left the blocking dependency in package.json or node_modules",
+                "npm uninstall left the blocking dependency in package.json",
             )
         existing_checkpoint = session.scalar(
             select(StageCheckpointModel)
@@ -872,63 +1436,6 @@ class DependencyTransitionRunner:
                 execution.id,
             )
             self._update_binding_fingerprint(session, continuation, binding, snapshot.fingerprint)
-    def _phase_update(self, session, continuation, context) -> str:
-        step = session.scalar(
-            select(StageStepModel).where(
-                StageStepModel.run_id == continuation.run_id,
-                StageStepModel.stage_id == continuation.current_stage_id,
-                StageStepModel.name == "angular_update-0",
-            )
-        )
-        if step is None:
-            raise DependencyTransitionError(
-                "DEPENDENCY_TRANSITION_ANGULAR_EVIDENCE_MISSING",
-                "The angular_update-0 step is missing",
-            )
-        if step.status == "PASSED":
-            return "continue"
-        execution = (
-            session.get(CommandExecutionModel, step.execution_id)
-            if step.execution_id
-            else None
-        )
-        if execution is None:
-            raise DependencyTransitionError(
-                "DEPENDENCY_TRANSITION_ANGULAR_EVIDENCE_MISSING",
-                "The angular update execution evidence is missing",
-            )
-        if execution.status in {"pending", "queued", "running"}:
-            self._stage._wait_for_command(session, continuation, execution.id)
-            return "waiting"
-        if execution.status == "succeeded":
-            live = STAGE_FINGERPRINT_PROFILE.fingerprint(context["workspace"])
-            dependency = _dependency_evidence(
-                context["workspace"], ("@angular/core", "@angular/cli", "@angular-devkit/build-angular")
-            )
-            execution.end_fingerprint = {
-                "canonical_source": live,
-                "dependency": dependency,
-            }
-            step.status = "PASSED"
-            step.completed_at = self._now()
-            step.workspace_fingerprint = live
-            step.updated_at = self._now()
-            if live != context["binding"].workspace_fingerprint:
-                self._update_binding_fingerprint(session, continuation, context["binding"], live)
-            return "continue"
-        # Terminal failure: queue the governed retry of the failed angular update
-        # (the v2->v3 supersession path; the runner stays in control until the
-        # retry is queued, then handle_prompt owns the outcome).
-        try:
-            self._stage.queue_angular_update_retry(
-                session,
-                continuation,
-                failed_execution_id=execution.id,
-                idempotency_key=f"{execution.id}:retry:post-repair:{context['attempt'].id}",
-            )
-        except TransformerStageError as error:
-            raise DependencyTransitionError(error.code, error.message) from error
-        return "queued"
 
     def _phase_install(self, session, continuation, context) -> str:
         targets = context["intent"]["transition_targets"]
@@ -950,20 +1457,6 @@ class DependencyTransitionRunner:
             if latest.status == "succeeded" and latest.exit_code == 0:
                 self._verify_install(session, continuation, context, latest, member)
                 continue
-            if (
-                self._install_generation(latest) == 1
-                and latest.failure_code == "COMMAND_EXIT_NONZERO"
-                and "ERESOLVE" in (latest.failure_message or "")
-                and self._normalization_succeeded_after(session, context, latest) is not None
-            ):
-                return self._queue_transition_command(
-                    session,
-                    continuation,
-                    context,
-                    "install",
-                    self._next_install_key(session, context, member_prefix),
-                    member=member,
-                )
             raise DependencyTransitionError(
                 latest.failure_code or "DEPENDENCY_TRANSITION_COMMAND_FAILED",
                 latest.failure_message or "npm install did not succeed",
@@ -1062,24 +1555,41 @@ class DependencyTransitionRunner:
                 StageStepModel.name == "final_install-0",
             )
         )
-        if step is not None and step.status == "PASSED":
-            return "continue"
         execution = (
             session.get(CommandExecutionModel, step.execution_id)
             if step is not None and step.execution_id
             else None
         )
-        if execution is None:
+        final_lock = self._execution(
+            session, context, self._key(context, "lockfile:final")
+        )
+        stale = bool(
+            execution is None
+            or final_lock is None
+            or (execution.requested_at or self._now())
+            <= (final_lock.finished_at or final_lock.requested_at)
+        )
+        if stale:
             try:
                 result = self._stage._queue_group(
                     session,
                     continuation,
                     group="final_install",
                     next_node="dependency_transition",
-                    attempt_key=f"ci-{context['attempt'].attempt_number}",
+                    attempt_key=f"dependency-transition-ci-{context['attempt'].id}",
                 )
             except TransformerStageError as error:
                 raise DependencyTransitionError(error.code, error.message) from error
+            execution = session.get(CommandExecutionModel, result.execution_id)
+            runtime = self._stage.runtime_binding(session, continuation)
+            execution.start_fingerprint = {
+                "package_json_sha256": _file_checksum(context["workspace"] / "package.json"),
+                "package_lock_sha256": _file_checksum(context["workspace"] / "package-lock.json"),
+                "npmrc_sha256": _file_checksum(context["workspace"] / ".npmrc"),
+                "runtime_profile_id": runtime["profile_id"],
+                "runtime_checksum": runtime["checksum"],
+                "lockfile_execution_id": final_lock.id,
+            }
             return "queued"
         if execution.status in {"pending", "queued", "running"}:
             self._stage._wait_for_command(session, continuation, execution.id)
@@ -1103,8 +1613,23 @@ class DependencyTransitionRunner:
             execution.result_artifact_id,
             execution.manifest_artifact_id,
         )
+        final_lock = self._execution(
+            session, context, self._key(context, "lockfile:final")
+        )
         if (
             execution.command_id != "npm-ci-final"
+            or execution.runtime_checksum
+            != self._stage.runtime_binding(session, continuation)["checksum"]
+            or _file_checksum(workspace / "package.json")
+            != (execution.start_fingerprint or {}).get("package_json_sha256")
+            or _file_checksum(workspace / "package-lock.json")
+            != (execution.start_fingerprint or {}).get("package_lock_sha256")
+            or _file_checksum(workspace / ".npmrc")
+            != (execution.start_fingerprint or {}).get("npmrc_sha256")
+            or final_lock is None
+            or not self._verified(session, final_lock, "dependency-lockfile")
+            or (execution.start_fingerprint or {}).get("lockfile_execution_id")
+            != final_lock.id
             or any(not artifact_id for artifact_id in required_artifacts)
             or any(
                 session.get(ArtifactMetadataModel, "metadata-" + str(artifact_id)) is None

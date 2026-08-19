@@ -85,6 +85,55 @@ def test_empty_candidates_resolve_from_latest_environment_inventory():
     engine.dispose()
 
 
+def test_runtime_matrix_inventory_selects_compatible_install_not_path_runtime():
+    scope, sessions, engine = fixture()
+    with sessions() as s:
+        snapshot = environment_snapshot()
+        snapshot["runtimes"][0]["version"] = "20.11.1"  # active PATH view
+        snapshot["runtime_matrix"] = [
+            {
+                "kind": "node",
+                "resolved_path": r"C:\\Users\\runner\\nvm\\v18.20.8\\node.exe",
+                "version_exact": "18.20.8",
+                "operating_system": "windows",
+                "architecture": "amd64",
+                "installation_root": r"C:\\Users\\runner\\nvm\\v18.20.8",
+                "runtime_id": "v18.20.8",
+                "sha256": "a" * 64,
+            },
+            {
+                "kind": "npm",
+                "resolved_path": r"C:\\Users\\runner\\nvm\\v18.20.8\\npm.cmd",
+                "version_exact": "10.2.4",
+                "operating_system": "windows",
+                "architecture": "amd64",
+                "installation_root": r"C:\\Users\\runner\\nvm\\v18.20.8",
+                "runtime_id": "v18.20.8",
+                "sha256": "b" * 64,
+            },
+            {
+                "kind": "npx",
+                "resolved_path": r"C:\\Users\\runner\\nvm\\v18.20.8\\npx.cmd",
+                "version_exact": "10.2.4",
+                "operating_system": "windows",
+                "architecture": "amd64",
+                "installation_root": r"C:\\Users\\runner\\nvm\\v18.20.8",
+                "runtime_id": "v18.20.8",
+                "sha256": "c" * 64,
+            },
+        ]
+        s.add(EnvironmentCapabilityModel(id="env-matrix", idempotency_key="env-matrix", actor="diagnostics", status="available", captured_at=NOW, policy_version="environment-v2", checksum="sha256:matrix", snapshot=snapshot, artifacts={}, created_at=NOW))
+        s.commit()
+
+    service = ExecutionProfileApplicationService(session_scope_factory=scope, now_provider=lambda: NOW)
+    result = service.resolve("run-1", request().model_copy(update={"candidates": ()}))
+    assert result.status == "resolved"
+    assert result.selected_profile is not None
+    assert result.selected_profile.node_exact == "18.20.8"
+    assert "v18.20.8" in result.selected_profile.node_executable
+    engine.dispose()
+
+
 def test_baseline_boundary_blocks_when_inventory_executable_changes():
     scope,sessions,engine=fixture()
     with sessions() as s:

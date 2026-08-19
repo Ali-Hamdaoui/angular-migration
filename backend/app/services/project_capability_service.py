@@ -14,6 +14,7 @@ from sqlalchemy import select
 from app.domain.project_capability import ProjectCapability, ProjectCapabilitySnapshot
 from app.repositories.models import MigrationRunModel, ProjectCapabilityModel
 from app.repositories.session import session_scope
+from app.services.lockfile_compatibility_service import LockfileCompatibilityService
 
 
 class ProjectCapabilityError(ValueError):
@@ -75,6 +76,27 @@ class ProjectCapabilityService:
                 ProjectCapability(key="package_manager", value=package_manager, detail="detected package manager"),
             ]
         )
+
+        package_names = {
+            name
+            for section in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
+            for name in (package.get(section, {}) if isinstance(package.get(section, {}), dict) else {})
+        }
+        capabilities.extend(
+            ProjectCapability(key=f"package:{name}", value="present", detail="declared package capability")
+            for name in sorted(package_names)
+        )
+        if any(name.startswith("@angular-eslint/") for name in package_names):
+            capabilities.append(ProjectCapability(key="package:angular-eslint", value="present", detail="angular-eslint package family present"))
+        lockfile_path = source_root / "package-lock.json"
+        if lockfile_path.is_file():
+            try:
+                lock_payload = json.loads(lockfile_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                lock_format = "unknown"
+            else:
+                lock_format = LockfileCompatibilityService.detect_lockfile_format(lock_payload) or "unknown"
+            capabilities.append(ProjectCapability(key=f"lockfile_format:{lock_format}", value="present", detail="package-lock format"))
 
         workspace = "single_application" if angular_json.is_file() else "not_angular_cli"
         capabilities.append(ProjectCapability(key="workspace_type", value=workspace, detail="angular.json presence"))
@@ -156,6 +178,33 @@ class ProjectCapabilityService:
                     .order_by(ProjectCapabilityModel.created_at.asc())
                 ).all()
             )
+
+    def get_snapshot(self, run_id: str, snapshot_id: str) -> ProjectCapabilitySnapshot:
+        """Load and verify one immutable snapshot by its durable identity."""
+        with self._session_scope() as session:
+            row = session.scalar(
+                select(ProjectCapabilityModel).where(
+                    ProjectCapabilityModel.id == snapshot_id,
+                    ProjectCapabilityModel.run_id == run_id,
+                )
+            )
+            if row is None:
+                raise ProjectCapabilityError("SNAPSHOT_NOT_FOUND", "Capability snapshot does not exist")
+            snapshot = ProjectCapabilitySnapshot(
+                run_id=row.run_id,
+                stage_id=row.stage_id,
+                source_root=row.source_root,
+                angular_major=row.angular_major,
+                capabilities=tuple(ProjectCapability.model_validate(item) for item in row.capabilities),
+                checksum=row.checksum,
+            )
+            if snapshot.bind_checksum().checksum != row.checksum:
+                raise ProjectCapabilityError("SNAPSHOT_CHECKSUM_MISMATCH", "Capability snapshot checksum is invalid")
+            return snapshot
+
+    @staticmethod
+    def snapshot_id(run_id: str, checksum: str) -> str:
+        return "cap-" + hashlib_short(run_id, checksum)
 
 
 def _package_version(package: dict, name: str) -> str | None:

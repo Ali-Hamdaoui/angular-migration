@@ -7,8 +7,10 @@ from uuid import uuid4
 from sqlalchemy import select
 from app.api.execution_profile_contracts import ExecutionProfileResponse
 from app.artifact_store import LocalFilesystemArtifactStore
+from app.core.config import get_settings
 from app.domain.contracts import ArtifactType, WorkflowEventType
 from app.domain.execution_profile import RuntimeCandidate, RuntimeResolutionRequest, SourceRuntimeResolver
+from app.domain.runtime_execution import RuntimeExecutableKind
 from app.repositories.models import ArtifactMetadataModel, EnvironmentCapabilityModel, ExecutionProfileModel, G02ApprovalModel, MigrationRunModel, WorkflowEventModel
 from app.repositories.session import session_scope
 from app.state.transition_service import StateTransitionService, TransitionRequest, StaleStateVersionError
@@ -31,7 +33,7 @@ class ExecutionProfileApplicationService:
         now=self._now()
         with self._scope() as session:
             run=self._run(session,run_id)
-            inventory_candidates, inventory_checksum = self._inventory_candidates(session)
+            inventory_candidates, inventory_checksum, runtime_matrix = self._inventory_candidates(session)
             candidates = tuple(request.candidates) or inventory_candidates
             request_payload = request.model_dump(mode="json")
             request_payload["inventory_checksum"] = inventory_checksum
@@ -46,7 +48,7 @@ class ExecutionProfileApplicationService:
                 raise ExecutionProfileApplicationError("SOURCE_VERSION_MISMATCH", "The persisted exact Angular source version does not match this profile request.", 409)
             run.source_version_detected = request.source_angular_exact
             resolution=self._resolver.resolve(RuntimeResolutionRequest(source_angular_exact=request.source_angular_exact,source_typescript_exact=request.source_typescript_exact,source_rxjs_exact=request.source_rxjs_exact,candidates=candidates,validated_at=request.validated_at))
-            artifact_ids=self._write_artifacts(session,run,resolution,request,request_checksum,now)
+            artifact_ids=self._write_artifacts(session,run,resolution,request,request_checksum,now,runtime_matrix=runtime_matrix)
             started=StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id,expected_state_version=run.state_version,idempotency_key=request.idempotency_key+":started",event_type=WorkflowEventType.EXECUTION_PROFILE_RESOLUTION_STARTED,actor=request.actor,reason="execution profile resolution started",occurred_at=now,payload={"source_angular_exact":request.source_angular_exact}))
             event_type=WorkflowEventType.EXECUTION_PROFILE_RESOLVED if resolution.status != "blocked" else WorkflowEventType.EXECUTION_PROFILE_BLOCKED
             finished=StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id,expected_state_version=started.next_state_version,idempotency_key=request.idempotency_key,event_type=event_type,actor=request.actor,reason="execution profile resolution completed",occurred_at=now,payload={"status":resolution.status,"policy_version":resolution.policy_version}))
@@ -78,7 +80,7 @@ class ExecutionProfileApplicationService:
                 raise ExecutionProfileApplicationError("EXECUTION_PROFILE_REQUIRED", "A selected execution profile is required before baseline start.", 409)
             if run.state_version != expected_state_version:
                 raise ExecutionProfileApplicationError("STALE_STATE_VERSION", "The run state version is stale.", 409)
-            candidates, _ = self._inventory_candidates(session)
+            candidates, _, _ = self._inventory_candidates(session)
             selected = next((profile for profile in record.profiles if profile.get("profile_id") == record.selected_profile_id and profile.get("checksum") == record.selected_checksum), None)
             if selected is None or record.policy_version != self.POLICY_VERSION or not any(self._candidate_matches_profile(candidate, selected) for candidate in candidates):
                 transition = StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id, expected_state_version=run.state_version, idempotency_key=idempotency_key, event_type=WorkflowEventType.EXECUTION_PROFILE_BLOCKED, actor=actor, reason="selected execution profile is stale at baseline boundary", occurred_at=now, payload={"profile_id": record.selected_profile_id, "checksum": record.selected_checksum}))
@@ -91,25 +93,37 @@ class ExecutionProfileApplicationService:
     def _candidate_matches_profile(candidate, profile: dict) -> bool:
         return all(candidate_value == profile_value for candidate_value, profile_value in ((candidate.node_executable, profile.get("node_executable")), (candidate.node_exact, profile.get("node_exact")), (candidate.npm_executable, profile.get("package_manager_executable")), (candidate.npm_exact, profile.get("package_manager_exact")), (candidate.npx_executable, profile.get("npx_executable")), (candidate.npx_exact, profile.get("npx_exact"))))
 
-    @staticmethod
-    def _inventory_candidates(session) -> tuple[tuple[RuntimeCandidate, ...], str | None]:
+    def _inventory_candidates(self, session) -> tuple[tuple[RuntimeCandidate, ...], str | None, list[dict]]:
         environment = session.scalar(select(EnvironmentCapabilityModel).order_by(EnvironmentCapabilityModel.created_at.desc()))
         if environment is None:
-            return (), None
+            return (), None, []
         snapshot = environment.snapshot
+        matrix = snapshot.get("runtime_matrix") or []
         runtimes = {item["name"]: item for item in snapshot.get("runtimes", [])}
         required = [runtimes.get(name) for name in ("node", "npm", "npx")]
         if snapshot.get("status") == "blocked" or any(not item or item.get("status") != "available" or not item.get("executable") or not item.get("version") for item in required):
-            return (), environment.checksum
+            return (), environment.checksum, matrix
         network = snapshot.get("network", {})
         controlled = snapshot.get("controlled_probes", {})
         if any(controlled.get(name, {}).get("status") != "passed" for name in ("node_exec_path", "npm_registry")):
-            return (), environment.checksum
+            return (), environment.checksum, matrix
         registry_probe = controlled.get("npm_registry", {})
         registry_configured = (
             registry_probe.get("status") == "passed"
             and bool(registry_probe.get("value"))
         )
+
+        if not matrix:
+            matrix = self._discover_runtime_matrix()
+
+        if matrix:
+            candidates = self._candidates_from_runtime_matrix(
+                matrix,
+                registry_configured=registry_configured,
+                network=network,
+            )
+            inventory_checksum = self._checksum({"environment": environment.checksum, "runtime_matrix": matrix})
+            return candidates, inventory_checksum, matrix
 
         candidate = RuntimeCandidate(
             profile_id=f"environment-{environment.id}",
@@ -134,7 +148,77 @@ class ExecutionProfileApplicationService:
             network_policy="approved-registries-only",
             available=True,
         )
-        return (candidate,), environment.checksum
+        return (candidate,), environment.checksum, []
+
+    @staticmethod
+    def _discover_runtime_matrix() -> list[dict]:
+        """Discover configured runtimes when an older environment snapshot has
+        no matrix field.  The discovery still runs through the shared runtime
+        resolver authority and is persisted in this execution-profile evidence.
+        """
+        settings = get_settings()
+        root = settings.runtime_node_install_root
+        if root is None or not root.expanduser().resolve().exists():
+            return []
+        from app.services.runtime_resolution_application_service import RuntimeResolutionApplicationService
+
+        return [descriptor.model_dump(mode="json") for descriptor in RuntimeResolutionApplicationService(settings).discover()]
+
+    @staticmethod
+    def _candidates_from_runtime_matrix(
+        matrix: list[dict],
+        *,
+        registry_configured: bool,
+        network: dict,
+    ) -> tuple[RuntimeCandidate, ...]:
+        """Convert checksum-bound descriptor evidence into paired candidates.
+
+        Descriptors are grouped by the resolver's runtime id, so npm and npx
+        can never be mixed with a different Node installation.  Malformed or
+        incomplete groups are ignored and therefore fail closed in the domain
+        resolver instead of silently falling back to PATH.
+        """
+        grouped: dict[str, dict[str, dict]] = {}
+        for descriptor in matrix:
+            if not isinstance(descriptor, dict):
+                continue
+            runtime_id = descriptor.get("runtime_id")
+            kind = descriptor.get("kind")
+            if not runtime_id or kind not in {kind.value for kind in RuntimeExecutableKind}:
+                continue
+            grouped.setdefault(str(runtime_id), {})[kind] = descriptor
+
+        candidates: list[RuntimeCandidate] = []
+        for runtime_id, descriptors in sorted(grouped.items()):
+            if any(kind.value not in descriptors for kind in RuntimeExecutableKind):
+                continue
+            node, npm, npx = (descriptors[kind.value] for kind in RuntimeExecutableKind)
+            values = {
+                "profile_id": f"runtime-{runtime_id}",
+                "operating_system": node.get("operating_system", "windows"),
+                "architecture": node.get("architecture", "amd64"),
+                "node_executable": node.get("resolved_path"),
+                "node_exact": node.get("version_exact"),
+                "npm_executable": npm.get("resolved_path"),
+                "npm_exact": npm.get("version_exact"),
+                "npx_executable": npx.get("resolved_path"),
+                "npx_exact": npx.get("version_exact"),
+                "installation_root": node.get("installation_root"),
+                "registry_configured": registry_configured,
+                "proxy_configured": bool(network.get("proxy_configured") or network.get("https_proxy_configured")),
+                "certificate_valid": bool(network.get("strict_ssl")),
+                "environment_allowlist_valid": bool(network.get("credentials_redacted", True)),
+                "cache_policy_valid": True,
+                "network_policy": "approved-registries-only",
+                "available": True,
+            }
+            if all(isinstance(values.get(key), str) and values[key] for key in ("node_executable", "node_exact", "npm_executable", "npm_exact", "npx_executable", "npx_exact")):
+                try:
+                    candidates.append(RuntimeCandidate(**values))
+                except ValueError:
+                    # Evidence with invalid versions/paths is not eligible.
+                    continue
+        return tuple(candidates)
 
     def _require_g02(self,session,run_id):
         g02=session.scalar(select(G02ApprovalModel).where(G02ApprovalModel.run_id==run_id).order_by(G02ApprovalModel.created_at.desc()))
@@ -146,14 +230,14 @@ class ExecutionProfileApplicationService:
         if run is None: raise ExecutionProfileApplicationError("RUN_NOT_FOUND","Migration run does not exist.",404)
         return run
 
-    def _write_artifacts(self,session,run,resolution,request,request_checksum,now):
+    def _write_artifacts(self,session,run,resolution,request,request_checksum,now,*,runtime_matrix=None):
         root=Path(run.artifact_root or "").resolve(); store=LocalFilesystemArtifactStore(root,fixed_run_root=root); store.ensure_run_layout(run.id); ids=[]
         environment = session.scalar(select(EnvironmentCapabilityModel).order_by(EnvironmentCapabilityModel.created_at.desc()))
         environment_snapshot = environment.snapshot if environment else {}
         controlled_probes = environment_snapshot.get("controlled_probes", {})
         runtimes = {item.get("name"): item for item in environment_snapshot.get("runtimes", []) if isinstance(item, dict)}
         payload={"status":resolution.status,"policy_version":resolution.policy_version,"compatible_profiles":[p.model_dump(mode="json") for p in resolution.compatible_profiles],"blockers":list(resolution.blockers),"guidance":list(resolution.guidance)}
-        probe_report = {"status": resolution.status, "policy_version": resolution.policy_version, "probes": ["node --version", "npm --version", "npx --version", "node -p process.execPath", "npm config get registry"], "observed_runtimes": runtimes, "controlled_probes": controlled_probes, "probe_artifact_ids": [value.get("artifact_id") for value in controlled_probes.values() if value.get("artifact_id")], "compatible_profiles": [p.model_dump(mode="json") for p in resolution.compatible_profiles], "blockers": list(resolution.blockers)}
+        probe_report = {"status": resolution.status, "policy_version": resolution.policy_version, "probes": ["node --version", "npm --version", "npx --version", "node -p process.execPath", "npm config get registry"], "observed_runtimes": runtimes, "runtime_matrix": runtime_matrix or [], "controlled_probes": controlled_probes, "probe_artifact_ids": [value.get("artifact_id") for value in controlled_probes.values() if value.get("artifact_id")], "compatible_profiles": [p.model_dump(mode="json") for p in resolution.compatible_profiles], "blockers": list(resolution.blockers)}
         compatibility = {"source_request_checksum": request_checksum, "source_angular_exact": request.source_angular_exact, "source_typescript_exact": request.source_typescript_exact, "source_rxjs_exact": request.source_rxjs_exact, "status": resolution.status, "blockers": list(resolution.blockers), "policy_version": resolution.policy_version}
         selected = resolution.selected_profile
         executable_paths = [item for item in ((selected.node_executable, selected.package_manager_executable, selected.npx_executable) if selected else ()) if item]

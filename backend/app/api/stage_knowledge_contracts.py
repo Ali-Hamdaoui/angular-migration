@@ -12,6 +12,8 @@ class StageKnowledgeEntryDto(ContractModel):
     expected_transforms: list[str]
     validation_expectations: list[str]
     expected_dependency_changes: list[dict[str, str]]
+    dependency_rules: list[dict[str, str]]
+    migration_actions: list[dict[str, str]]
     known_risks: list[str]
     version: int
     notes: str = ""
@@ -24,6 +26,8 @@ class StageKnowledgeEntryRecordDto(ContractModel):
     expected_transforms: list[str]
     validation_expectations: list[str]
     expected_dependency_changes: list[dict[str, Any]]
+    dependency_rules: list[dict[str, Any]]
+    migration_actions: list[dict[str, Any]]
     known_risks: list[str]
     version: int
     created_by: str | None = None

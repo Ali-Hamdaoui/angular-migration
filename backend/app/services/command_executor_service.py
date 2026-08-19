@@ -31,7 +31,7 @@ from uuid import uuid4
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import Session
 
-from app.artifact_store import LocalFilesystemArtifactStore
+from app.artifact_store import ArtifactNotFoundError, ArtifactStoreError, LocalFilesystemArtifactStore
 from app.command_execution.worker import (
     CommandDefinition,
     CommandLogWriter,
@@ -62,12 +62,14 @@ from app.domain.runtime_execution import (
     RuntimeExecutableKind,
     RuntimeRequirement,
 )
-from app.repositories.models import ExecutionProfileModel, StageExecutionPlanModel
+from app.repositories.models import ExecutionProfileModel, StageExecutionPlanModel, StageRuntimeBindingModel
 from app.repositories.models.workflow import (
     ArtifactMetadataModel,
     CommandAuthorizationAuditModel,
     CommandExecutionModel,
     MigrationRunModel,
+    StageGateDecisionModel,
+    StageGatePackageModel,
     StagePromptRequestModel,
     WorkerLeaseModel,
     WorkflowEventModel,
@@ -80,6 +82,7 @@ from app.services.command_registry_service import (
 from app.services.diagnostics_application_service import DiagnosticsApplicationService
 from app.services.job_supervisor_service import JobSupervisorService
 from app.services.runtime_resolution_application_service import RuntimeResolutionApplicationService
+from app.services.stage_runtime_service import canonical_stage_runtime_identity
 from app.services.transformer_prompt_service import (
     AngularPromptDetector,
     TransformerPromptService,
@@ -110,6 +113,7 @@ _MUTATING_COMMAND_IDS = frozenset(
         "angular-update-exact",
         "npm-ci-final",
         "npm-lockfile-generate",
+        "npm-dependency-materialize",
         "npm-dependency-uninstall",
         "npm-dependency-install",
     }
@@ -204,22 +208,134 @@ def _runtime_bindings_from_profile(profile: dict) -> dict[str, RuntimeExecutable
     return bindings
 
 
+def _stage_runtime_authority(session, run: MigrationRunModel, stage_id: str | None) -> dict[str, object] | None:
+    """Load the G07-approved stage runtime; legacy profiles cannot override it."""
+    if not stage_id:
+        return None
+    rows = list(
+        session.scalars(
+            select(StageRuntimeBindingModel)
+            .where(
+                StageRuntimeBindingModel.run_id == run.id,
+                StageRuntimeBindingModel.stage_id == stage_id,
+            )
+            .order_by(StageRuntimeBindingModel.kind.asc())
+        ).all()
+    )
+    if not rows:
+        return None
+    try:
+        authority = canonical_stage_runtime_identity(rows, stage_id)
+    except ValueError as error:
+        raise CommandExecutorError("STAGE_RUNTIME_BINDING_STALE", str(error)) from error
+
+    package = session.scalar(
+        select(StageGatePackageModel)
+        .where(
+            StageGatePackageModel.run_id == run.id,
+            StageGatePackageModel.stage_id == stage_id,
+            StageGatePackageModel.gate_id == "G07",
+            StageGatePackageModel.status == "approved",
+        )
+        .order_by(StageGatePackageModel.gate_version.desc())
+    )
+    if package is None:
+        raise CommandExecutorError("STAGE_RUNTIME_G07_BINDING_MISSING", "No approved G07 runtime package exists for the stage")
+    decision = session.scalar(
+        select(StageGateDecisionModel).where(
+            StageGateDecisionModel.gate_package_id == package.id,
+            StageGateDecisionModel.run_id == run.id,
+            StageGateDecisionModel.stage_id == stage_id,
+            StageGateDecisionModel.gate_id == "G07",
+            StageGateDecisionModel.accepted.is_(True),
+            StageGateDecisionModel.package_checksum == package.package_checksum,
+        )
+    )
+    if decision is None:
+        raise CommandExecutorError("STAGE_RUNTIME_G07_BINDING_MISSING", "G07 approval does not bind the stage runtime")
+    try:
+        store = LocalFilesystemArtifactStore(Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root))
+        stored = store.read_artifact_by_id(package.package_artifact_id)
+        payload = json.loads(stored.content)
+        approved_runtime = payload.get("runtime") or {}
+        if (
+            stored.ref.checksum != package.package_checksum
+            or approved_runtime.get("profile_id") != authority["profile_id"]
+            or approved_runtime.get("checksum") != authority["checksum"]
+        ):
+            raise ValueError("G07 runtime package does not match the current stage binding")
+        for kind, descriptor in authority["runtime_bindings"].items():
+            approved = (approved_runtime.get("runtime_bindings") or {}).get(kind) or {}
+            if any(approved.get(field) != descriptor[field] for field in ("runtime_id", "version_exact", "resolved_path", "sha256")):
+                raise ValueError(f"G07 runtime package does not match the bound {kind} executable")
+    except (ArtifactNotFoundError, ArtifactStoreError, OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise CommandExecutorError("STAGE_RUNTIME_G07_BINDING_INVALID", "The approved G07 runtime package is invalid") from error
+    return authority
+
+
+def _verify_stage_runtime_files(authority: dict[str, object]) -> None:
+    """Recheck every G07-bound executable immediately before process spawn."""
+    for descriptor in authority["descriptors"].values():
+        path = Path(descriptor.resolved_path).resolve(strict=True)
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != descriptor.sha256:
+            raise CommandExecutorError(
+                "STAGE_RUNTIME_BINDING_STALE",
+                f"Bound {descriptor.kind.value} executable changed after G07 approval",
+            )
+
+
 def _runtime_path_overrides(bindings: dict[str, RuntimeExecutableDescriptor]) -> dict[str, str]:
     """Prepend bound runtime bin dirs to PATH so npm/npx resolve the same node."""
     if not bindings:
         return {}
     bin_dirs: list[str] = []
     for descriptor in bindings.values():
-        bin_dir = (
+        executable_parent = Path(descriptor.resolved_path).parent
+        candidate_bin = (
             Path(descriptor.installation_root) / "bin"
             if descriptor.installation_root
-            else Path(descriptor.resolved_path).parent
+            else None
         )
+        # Unix runtime installations conventionally keep executables under
+        # ``<root>/bin``. Windows NVM installations keep node.exe/npm.cmd/
+        # npx.cmd directly under ``<root>`` and do not have a bin directory.
+        # Prefer the governed installation bin when it exists; otherwise use
+        # the bound executable's own parent so child scripts resolve the same
+        # Node runtime instead of falling back to the backend PATH.
+        bin_dir = candidate_bin if candidate_bin is not None and candidate_bin.is_dir() else executable_parent
         text = str(bin_dir)
         if text not in bin_dirs:
             bin_dirs.append(text)
 
     return {"PATH": os.pathsep.join([*bin_dirs, os.environ.get("PATH", "")])}
+
+
+def _command_environment_overrides(
+    command_id: str,
+    bindings: dict[str, RuntimeExecutableDescriptor],
+) -> dict[str, str]:
+    """Return deterministic, command-specific environment overrides.
+
+    Angular's older local CLI performs a network-backed "latest stable"
+    self-upgrade check before processing an exact adjacent-major update. That
+    redirect can select a CLI requiring a newer Node runtime than the stage
+    binding. The registered exact-update command is therefore explicitly
+    allowed to disable only that redirect; its target package arguments remain
+    exact and governed by the stage plan.
+    """
+    overrides = _runtime_path_overrides(bindings)
+    # Chrome is intentionally not part of the general environment allowlist:
+    # it is a governed executable dependency for Karma/browser tests.  Forward
+    # only an explicitly configured, existing binary path so stage commands
+    # receive the same browser configuration as baseline validation without
+    # opening the sanitized command environment to arbitrary variables.
+    chrome_bin = os.environ.get("CHROME_BIN")
+    if chrome_bin and Path(chrome_bin).is_file():
+        overrides["CHROME_BIN"] = str(Path(chrome_bin).resolve())
+    if command_id == "angular-update-exact":
+        overrides["NG_DISABLE_VERSION_CHECK"] = "true"
+    return overrides
 
 
 @dataclass(frozen=True)
@@ -818,6 +934,8 @@ class CommandExecutorService:
         *,
         attempt_id: str,
         command_id: str,
+        template_id: str,
+        template_version: int,
         executable: str,
         arguments: list[str],
         working_directory_alias: str,
@@ -831,8 +949,11 @@ class CommandExecutorService:
     ) -> str:
         """Authorize one detach/reattach command bound to an applied repair proposal."""
         from app.domain.command import (
+            ANGULAR_UPDATE_V2_RENDERER,
             ANGULAR_UPDATE_V3_RENDERER,
-            NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
+            ANGULAR_UPDATE_V4_RENDERER,
+            ANGULAR_UPDATE_V5_RENDERER,
+            NPM_DEPENDENCY_MATERIALIZE_RENDERER,
             NPM_DEPENDENCY_INSTALL_RENDERER,
             NPM_DEPENDENCY_UNINSTALL_RENDERER,
             TRANSFORMATION_COMMAND_CATALOGUE,
@@ -848,16 +969,37 @@ class CommandExecutorService:
         renderer_for_command = {
             "npm-dependency-uninstall": (NPM_DEPENDENCY_UNINSTALL_RENDERER, 1),
             "npm-dependency-install": (NPM_DEPENDENCY_INSTALL_RENDERER, 1),
-            "npm-angular-lockfile-normalize": (NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER, 2),
-            "angular-update-exact": (ANGULAR_UPDATE_V3_RENDERER, 3),
+            "npm-dependency-materialize": (NPM_DEPENDENCY_MATERIALIZE_RENDERER, 1),
+            "npm-lockfile-generate": (
+                TRANSFORMATION_COMMAND_CATALOGUE["npm-lockfile-generate"],
+                1,
+            ),
         }
-        renderer = renderer_for_command.get(command_id)
+        angular_renderers = {
+            (renderer.template_id, version): renderer
+            for renderer, version in (
+                (ANGULAR_UPDATE_V2_RENDERER, 2),
+                (ANGULAR_UPDATE_V3_RENDERER, 3),
+                (ANGULAR_UPDATE_V4_RENDERER, 4),
+                (ANGULAR_UPDATE_V5_RENDERER, 5),
+            )
+        }
+        renderer = (
+            (angular_renderers.get((template_id, template_version)), template_version)
+            if command_id == "angular-update-exact"
+            else renderer_for_command.get(command_id)
+        )
         if renderer is None:
             raise CommandExecutorError(
                 "COMMAND_TEMPLATE_NOT_FOUND",
                 "command has no dependency-transition renderer",
             )
         template, template_version = renderer
+        if template is None or template.template_id != template_id:
+            raise CommandExecutorError(
+                "COMMAND_TEMPLATE_NOT_FOUND",
+                "command template is not a governed dependency-transition command",
+            )
         self._policy_engine.registry.seed_defaults(session)
         request = CommandPolicyValidateRequestDto(
             run_id=attempt.run_id,
@@ -1118,8 +1260,11 @@ class CommandExecutorService:
 
     def _run_execution(self, execution_id: str, claimed_worker_id: str | None = None) -> None:
         from app.repositories.session import session_scope
+        from app.services.factory_runtime_service import FactoryRuntimeService
         worker_id = claimed_worker_id or threading.current_thread().name
+        stage_runtime_authority: dict[str, object] | None = None
         with session_scope() as session:
+            FactoryRuntimeService().assert_active(session)
             model = session.get(CommandExecutionModel, execution_id)
             if (
                 model is None
@@ -1163,6 +1308,7 @@ class CommandExecutorService:
             # Read and validate all process inputs in a short transaction. The
             # subprocess must never run while a repository session is open.
             with session_scope() as session:
+                FactoryRuntimeService().assert_active(session)
                 model = session.get(CommandExecutionModel, execution_id)
                 run = session.get(MigrationRunModel, model.run_id) if model else None
                 authorization = session.get(CommandAuthorizationAuditModel, model.authorization_id) if model else None
@@ -1221,37 +1367,53 @@ class CommandExecutorService:
                     prompt_stdin = TransformerPromptService.selected_stdin(prompt) if prompt else None
                 artifact_root = Path(run.artifact_root)
                 store = LocalFilesystemArtifactStore(artifact_root, fixed_run_root=artifact_root)
-                request = CommandRequestDto(
-                    command_id=command_id,
-                    run_id=run_id,
-                    stage_id=stage_id,
-                    requested_by=authorization.actor,
-                    requester=authorization.actor,
-                    executable=executable,
-                    arguments=arguments,
-                    shell=False,
-                    working_directory_alias=workspace_alias,
-                    runtime_profile_id=execution_profile_id,
-                    timeout_seconds=timeout_seconds,
-                    network_profile=network_profile,
-                    cancellation_policy=CancellationPolicy.TERMINATE_PROCESS_TREE,
-                    idempotency_key=idempotency_key,
-                    requested_at=requested_at,
+                # G07 stage binding is the executable authority. The legacy
+                # execution profile remains authorization provenance only.
+                stage_runtime_authority = _stage_runtime_authority(session, run, stage_id)
+                runtime_bindings = (
+                    stage_runtime_authority["descriptors"]
+                    if stage_runtime_authority is not None
+                    else _runtime_bindings_from_profile(selected_profile)
                 )
+                runtime_profile_id = (
+                    stage_runtime_authority["profile_id"]
+                    if stage_runtime_authority is not None
+                    else execution_profile_id
+                )
+                model.runtime_profile_id = runtime_profile_id
+                session.flush()
 
             # Fail-closed runtime binding: resolve the profile's executables to
             # PATH-independent, checksum-bound descriptors.  Probing runs
             # outside the database session (no transaction across processes).
-            runtime_bindings = _runtime_bindings_from_profile(selected_profile)
+            if stage_runtime_authority is not None:
+                _verify_stage_runtime_files(stage_runtime_authority)
+            request = CommandRequestDto(
+                command_id=command_id,
+                run_id=run_id,
+                stage_id=stage_id,
+                requested_by=authorization.actor,
+                requester=authorization.actor,
+                executable=executable,
+                arguments=arguments,
+                shell=False,
+                working_directory_alias=workspace_alias,
+                runtime_profile_id=runtime_profile_id,
+                timeout_seconds=timeout_seconds,
+                network_profile=network_profile,
+                cancellation_policy=CancellationPolicy.TERMINATE_PROCESS_TREE,
+                idempotency_key=idempotency_key,
+                requested_at=requested_at,
+            )
             if runtime_bindings:
                 policy = CommandPolicy(
                     sandbox_root=root,
                     registry=CommandRegistry(),
                     working_directory_aliases=worker_workspace_aliases(aliases, workspace_alias),
-                    runtime_profiles=frozenset({execution_profile_id}),
+                    runtime_profiles=frozenset({execution_profile_id, runtime_profile_id}),
                     network_profiles=frozenset({network_profile}),
                     environment_allowlist=tuple(selected_profile.get("environment_allowlist") or ("PATH",)),
-                    environment_overrides=_runtime_path_overrides(runtime_bindings),
+                    environment_overrides=_command_environment_overrides(command_id, runtime_bindings),
                     runtime_bindings=runtime_bindings,
                 )
                 worker = ExecutionWorker(policy, CommandLogWriter(store, max_output_bytes=1_000_000), supervisor=self._supervisor)
@@ -1345,7 +1507,15 @@ class CommandExecutorService:
                 authorization = session.get(CommandAuthorizationAuditModel, model.authorization_id) if model else None
                 if model is None or run is None or authorization is None:
                     return
-                self._finish_execution(session, model, result, run=run, authorization=authorization, profile=selected_profile)
+                self._finish_execution(
+                    session,
+                    model,
+                    result,
+                    run=run,
+                    authorization=authorization,
+                    profile=selected_profile,
+                    runtime_authority=stage_runtime_authority,
+                )
         except Exception as exc:
             causal_traceback = traceback.format_exc()
             with session_scope() as session:
@@ -1386,7 +1556,17 @@ class CommandExecutorService:
         stage = session.get(MigrationStageModel, stage_id)
         return stage is not None and stage.run_id == run_id
 
-    def _finish_execution(self, session: Session, model: CommandExecutionModel, result, *, run, authorization, profile) -> None:
+    def _finish_execution(
+        self,
+        session: Session,
+        model: CommandExecutionModel,
+        result,
+        *,
+        run,
+        authorization,
+        profile,
+        runtime_authority: dict[str, object] | None = None,
+    ) -> None:
         finished = datetime.now(UTC)
         final_status = (
             CommandStatus.FAILED.value
@@ -1495,7 +1675,16 @@ class CommandExecutorService:
             "ended_at": finished.isoformat(), "duration_ms": model.duration_ms, "status": final_status,
             "exit_code": model.exit_code, "artifact_ids": [ref.artifact_id for ref in output_refs] + [result_artifact.ref.artifact_id],
             "cancellation": {"requested": model.cancel_requested_at is not None, "cancelled": bool(model.cancelled), "timed_out": bool(model.timed_out), "partial_evidence": bool(model.cancelled or model.timed_out)},
-            "runtime_identity": {"profile_checksum": profile.get("checksum") if isinstance(profile, dict) else None},
+            "authorization_execution_profile_id": authorization.execution_profile_id,
+            "runtime_identity": (
+                {
+                    "profile_id": runtime_authority["profile_id"],
+                    "profile_checksum": runtime_authority["checksum"],
+                    "bindings": runtime_authority["runtime_bindings"],
+                }
+                if runtime_authority is not None
+                else {"profile_checksum": profile.get("checksum") if isinstance(profile, dict) else None}
+            ),
             "correlation_id": model.correlation_id,
         }
         manifest_artifact = store.write_text_artifact(
@@ -1515,7 +1704,13 @@ class CommandExecutorService:
         model.result_artifact_id = result_artifact.ref.artifact_id
         model.manifest_artifact_id = manifest_artifact.ref.artifact_id
         model.artifact_ids = [ref.artifact_id for ref in output_refs] + [result_artifact.ref.artifact_id, manifest_artifact.ref.artifact_id]
-        model.runtime_checksum = (profile.get("checksum") if isinstance(profile, dict) and profile.get("checksum") else "sha256:" + hashlib.sha256(json.dumps(manifest_payload, sort_keys=True).encode()).hexdigest())
+        model.runtime_checksum = (
+            runtime_authority["checksum"]
+            if runtime_authority is not None
+            else profile.get("checksum")
+            if isinstance(profile, dict) and profile.get("checksum")
+            else "sha256:" + hashlib.sha256(json.dumps(manifest_payload, sort_keys=True).encode()).hexdigest()
+        )
         session.flush()
         # Command evidence is durable before the terminal transition; a
         # terminal CAS failure must never erase command evidence.

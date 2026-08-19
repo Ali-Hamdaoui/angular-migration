@@ -42,8 +42,10 @@ class CommandClass(str, Enum):
 
 _COMMAND_CLASSES: dict[str, CommandClass] = {
     "angular-update-exact": CommandClass.ANGULAR_UPDATE,
+    "angular-migrate-installed": CommandClass.ANGULAR_UPDATE,
     "npm-ci-bootstrap": CommandClass.NPM_OPERATION,
     "npm-ci-final": CommandClass.NPM_OPERATION,
+    "npm-dependency-materialize": CommandClass.NPM_OPERATION,
     "npm-lockfile-generate": CommandClass.LOCKFILE,
     "npm-script-build-production": CommandClass.BUILD_TEST_LINT,
     "npm-script-test-ci": CommandClass.BUILD_TEST_LINT,
@@ -151,6 +153,8 @@ class TransformationCommandDefinition:
 
     def render_arguments(self, bindings: Mapping[str, str] | None = None) -> tuple[str, ...]:
         values = dict(bindings or {})
+        if self.command_id == "angular-migrate-installed":
+            _validate_installed_migration_bindings(values)
         rendered: list[str] = []
         for pattern in self.argument_patterns:
             rendered.append(
@@ -196,6 +200,23 @@ def command_arguments_match(patterns: tuple[str, ...], arguments: tuple[str, ...
         if re.fullmatch(expression, argument) is None:
             return False
     return True
+
+
+_NPM_PACKAGE_NAME = re.compile(r"^@?[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)?$")
+_EXACT_SEMVER = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
+
+
+def _validate_installed_migration_bindings(bindings: Mapping[str, str]) -> None:
+    """Validate the bounded inputs accepted by the installed-migration helper."""
+    if set(bindings) != {"package", "from_version", "to_version"}:
+        raise ValueError("installed migration requires package, from_version, and to_version")
+    package = bindings["package"]
+    from_version = bindings["from_version"]
+    to_version = bindings["to_version"]
+    if not isinstance(package, str) or _NPM_PACKAGE_NAME.fullmatch(package) is None:
+        raise ValueError("installed migration package must be an npm package name")
+    if any(_EXACT_SEMVER.fullmatch(value) is None for value in (from_version, to_version)):
+        raise ValueError("installed migration versions must be exact semantic versions")
 
 
 @dataclass(frozen=True)
@@ -321,6 +342,69 @@ ANGULAR_UPDATE_V3_RENDERER: Final[TransformationCommandDefinition] = Transformat
     description="Execute an approved exact Angular update in the isolated stage workspace (v3)",
 )
 
+# v4 is the strict renderer for new V2.1 plans. v1-v3 remain immutable history.
+ANGULAR_UPDATE_V4_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
+    command_id="angular-update-exact",
+    template_id="tpl-angular-update-exact-v4",
+    executable="npx",
+    argument_patterns=(
+        "--yes",
+        "--package=@angular/cli@{target_cli_exact}",
+        "ng",
+        "update",
+        "@angular/cli@{target_cli_exact}",
+        "@angular/core@{target_exact}",
+    ),
+    executable_aliases=("npx.cmd",),
+    timeout_seconds=1800,
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+    max_output_bytes=5_000_000,
+    description="Execute a strict exact Angular update in the isolated stage workspace (v4)",
+)
+
+# v5 runs the workspace-local CLI.  Passing a target CLI as an npx temporary
+# package makes Angular CLI 12 perform a second temporary-bin lookup, which
+# fails on npm 6 Windows.  The local CLI is the supported authority for
+# `ng update`; its package arguments still bind the adjacent target exactly.
+ANGULAR_UPDATE_V5_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
+    command_id="angular-update-exact",
+    template_id="tpl-angular-update-exact-v5",
+    executable="npx",
+    argument_patterns=(
+        "ng",
+        "update",
+        "@angular/cli@{target_cli_exact}",
+        "@angular/core@{target_exact}",
+    ),
+    executable_aliases=("npx.cmd",),
+    timeout_seconds=1800,
+    # Angular CLI 11 otherwise redirects `ng update` to the latest stable
+    # CLI, which can require a newer Node than the governed stage runtime.
+    # The exact target package arguments remain the authority; this only
+    # disables that unrelated latest-version redirect.
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE", "NG_DISABLE_VERSION_CHECK"),
+    max_output_bytes=5_000_000,
+    description="Execute an exact Angular update through the workspace-local CLI (v5)",
+)
+
+ANGULAR_INSTALLED_MIGRATION_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
+    command_id="angular-migrate-installed",
+    template_id="tpl-angular-migrate-installed-v1",
+    executable="node",
+    argument_patterns=(
+        "backend/app/command_execution/run_installed_migrations.cjs",
+        "{package}",
+        "{from_version}",
+        "{to_version}",
+    ),
+    executable_aliases=("node.exe",),
+    timeout_seconds=1800,
+    network_profile="approved-registries-only",
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+    max_output_bytes=5_000_000,
+    description="Execute approved installed Angular migrations as a governed fallback",
+)
+
 # Immutable detach/reattach steps of the dependency-transition repair: the
 # blocking peer dependency is uninstalled, the Angular update retried, and the
 # dependency reinstalled at the approved target version.
@@ -348,6 +432,19 @@ NPM_DEPENDENCY_INSTALL_RENDERER: Final[TransformationCommandDefinition] = Transf
     allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
     max_output_bytes=5_000_000,
     description="Install the approved target version of the detached dependency (reattach step of the dependency transition repair)",
+)
+
+NPM_DEPENDENCY_MATERIALIZE_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
+    command_id="npm-dependency-materialize",
+    template_id="tpl-npm-dependency-materialize-v1",
+    executable="npm",
+    argument_patterns=("ci",),
+    executable_aliases=("npm.cmd",),
+    timeout_seconds=3600,
+    network_profile="approved-registries-only",
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+    max_output_bytes=5_000_000,
+    description="Materialize the checkpoint-bound dependency state before transition mutation",
 )
 
 NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
@@ -386,6 +483,7 @@ TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinitio
         allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"), max_output_bytes=5_000_000,
         description="Execute an approved exact Angular update",
     ),
+    "angular-migrate-installed": ANGULAR_INSTALLED_MIGRATION_RENDERER,
     "angular-version-verify": TransformationCommandDefinition(
         command_id="angular-version-verify", template_id="tpl-angular-version-verify", executable="npx",
         argument_patterns=("ng", "version"), executable_aliases=("npx.cmd",), timeout_seconds=300,
@@ -423,6 +521,7 @@ TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinitio
     ),
     "npm-dependency-uninstall": NPM_DEPENDENCY_UNINSTALL_RENDERER,
     "npm-dependency-install": NPM_DEPENDENCY_INSTALL_RENDERER,
+    "npm-dependency-materialize": NPM_DEPENDENCY_MATERIALIZE_RENDERER,
 }
 
 
@@ -461,6 +560,28 @@ _TRANSFORMATION_COMMAND_TEMPLATES: tuple[CommandTemplate, ...] = tuple(
         version=3,
         allowed_env_vars=ANGULAR_UPDATE_V3_RENDERER.allowed_env_vars,
         max_output_bytes=ANGULAR_UPDATE_V3_RENDERER.max_output_bytes,
+    ),
+    CommandTemplate(
+        template_id=ANGULAR_UPDATE_V4_RENDERER.template_id,
+        command_id=ANGULAR_UPDATE_V4_RENDERER.command_id,
+        executable=ANGULAR_UPDATE_V4_RENDERER.executable,
+        arguments=ANGULAR_UPDATE_V4_RENDERER.argument_patterns,
+        executable_aliases=ANGULAR_UPDATE_V4_RENDERER.executable_aliases,
+        description=ANGULAR_UPDATE_V4_RENDERER.description,
+        version=4,
+        allowed_env_vars=ANGULAR_UPDATE_V4_RENDERER.allowed_env_vars,
+        max_output_bytes=ANGULAR_UPDATE_V4_RENDERER.max_output_bytes,
+    ),
+    CommandTemplate(
+        template_id=ANGULAR_UPDATE_V5_RENDERER.template_id,
+        command_id=ANGULAR_UPDATE_V5_RENDERER.command_id,
+        executable=ANGULAR_UPDATE_V5_RENDERER.executable,
+        arguments=ANGULAR_UPDATE_V5_RENDERER.argument_patterns,
+        executable_aliases=ANGULAR_UPDATE_V5_RENDERER.executable_aliases,
+        description=ANGULAR_UPDATE_V5_RENDERER.description,
+        version=5,
+        allowed_env_vars=ANGULAR_UPDATE_V5_RENDERER.allowed_env_vars,
+        max_output_bytes=ANGULAR_UPDATE_V5_RENDERER.max_output_bytes,
     ),
 )
 

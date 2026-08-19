@@ -45,12 +45,14 @@ from app.repositories.models import (
     ArtifactMetadataModel,
     CommandExecutionModel,
     LlmInvocationModel,
+    MigrationStageModel,
     MigrationRunModel,
     RepairAttemptModel,
     RepairFingerprintRecoveryModel,
     StageCheckpointModel,
     StageExecutionPlanModel,
     StageGatePackageModel,
+    StageStepModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
     UsageCostRecordModel,
@@ -73,11 +75,13 @@ from app.services.dependency_closure_service import (
     validate_dependency_transition_evidence,
     verify_dependency_transition_evidence_for_source,
 )
+from app.services.dependency_repair_preflight_service import DependencyRepairPreflightService
 from app.services.failure_evidence_service import (
     CONTEXT_PACK_MAX_BYTES_PER_FILE,
     FailureEvidenceService,
     validate_context_pack,
 )
+from app.services.repair_lifecycle_service import RepairLifecycleService
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformation_continuation_service import append_continuation_event
 from app.services.workspace_fingerprint import (
@@ -143,17 +147,27 @@ class ProvenanceEntry(BaseModel):
 
 def _normalize_provenance(value: object) -> list[dict[str, str]]:
     entries = value if isinstance(value, list) else []
-    if all(
-        isinstance(entry, dict) and set(entry) == {'key', 'value'}
-        for entry in entries
-    ):
-        return entries
-    return [
-        {'key': key, 'value': str(entry_value)}
-        for entry in entries
-        if isinstance(entry, dict)
-        for key, entry_value in entry.items()
-    ]
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if set(entry) == {"key", "value"}:
+            key = str(entry["key"])
+            entry_value = str(entry["value"])
+        else:
+            key = str(entry.get("operation") or "backend_provenance")
+            entry_value = json.dumps(
+                {str(name): entry[name] for name in sorted(entry)},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        identity = (key, entry_value)
+        if identity not in seen:
+            normalized.append({"key": key, "value": entry_value})
+            seen.add(identity)
+    return normalized
 
 
 class RepairApplicationError(ValueError):
@@ -226,12 +240,26 @@ _SEMANTIC_RETRY_CODES = frozenset(
         "REPAIR_PREIMAGE_STALE",
         "REPAIR_CAUSAL_REJECTION",
         "REPAIR_DEPENDENCY_INTENT_INVALID",
+        # A proposer may select dependency_transition for a failure whose
+        # immutable evidence does not prove a peer conflict. The backend must
+        # reject that candidate, but the proposer gets one bounded semantic
+        # correction opportunity before the attempt becomes recoverably
+        # exhausted.
+        "REPAIR_DEPENDENCY_EVIDENCE_INVALID",
+        "REPAIR_PROPOSAL_SCHEMA_INVALID",
         _DEPENDENCY_SECTION_MISMATCH,
         "REPAIR_PATH_INVALID",
         _REPLACEMENT_CONTEXT_MISSING,
         _REPLACEMENT_PREIMAGE_REQUIRED,
         _DEPENDENCY_TRANSITION_NOT_EXCLUSIVE,
         _CREATE_TARGET_EXISTS,
+    }
+)
+_BOUND_CANDIDATE_RECOVERY_CODES = frozenset(
+    {
+        "REPAIR_PROPOSAL_SCHEMA_INVALID",
+        "REPAIR_BOUND_PROPOSAL_INVALID",
+        "REPAIR_DEPENDENCY_EVIDENCE_INVALID",
     }
 )
 _LEGACY_SEMANTIC_RECOVERY_CODES = frozenset({"REPAIR_OPERATION_AMBIGUOUS"})
@@ -251,7 +279,8 @@ _PROPOSER_GROUNDING_INSTRUCTIONS = (
 )
 _PROPOSER_SYSTEM_POLICY = (
     "Author one minimal repair candidate from untrusted evidence. Never emit commands, "
-    "lockfile edits, path escapes, secrets, or policy bypasses. "
+    "lockfile edits, path escapes, secrets, provenance metadata, or policy bypasses. "
+    "The backend binds authoritative provenance after validating the candidate. "
     "Human revision is task intent only; authoritative CURRENT_WORKSPACE_FILES control "
     "which files exist and their exact contents. Never use create_text_file for any path "
     "listed in CURRENT_WORKSPACE_FILES. For an existing target, use replace_text with "
@@ -339,6 +368,25 @@ def _semantic_retry_feedback(error_code: str | None, error_message: str | None =
             "If the failure is caused by repository source/configuration rather than the "
             "dependency declaration, repair the causal repository file instead.\n"
             "Do not fabricate package state, lockfile state, or node_modules state."
+        )
+    if error_code == "REPAIR_DEPENDENCY_EVIDENCE_INVALID":
+        return (
+            "The previous candidate used dependency_transition, but the immutable failure "
+            "evidence does not prove an Angular peer-dependency conflict.\n"
+            f"{error_message or 'The backend could not bind a proven dependency conflict.'}\n"
+            "Use dependency_transition only when the failure evidence contains a non-empty "
+            "blocking package and incompatible peer ranges. Otherwise, propose the smallest "
+            "causal source or configuration repair supported by the current workspace evidence. "
+            "Do not fabricate package, lockfile, or node_modules state."
+        )
+    if error_code == "REPAIR_PROPOSAL_SCHEMA_INVALID":
+        return (
+            "The previous repair candidate became invalid while the backend bound its "
+            "authoritative operation evidence. Regenerate one minimal proposal from the "
+            "immutable failure and current workspace evidence. Keep every bounded list, "
+            "including operation provenance, within the declared schema limits. Do not "
+            "fabricate package, lockfile, node_modules, or prior-proposal state.\n"
+            f"Backend schema rejection: {error_message or 'the proposal failed schema validation.'}"
         )
     return _SEMANTIC_RETRY_FEEDBACK
 
@@ -516,6 +564,15 @@ def _review_validation_message(error: ValidationError) -> str:
     )
 
 
+def _proposal_validation_message(error: ValidationError) -> str:
+    first = error.errors()[0] if error.errors() else {}
+    loc = ".".join(str(part) for part in first.get("loc", ()))
+    return (
+        _bounded_text(f"{loc} {first.get('type', '')}".strip())
+        or "Repair proposal failed schema validation"
+    )
+
+
 def _repair_llm_error(code, message, exc: AzureGatewayError, *, retryable: bool) -> RepairLlmError:
     error = RepairLlmError(
         code,
@@ -585,11 +642,11 @@ class RepairOperationCandidate(BaseModel):
     schema_version: str | None = Field(default=None, min_length=1, max_length=64)
     blocking_dependency: BlockingDependencyCandidateInput | None = None
     target_state: TargetStateCandidateInput | None = None
-    provenance: list[ProvenanceEntry] = Field(default_factory=list, max_length=32)
 
 
 class RepairOperation(RepairOperationCandidate):
     preimage_sha256: str | None = None
+    provenance: list[ProvenanceEntry] = Field(default_factory=list, max_length=32)
 
 
 class RepairProposalCandidate(BaseModel):
@@ -645,6 +702,535 @@ class RepairApplicationService:
         self._scope = scope
         self._gateway = gateway
         self._now = now_provider or (lambda: datetime.now(UTC))
+
+    def recover_stale_dependency_state(
+        self,
+        *,
+        run_id: str,
+        attempt_id: str,
+        expected_state_version: int,
+        idempotency_key: str,
+        actor: str,
+    ) -> dict[str, object]:
+        """Supersede a repeated failed transition and resume deterministic lock repair."""
+        event_key = "dependency-state-recovery:" + hashlib.sha256(
+            idempotency_key.encode()
+        ).hexdigest()
+        with self._scope() as session:
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == run_id
+                )
+            )
+            event = session.scalar(
+                select(WorkflowEventModel).where(
+                    WorkflowEventModel.run_id == run_id,
+                    WorkflowEventModel.idempotency_key == f"{continuation.id}:{event_key}"
+                    if continuation is not None
+                    else False,
+                )
+            )
+            if event is not None:
+                return {
+                    "attempt_id": attempt_id,
+                    "status": continuation.status,
+                    "state_version": continuation.state_version,
+                    "idempotent_replay": True,
+                }
+            attempt = session.get(RepairAttemptModel, attempt_id)
+            initial_recovery = bool(
+                continuation is not None
+                and continuation.status == "waiting_gate"
+                and continuation.current_node == "wait_g10"
+                and attempt is not None
+                and attempt.status == "waiting_g10"
+            )
+            retry_recovery = bool(
+                continuation is not None
+                and continuation.status == "blocked"
+                and continuation.current_node == "lockfile_generation"
+                and continuation.last_error_code == "IDEMPOTENCY_KEY_REUSED"
+                and attempt is not None
+                and attempt.status == "superseded"
+            )
+            if (
+                continuation is None
+                or attempt is None
+                or attempt.run_id != run_id
+                or attempt.stage_id != continuation.current_stage_id
+                or continuation.state_version != expected_state_version
+                or not (initial_recovery or retry_recovery)
+            ):
+                raise RepairApplicationError(
+                    "DEPENDENCY_STATE_RECOVERY_STALE",
+                    "The waiting G10 dependency recovery authority changed",
+                )
+            run = session.get(MigrationRunModel, run_id)
+            stage = session.get(MigrationStageModel, continuation.current_stage_id)
+            binding = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == run_id,
+                    StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            if run is None or stage is None or binding is None:
+                raise RepairApplicationError(
+                    "DEPENDENCY_STATE_RECOVERY_AUTHORITY_MISSING",
+                    "Run, stage, or workspace authority is missing",
+                )
+            workspace = Path(binding.workspace_path).resolve(strict=True)
+            live = STAGE_FINGERPRINT_PROFILE.fingerprint(workspace)
+            if live != binding.workspace_fingerprint or live != attempt.pre_fingerprint:
+                raise RepairApplicationError(
+                    "REPAIR_WORKSPACE_STALE", "Repair workspace fingerprint changed"
+                )
+            diagnosis = DependencyRepairPreflightService().classify_current_state(
+                workspace=workspace,
+                source_family=stage.source_version_family,
+                target_family=stage.target_version_family,
+            )
+            if diagnosis.get("classification") != "TARGET_MANIFEST_AHEAD":
+                raise RepairApplicationError(
+                    "DEPENDENCY_STATE_RECONCILIATION_NOT_APPLICABLE",
+                    f"Current dependency state is {diagnosis.get('classification')}",
+                )
+            causal_execution, result_checksum = self._causal_lockfile_execution(
+                session, run, attempt, workspace
+            )
+            proposal = self._recovery_proposal(session, run, attempt)
+            operation = next(iter(proposal.get("operations") or []), {})
+            if not self._same_failed_transition_exists(session, run, attempt, operation):
+                raise RepairApplicationError(
+                    "REPAIR_STRATEGY_NOT_PREVIOUSLY_FAILED",
+                    "The proposed transition has no equivalent applied runtime failure",
+                )
+            now = self._now()
+            if initial_recovery:
+                gate = session.get(StageGatePackageModel, attempt.g10_gate_package_id)
+                if gate is None or gate.status != "pending":
+                    raise RepairApplicationError(
+                        "DEPENDENCY_STATE_RECOVERY_GATE_STALE", "The G10 package is not pending"
+                    )
+                gate.status = "stale"
+                gate.stale_at = now
+                attempt.status = "superseded"
+                attempt.completed_at = now
+                attempt.updated_at = now
+            step = session.scalar(
+                select(StageStepModel).where(
+                    StageStepModel.run_id == run_id,
+                    StageStepModel.stage_id == continuation.current_stage_id,
+                    StageStepModel.name == "lockfile_generation-0",
+                )
+            )
+            if step is None:
+                raise RepairApplicationError(
+                    "STAGE_PLAN_COMMAND_AUTHORITY_MISSING",
+                    "The stage has no governed lockfile-generation step",
+                )
+            step.status = "RUNNING"
+            step.execution_id = causal_execution.id
+            step.completed_at = None
+            continuation.status = "queued"
+            continuation.current_node = "lockfile_generation"
+            continuation.worker_id = None
+            continuation.lease_expires_at = None
+            continuation.waiting_execution_id = None
+            continuation.last_error_code = None
+            continuation.last_error_message = None
+            continuation.wake_sequence += 1
+            continuation.state_version += 1
+            continuation.updated_at = now
+            session.flush()
+            append_continuation_event(
+                session,
+                continuation,
+                event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED,
+                key=event_key,
+                reason="repeated dependency transition superseded by deterministic state reconciliation",
+                actor=actor,
+                occurred_at=now,
+                payload={
+                    "attempt_id": attempt.id,
+                    "causal_execution_id": causal_execution.id,
+                    "causal_result_checksum": result_checksum,
+                    "classification": diagnosis["classification"],
+                    "manifest_checksum": self._request_checksum(
+                        json.loads((workspace / "package.json").read_text(encoding="utf-8"))
+                    ),
+                    "lockfile_checksum": "sha256:" + hashlib.sha256(
+                        (workspace / "package-lock.json").read_bytes()
+                    ).hexdigest(),
+                    "workspace_fingerprint": live,
+                    "expected_state_version": expected_state_version,
+                },
+            )
+            return {
+                "attempt_id": attempt.id,
+                "status": continuation.status,
+                "state_version": continuation.state_version,
+                "classification": diagnosis["classification"],
+                "causal_execution_id": causal_execution.id,
+                "idempotent_replay": False,
+            }
+
+    def recover_manifest_ahead_dependency_state(
+        self,
+        *,
+        run_id: str,
+        attempt_id: str,
+        expected_state_version: int,
+        idempotency_key: str,
+        actor: str,
+    ) -> dict[str, object]:
+        """Route a target manifest with stale resolution to lockfile recovery.
+
+        This path is deliberately narrower than repair recovery: the current
+        manifest must already be present in the attempt-bound checkpoint, so
+        no proposal, G10, or LLM output is treated as the source of authority.
+        """
+        event_key = "dependency-state-manifest-ahead:" + hashlib.sha256(
+            idempotency_key.encode()
+        ).hexdigest()
+        with self._scope() as session:
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == run_id
+                )
+            )
+            attempt = session.get(RepairAttemptModel, attempt_id)
+            legacy_blocked_recovery = bool(
+                continuation is not None
+                and continuation.status == "blocked"
+                and continuation.current_node == "classify_failure"
+                and continuation.last_error_code == "REPAIR_ATTEMPT_LIMIT"
+                and attempt is not None
+                and attempt.status == "superseded"
+            )
+            if (
+                continuation is None
+                or attempt is None
+                or not (
+                    (
+                        continuation.status == "waiting_gate"
+                        and continuation.current_node == "wait_g10"
+                        and attempt.status == "waiting_g10"
+                    )
+                    or legacy_blocked_recovery
+                )
+                or attempt.run_id != run_id
+                or attempt.stage_id != continuation.current_stage_id
+                or continuation.state_version != expected_state_version
+            ):
+                raise RepairApplicationError(
+                    "DEPENDENCY_STATE_RECOVERY_STALE",
+                    "The waiting G10 dependency recovery authority changed",
+                )
+            existing = session.scalar(
+                select(WorkflowEventModel).where(
+                    WorkflowEventModel.run_id == run_id,
+                    WorkflowEventModel.idempotency_key == f"{continuation.id}:{event_key}",
+                )
+            )
+            if existing is not None:
+                return {
+                    "attempt_id": attempt.id,
+                    "status": continuation.status,
+                    "state_version": continuation.state_version,
+                    "idempotent_replay": True,
+                }
+            stage = session.get(MigrationStageModel, continuation.current_stage_id)
+            binding = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == run_id,
+                    StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            if stage is None or binding is None:
+                raise RepairApplicationError(
+                    "DEPENDENCY_STATE_RECOVERY_AUTHORITY_MISSING",
+                    "Stage or workspace authority is missing",
+                )
+            workspace = Path(binding.workspace_path).resolve(strict=True)
+            live = STAGE_FINGERPRINT_PROFILE.fingerprint(workspace)
+            if live != binding.workspace_fingerprint or live != attempt.pre_fingerprint:
+                raise RepairApplicationError(
+                    "REPAIR_WORKSPACE_STALE",
+                    "Repair workspace fingerprint changed",
+                )
+            diagnosis = DependencyRepairPreflightService().classify_current_state(
+                workspace=workspace,
+                source_family=stage.source_version_family,
+                target_family=stage.target_version_family,
+            )
+            if diagnosis.get("classification") != "TARGET_MANIFEST_AHEAD":
+                raise RepairApplicationError(
+                    "DEPENDENCY_STATE_RECONCILIATION_NOT_APPLICABLE",
+                    f"Current dependency state is {diagnosis.get('classification')}",
+                )
+            checkpoint = session.get(StageCheckpointModel, attempt.checkpoint_id)
+            if (
+                checkpoint is None
+                or checkpoint.kind != "pre_repair"
+                or not checkpoint.safe_for_resume
+                or self._stage_checkpoint_fingerprint(session, checkpoint) != attempt.pre_fingerprint
+            ):
+                raise RepairApplicationError(
+                    "DEPENDENCY_STATE_RECOVERY_CHECKPOINT_INVALID",
+                    "The target manifest is not bound to a safe repair checkpoint",
+                )
+            checkpoint_manifest = Path(checkpoint.workspace_path) / "package.json"
+            current_manifest = workspace / "package.json"
+            if (
+                not checkpoint_manifest.is_file()
+                or not current_manifest.is_file()
+                or self._file_checksum(checkpoint_manifest) != self._file_checksum(current_manifest)
+            ):
+                raise RepairApplicationError(
+                    "DEPENDENCY_STATE_RECOVERY_MANIFEST_INVALID",
+                    "Current package.json does not match the authoritative checkpoint",
+                )
+            step = session.scalar(
+                select(StageStepModel).where(
+                    StageStepModel.run_id == run_id,
+                    StageStepModel.stage_id == continuation.current_stage_id,
+                    StageStepModel.name == "lockfile_generation-0",
+                )
+            )
+            execution = session.get(CommandExecutionModel, step.execution_id) if step and step.execution_id else None
+            if not self._valid_lockfile_failure(session, execution, run_id, continuation.current_stage_id):
+                raise RepairApplicationError(
+                    "DEPENDENCY_STATE_CAUSAL_EXECUTION_INVALID",
+                    "The stage has no immutable failed npm lockfile execution to reconcile",
+                )
+            now = self._now()
+            if not legacy_blocked_recovery:
+                gate = session.get(StageGatePackageModel, attempt.g10_gate_package_id)
+                if gate is None or gate.status != "pending":
+                    raise RepairApplicationError(
+                        "DEPENDENCY_STATE_RECOVERY_GATE_STALE",
+                        "The G10 package is not pending",
+                    )
+                gate.status = "stale"
+                gate.stale_at = now
+                RepairLifecycleService.transition_in_session(
+                    session,
+                    attempt,
+                    "superseded",
+                    reason="deterministic target-manifest reconciliation superseded pending G10",
+                    actor=actor,
+                    now=now,
+                )
+            step.status = "RUNNING"
+            step.execution_id = execution.id
+            step.completed_at = None
+            continuation.status = "queued"
+            continuation.current_node = "lockfile_generation"
+            continuation.worker_id = None
+            continuation.lease_expires_at = None
+            continuation.waiting_execution_id = None
+            continuation.last_error_code = None
+            continuation.last_error_message = None
+            continuation.wake_sequence += 1
+            continuation.state_version += 1
+            continuation.updated_at = now
+            session.flush()
+            append_continuation_event(
+                session,
+                continuation,
+                event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED,
+                key=event_key,
+                reason="target manifest is ahead of stale dependency resolution; deterministic lockfile reconciliation queued",
+                actor=actor,
+                occurred_at=now,
+                payload={
+                    "attempt_id": attempt.id,
+                    "checkpoint_id": checkpoint.id,
+                    "causal_execution_id": execution.id,
+                    "classification": diagnosis["classification"],
+                    "manifest_checksum": self._file_checksum(current_manifest),
+                    "lockfile_checksum": self._file_checksum(workspace / "package-lock.json"),
+                    "workspace_fingerprint": live,
+                    "expected_state_version": expected_state_version,
+                },
+            )
+            return {
+                "attempt_id": attempt.id,
+                "status": continuation.status,
+                "state_version": continuation.state_version,
+                "classification": diagnosis["classification"],
+                "causal_execution_id": execution.id,
+                "idempotent_replay": False,
+            }
+
+    @staticmethod
+    def _file_checksum(path: Path) -> str:
+        return (
+            "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+            if path.is_file() and not path.is_symlink()
+            else "missing"
+        )
+
+    @staticmethod
+    def _stage_checkpoint_fingerprint(session, checkpoint) -> str | None:
+        from app.services.transformer_stage_service import TransformerStageService
+
+        return TransformerStageService().authoritative_checkpoint_fingerprint(session, checkpoint)
+
+    @staticmethod
+    def _valid_lockfile_failure(session, execution, run_id: str, stage_id: str) -> bool:
+        if (
+            execution is None
+            or execution.run_id != run_id
+            or execution.stage_id != stage_id
+            or execution.command_id != "npm-lockfile-generate"
+            or execution.status != "failed"
+            or execution.exit_code in (None, 0)
+            or not re.search(
+                r"(?im)^\s*npm\s+(?:ERR!|error)\s+(?:code\s+)?ERESOLVE\b",
+                execution.failure_message or "",
+            )
+        ):
+            return False
+        artifact_ids = (
+            execution.result_artifact_id,
+            execution.command_log_artifact_id,
+            execution.manifest_artifact_id,
+        )
+        return all(
+            artifact_id
+            and (metadata := session.get(ArtifactMetadataModel, "metadata-" + str(artifact_id))) is not None
+            and metadata.immutable
+            and metadata.run_id == run_id
+            and metadata.stage_id == stage_id
+            and metadata.execution_id == execution.id
+            for artifact_id in artifact_ids
+        )
+
+    @staticmethod
+    def _causal_lockfile_execution(session, run, attempt, workspace):
+        metadata = session.get(
+            ArtifactMetadataModel,
+            "metadata-" + str(attempt.failure_evidence_artifact_id),
+        )
+        if (
+            metadata is None
+            or not metadata.immutable
+            or metadata.run_id != attempt.run_id
+            or metadata.stage_id != attempt.stage_id
+            or metadata.checksum != attempt.failure_evidence_checksum
+        ):
+            raise RepairApplicationError(
+                "DEPENDENCY_STATE_CAUSAL_EVIDENCE_INVALID",
+                "Immutable dependency failure evidence is missing or stale",
+            )
+        stored = LocalFilesystemArtifactStore(
+            Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+        ).read_artifact(run.id, metadata.relative_path)
+        payload = json.loads(stored.content)
+        execution = session.get(CommandExecutionModel, payload.get("execution_id"))
+        if (
+            stored.ref.checksum != metadata.checksum
+            or stored.envelope is None
+            or stored.envelope.run_id != attempt.run_id
+            or stored.envelope.stage_id != attempt.stage_id
+            or execution is None
+            or execution.run_id != attempt.run_id
+            or execution.stage_id != attempt.stage_id
+            or execution.command_id != "npm-lockfile-generate"
+            or execution.status != "failed"
+            or execution.exit_code in (None, 0)
+            or not re.search(r"(?im)^\s*npm\s+(?:ERR!|error)\s+(?:code\s+)?ERESOLVE\b", execution.failure_message or "")
+        ):
+            raise RepairApplicationError(
+                "DEPENDENCY_STATE_CAUSAL_EXECUTION_INVALID",
+                "Failure evidence does not bind a terminal npm ERESOLVE lockfile execution",
+            )
+        artifacts = (
+            execution.result_artifact_id,
+            execution.command_log_artifact_id,
+            execution.manifest_artifact_id,
+        )
+        artifact_rows = [
+            session.get(ArtifactMetadataModel, "metadata-" + str(artifact_id))
+            for artifact_id in artifacts
+        ]
+        if any(
+            row is None
+            or not row.immutable
+            or row.run_id != attempt.run_id
+            or row.stage_id != attempt.stage_id
+            or row.execution_id != execution.id
+            for row in artifact_rows
+        ):
+            raise RepairApplicationError(
+                "DEPENDENCY_STATE_CAUSAL_EVIDENCE_INVALID",
+                "Causal command result, log, or manifest evidence is incomplete",
+            )
+        start = execution.start_fingerprint or {}
+        package_checksum = "sha256:" + hashlib.sha256(
+            (workspace / "package.json").read_bytes()
+        ).hexdigest()
+        lock_checksum = "sha256:" + hashlib.sha256(
+            (workspace / "package-lock.json").read_bytes()
+        ).hexdigest()
+        if (
+            start.get("post_apply_pre_command_package_json_sha256") != package_checksum
+            or start.get("post_apply_pre_command_package_lock_sha256") != lock_checksum
+        ):
+            raise RepairApplicationError(
+                "DEPENDENCY_STATE_CAUSAL_WORKSPACE_MISMATCH",
+                "Current manifest/lockfile state differs from the causal failed execution",
+            )
+        return execution, artifact_rows[0].checksum
+
+    @staticmethod
+    def _recovery_proposal(session, run, attempt) -> dict[str, object]:
+        metadata = session.get(ArtifactMetadataModel, "metadata-" + str(attempt.proposal_artifact_id))
+        if metadata is None or metadata.checksum != attempt.proposal_checksum:
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Repair proposal is missing")
+        stored = LocalFilesystemArtifactStore(
+            Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+        ).read_artifact(run.id, metadata.relative_path)
+        if stored.ref.checksum != attempt.proposal_checksum:
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Repair proposal checksum changed")
+        value = json.loads(stored.content)
+        return value if isinstance(value, dict) else {}
+
+    @classmethod
+    def _same_failed_transition_exists(cls, session, run, attempt, operation) -> bool:
+        if not isinstance(operation, dict) or operation.get("operation") != "dependency_transition":
+            return False
+        current = (
+            operation.get("strategy"),
+            (operation.get("blocking_dependency") or {}).get("package"),
+            (operation.get("target_state") or {}).get("target_version"),
+        )
+        rows = session.scalars(
+            select(RepairAttemptModel).where(
+                RepairAttemptModel.run_id == attempt.run_id,
+                RepairAttemptModel.stage_id == attempt.stage_id,
+                RepairAttemptModel.attempt_number < attempt.attempt_number,
+                RepairAttemptModel.apply_ledger_artifact_id.is_not(None),
+                RepairAttemptModel.status.in_(("validation_failed", "superseded")),
+            )
+        ).all()
+        for row in rows:
+            try:
+                prior = cls._recovery_proposal(session, run, row)
+                item = next(iter(prior.get("operations") or []), {})
+            except (RepairApplicationError, ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError):
+                continue
+            fingerprint = (
+                item.get("strategy"),
+                (item.get("blocking_dependency") or {}).get("package"),
+                (item.get("target_state") or {}).get("target_version"),
+            )
+            if item.get("operation") == "dependency_transition" and fingerprint == current:
+                return True
+        return False
 
     def propose(self, attempt_id: str) -> dict[str, object]:
         from app.services.repair_lifecycle_reliability_service import RepairLifecycleReliabilityService
@@ -745,11 +1331,18 @@ class RepairApplicationService:
             try:
                 context = self._assert_fresh_authority(context, role="proposer")
                 proposal = self.validate_proposal(self._bind_proposal_candidate(output, context), context)
-            except RepairApplicationError as error:
-                retry_error = error
+            except (RepairApplicationError, ValidationError) as error:
+                retry_error = (
+                    error
+                    if isinstance(error, RepairApplicationError)
+                    else RepairApplicationError(
+                        "REPAIR_PROPOSAL_SCHEMA_INVALID",
+                        _proposal_validation_message(error),
+                    )
+                )
                 hydrated_retry_context = None
                 if (
-                    error.code
+                    retry_error.code
                     in {
                         "REPAIR_REPLACEMENT_MISSING",
                         _REPLACEMENT_PREIMAGE_REQUIRED,
@@ -999,6 +1592,12 @@ class RepairApplicationService:
                 "REPAIR_RECOVERY_NOT_ELIGIBLE",
                 "Repair context evidence cannot be reconstructed",
             )
+        # Recovery contexts may predate a parser fix. Rehydrate derived npm
+        # diagnosis from the immutable command text before creating the child
+        # lineage; the raw evidence remains unchanged.
+        context_pack, _diagnosis = FailureEvidenceService.normalize_dependency_transition_evidence(
+            context_pack
+        )
         normalized_failure = context_pack.get("normalized_failure")
         forbidden_change_policy = context_pack.get("forbidden_change_policy")
         if not isinstance(normalized_failure, dict) or not isinstance(
@@ -1347,7 +1946,6 @@ class RepairApplicationService:
                 or checkpoint.stage_id != attempt.stage_id
                 or checkpoint.kind != "pre_repair"
                 or not checkpoint.safe_for_resume
-                or checkpoint.workspace_path != binding.workspace_path
                 or checkpoint.workspace_fingerprint != binding.workspace_fingerprint
             ):
                 raise RepairApplicationError("REPAIR_RECOVERY_NOT_ELIGIBLE", "Pre-repair checkpoint authority is missing or stale")
@@ -1534,7 +2132,7 @@ class RepairApplicationService:
                     and continuation.last_error_code == "REPAIR_INVOCATION_UNCERTAIN"
                     and continuation.worker_id is None
                     and continuation.lease_expires_at is None
-                    and attempt.status == "evidence_frozen"
+                    and attempt.status in {"evidence_frozen", "proposed"}
                     and attempt.proposal_artifact_id is None
                     and attempt.proposer_invocation_id == successor.id
                     and successor.status == "in_progress"
@@ -1567,7 +2165,7 @@ class RepairApplicationService:
                 or continuation.last_error_code != "REPAIR_INVOCATION_UNCERTAIN"
                 or continuation.worker_id is not None
                 or continuation.lease_expires_at is not None
-                or attempt.status != "evidence_frozen"
+                or attempt.status not in {"evidence_frozen", "proposed"}
                 or attempt.proposal_artifact_id is not None
                 or (old is None and attempt.proposer_invocation_id is not None)
             ):
@@ -1597,7 +2195,6 @@ class RepairApplicationService:
                 or checkpoint is None
                 or checkpoint.kind != "pre_repair"
                 or not checkpoint.safe_for_resume
-                or checkpoint.workspace_path != binding.workspace_path
                 or checkpoint.workspace_fingerprint != binding.workspace_fingerprint
                 or attempt.pre_fingerprint != binding.workspace_fingerprint
                 or StageSandboxCopier.fingerprint(Path(binding.workspace_path))
@@ -1781,12 +2378,18 @@ class RepairApplicationService:
             )
         if (
             latest.id != attempt.id
-            or attempt.status != "evidence_frozen"
+            or attempt.status not in {"evidence_frozen", "blocked"}
             or attempt.completed_at is not None
             or continuation.current_stage_id != attempt.stage_id
             or continuation.status != "blocked"
             or continuation.current_node != "propose_repair"
-            or continuation.last_error_code != "REPAIR_SEMANTIC_RETRY_EXHAUSTED"
+            or continuation.last_error_code
+            not in {
+                "REPAIR_SEMANTIC_RETRY_EXHAUSTED",
+                "REPAIR_CAUSAL_REJECTION",
+                "REPAIR_DEPENDENCY_EVIDENCE_INVALID",
+                "REPAIR_PROPOSAL_SCHEMA_INVALID",
+            }
             or continuation.state_version != expected_state_version
         ):
             raise RepairApplicationError(
@@ -1843,23 +2446,6 @@ class RepairApplicationService:
                 "REPAIR_RECOVERY_NOT_ELIGIBLE",
                 "Repair stage-plan authority is missing or stale",
             )
-        repair_policy = (stage_plan.stage_plan or {}).get("repair_policy") or {}
-        budget = repair_budget(session, run_id, attempt.stage_id, repair_policy)
-        try:
-            budget_exhausted = (
-                int(budget["consumed_attempts"]) >= int(budget["max_attempts"])
-                or int(budget["consumed_applied"]) >= int(budget["max_applied"])
-            )
-        except (KeyError, TypeError, ValueError) as error:
-            raise RepairApplicationError(
-                "REPAIR_RECOVERY_NOT_ELIGIBLE",
-                "Repair budget authority is invalid",
-            ) from error
-        if budget_exhausted:
-            raise RepairApplicationError(
-                "REPAIR_LOOP_EXHAUSTED",
-                "Repair recovery limit has been reached",
-            )
         binding = session.scalar(
             select(StageWorkspaceBindingModel).where(
                 StageWorkspaceBindingModel.run_id == run_id,
@@ -1894,14 +2480,28 @@ class RepairApplicationService:
             if attempt.checkpoint_id
             else None
         )
+        checkpoint_matches_workspace = bool(
+            checkpoint is not None
+            and checkpoint.workspace_fingerprint == binding.workspace_fingerprint
+        )
+        ancestor = attempt
+        for _ in range(32):
+            if checkpoint_matches_workspace or not ancestor.parent_attempt_id:
+                break
+            ancestor = session.get(RepairAttemptModel, ancestor.parent_attempt_id)
+            if ancestor is None:
+                break
+            checkpoint_matches_workspace = bool(
+                ancestor.apply_ledger_artifact_id
+                and ancestor.post_fingerprint == binding.workspace_fingerprint
+            )
         if (
             checkpoint is None
             or checkpoint.run_id != run_id
             or checkpoint.stage_id != attempt.stage_id
             or checkpoint.kind != "pre_repair"
             or not checkpoint.safe_for_resume
-            or checkpoint.workspace_path != binding.workspace_path
-            or checkpoint.workspace_fingerprint != binding.workspace_fingerprint
+            or not checkpoint_matches_workspace
         ):
             raise RepairApplicationError(
                 "REPAIR_RECOVERY_NOT_ELIGIBLE",
@@ -1928,7 +2528,8 @@ class RepairApplicationService:
             and retry_invocation.failure_code in _RECOVERABLE_PROPOSER_RETRY_CODES
             and (
                 (
-                    retry_invocation.retries >= 1
+                    retry_invocation.failure_stage == "repair_semantics"
+                    and retry_invocation.retries >= 0
                     if recovered_proposer_id
                     else retry_invocation.retries == 1
                     and retry_invocation.failure_stage == "repair_semantics"
@@ -1940,7 +2541,17 @@ class RepairApplicationService:
                 )
             )
         )
-        if base_invocation is None or base_invocation.status != "failed" or not retry_valid:
+        base_valid = (
+            base_invocation is not None
+            and (
+                base_invocation.status == "failed"
+                or (
+                    recovered_proposer_id is not None
+                    and base_invocation.status == "uncertain_abandoned"
+                )
+            )
+        )
+        if not base_valid or not retry_valid:
             raise RepairApplicationError(
                 "REPAIR_RECOVERY_NOT_ELIGIBLE",
                 "Persisted semantic retry evidence is missing or invalid",
@@ -2169,14 +2780,11 @@ class RepairApplicationService:
                     continuation.current_stage_id,
                     repair_policy,
                 )
-                if (
-                    budget["consumed_attempts"] >= budget["max_attempts"]
-                    or budget["consumed_applied"] >= budget["max_applied"]
-                ):
-                    raise RepairApplicationError(
-                        "REPAIR_LOOP_EXHAUSTED",
-                        "Repair revision limit has been reached",
-                    )
+                # A revision request is already bounded by its live review or
+                # G10 modification lineage below.  Do not let the apply-count
+                # budget reject a governed correction of an active G10 package;
+                # ordinary new repair attempts remain budget-gated by the
+                # transformer classifier.
                 binding = session.scalar(
                     select(StageWorkspaceBindingModel).where(
                         StageWorkspaceBindingModel.run_id == attempt.run_id,
@@ -2203,7 +2811,7 @@ class RepairApplicationService:
                         StageGatePackageModel.run_id == attempt.run_id,
                         StageGatePackageModel.stage_id == attempt.stage_id,
                         StageGatePackageModel.gate_id == "G10",
-                        StageGatePackageModel.status == "pending",
+                        StageGatePackageModel.status.in_(("pending", "rejected")),
                     )
                 )
                 reviewer_revision = (
@@ -2222,16 +2830,29 @@ class RepairApplicationService:
                     and pending_g10 is not None
                     and attempt.g10_gate_package_id == pending_g10.id
                 )
+                preflight_revision = (
+                    attempt.status in {"review_accepted", "blocked"}
+                    and review["decision"] == "accept"
+                    and continuation.current_stage_id == attempt.stage_id
+                    and continuation.status == "blocked"
+                    and continuation.current_node == "create_g10"
+                    and continuation.last_error_code == "REPAIR_DEPENDENCY_PREFLIGHT_FAILED"
+                    and pending_g10 is None
+                )
                 g10_override_revision = (
                     attempt.status == "waiting_g10"
-                    and review["decision"] == "request_changes"
+                    and review["decision"] in {"request_changes", "accept"}
                     and continuation.current_stage_id == attempt.stage_id
-                    and continuation.status == "waiting_gate"
+                    and continuation.status in {"waiting_gate", "blocked"}
                     and continuation.current_node == "wait_g10"
                     and pending_g10 is not None
                     and attempt.g10_gate_package_id == pending_g10.id
+                    and (
+                        review["decision"] == "request_changes"
+                        or continuation.last_error_code == "G10_REQUEST_MODIFICATION"
+                    )
                 )
-                if not reviewer_revision and not accepted_revision and not g10_override_revision:
+                if not reviewer_revision and not accepted_revision and not preflight_revision and not g10_override_revision:
                     raise RepairApplicationError(
                         "REPAIR_REVISION_NOT_ALLOWED",
                         "Repair attempt is not in its live human revision state",
@@ -2304,6 +2925,713 @@ class RepairApplicationService:
             )
         except RepairApplicationError:
             self._remove_uncommitted_artifact(stored)
+            raise
+
+    def recover_invalid_g10_override(
+        self,
+        *,
+        run_id: str,
+        attempt_id: str,
+        proposal_id: str,
+        base_checksum: str,
+        instruction: str,
+        expected_state_version: int,
+        idempotency_key: str,
+        actor: str,
+        correlation_id: str,
+    ) -> dict[str, object]:
+        """Recover a legacy G10 approval that bypassed reviewer request_changes.
+
+        The old gate, apply ledger, and failure remain immutable history.  The
+        only new repair lineage is a revision child rooted at the safe
+        pre-repair checkpoint.
+        """
+        request_checksum = self._request_checksum(
+            {
+                "run_id": run_id,
+                "attempt_id": attempt_id,
+                "proposal_id": proposal_id,
+                "base_checksum": base_checksum,
+                "instruction": instruction,
+                "expected_state_version": expected_state_version,
+                "actor": actor,
+                "correlation_id": correlation_id,
+            }
+        )
+        event_key = self._legacy_override_recovery_event_key(idempotency_key)
+        from app.services.transformer_stage_service import TransformerStageService
+
+        stage_service = TransformerStageService(scope=self._scope)
+        with self._scope() as session:
+            existing = session.scalar(
+                select(WorkflowEventModel).where(
+                    WorkflowEventModel.run_id == run_id,
+                    WorkflowEventModel.idempotency_key.like(f"%:{event_key}"),
+                )
+            )
+            if existing is not None:
+                if (existing.payload or {}).get("request_checksum") != request_checksum:
+                    raise RepairApplicationError(
+                        "IDEMPOTENCY_PAYLOAD_MISMATCH",
+                        "Recovery key has a different payload",
+                    )
+                child = session.get(
+                    RepairAttemptModel,
+                    (existing.payload or {}).get("child_attempt_id"),
+                )
+                if child is None:
+                    raise RepairApplicationError(
+                        "REPAIR_RECOVERY_REPLAY_INVALID",
+                        "Recovery replay child is missing",
+                    )
+                return {"attempt_id": child.id, "status": child.status, "idempotent_replay": True}
+            attempt = session.get(RepairAttemptModel, attempt_id)
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == run_id,
+                    TransformationContinuationModel.current_stage_id == (
+                        attempt.stage_id if attempt is not None else ""
+                    ),
+                )
+            )
+            run = session.get(MigrationRunModel, run_id)
+            binding = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == run_id,
+                    StageWorkspaceBindingModel.stage_id == (
+                        attempt.stage_id if attempt is not None else ""
+                    ),
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            checkpoint = (
+                session.get(StageCheckpointModel, attempt.checkpoint_id)
+                if attempt is not None and attempt.checkpoint_id
+                else None
+            )
+            gate = (
+                session.get(StageGatePackageModel, attempt.g10_gate_package_id)
+                if attempt is not None and attempt.g10_gate_package_id
+                else None
+            )
+            failure = session.scalar(
+                select(CommandExecutionModel)
+                .where(
+                    CommandExecutionModel.run_id == run_id,
+                    CommandExecutionModel.stage_id == (
+                        attempt.stage_id if attempt is not None else ""
+                    ),
+                    CommandExecutionModel.command_id == "npm-lockfile-generate",
+                    CommandExecutionModel.status == "failed",
+                )
+                .order_by(CommandExecutionModel.finished_at.desc())
+                .limit(1)
+            )
+            if (
+                attempt is None
+                or run is None
+                or continuation is None
+                or binding is None
+                or checkpoint is None
+                or gate is None
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Legacy G10 recovery authority is incomplete",
+                )
+            if continuation.state_version != expected_state_version:
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_STALE",
+                    "Continuation state changed before recovery",
+                )
+            if (
+                continuation.status != "blocked"
+                or continuation.current_node != "classify_failure"
+                or continuation.last_error_code != "REPAIR_ATTEMPT_LIMIT"
+                or attempt.status not in {"applied_verified", "blocked"}
+                or attempt.proposal_artifact_id != proposal_id
+                or attempt.proposal_checksum != base_checksum
+                or attempt.review_artifact_id is None
+                or attempt.review_checksum is None
+                or attempt.apply_ledger_artifact_id is None
+                or gate.status != "approved"
+                or failure is None
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Repair is not the blocked legacy G10 override lineage",
+                )
+            if checkpoint.kind != "pre_repair" or not checkpoint.safe_for_resume:
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Safe pre-repair checkpoint is missing",
+                )
+            metadata = session.get(
+                ArtifactMetadataModel, "metadata-" + str(attempt.review_artifact_id)
+            )
+            if metadata is None or metadata.checksum != attempt.review_checksum:
+                raise RepairApplicationError(
+                    "REPAIR_REVIEW_STALE", "Reviewer evidence is missing or stale"
+                )
+            try:
+                store = LocalFilesystemArtifactStore(
+                    Path(run.artifact_root).parent,
+                    fixed_run_root=Path(run.artifact_root),
+                )
+                review = json.loads(
+                    store.read_artifact(run_id, metadata.relative_path).content
+                )
+                RepairReview.model_validate(review)
+            except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, ValidationError) as error:
+                raise RepairApplicationError(
+                    "REPAIR_REVIEW_STALE", "Reviewer evidence cannot be verified"
+                ) from error
+            if review.get("proposal_checksum") != base_checksum or review.get("decision") != "request_changes":
+                raise RepairApplicationError(
+                    "REPAIR_REVIEW_NOT_ACCEPTED",
+                    "Recovery requires the persisted reviewer request_changes decision",
+                )
+            expected_checkpoint = stage_service.authoritative_checkpoint_fingerprint(
+                session, checkpoint
+            )
+            if expected_checkpoint is None:
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Pre-repair checkpoint integrity cannot be proven",
+                )
+            if attempt.pre_fingerprint not in {checkpoint.workspace_fingerprint, expected_checkpoint}:
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Repair pre-fingerprint is not bound to the checkpoint",
+                )
+            stage_service.begin_reconstruction(
+                session,
+                continuation,
+                checkpoint=checkpoint,
+                reason="legacy_g10_override_recovery",
+                attempt_id=attempt.id,
+            )
+            session.commit()
+            source = checkpoint.workspace_path
+            workspace = binding.workspace_path
+            artifact_root = run.artifact_root
+            failure_id = failure.id
+            failure_code = failure.failure_code
+            failure_message = failure.failure_message
+        try:
+            restored = stage_service.reconstruct_workspace(
+                source,
+                workspace,
+                str(Path(workspace).resolve().parent),
+                expected_checkpoint,
+                str(Path(artifact_root).resolve()),
+            )
+        except Exception as error:
+            raise RepairApplicationError(
+                "REPAIR_RECOVERY_RECONSTRUCTION_FAILED",
+                "Safe pre-repair checkpoint reconstruction failed",
+            ) from error
+        if restored != expected_checkpoint:
+            raise RepairApplicationError(
+                "REPAIR_RECOVERY_RECONSTRUCTION_FAILED",
+                "Reconstructed workspace fingerprint does not match the checkpoint",
+            )
+        with self._scope() as session:
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == run_id
+                )
+            )
+            attempt = session.get(RepairAttemptModel, attempt_id)
+            binding = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == run_id,
+                    StageWorkspaceBindingModel.stage_id == attempt.stage_id,
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            if (
+                continuation is None
+                or attempt is None
+                or binding is None
+                or continuation.state_version != expected_state_version
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_STALE",
+                    "Durable state changed during checkpoint reconstruction",
+                )
+            binding.workspace_fingerprint = restored
+            binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
+            binding.last_verified_fingerprint = restored
+            binding.last_verified_at = self._now()
+            session.flush()
+        context = self._attempt_context(attempt_id, include_proposal=True, include_review=True)
+        proposal = json.loads(str(context["segments"][2]))
+        review = json.loads(str(context["segments"][3]))
+        revision_context = json.loads(str(context["segments"][1]))
+        revision_context["human_revision"] = {
+            "instruction": instruction,
+            "parent_attempt_id": attempt_id,
+            "parent_proposal_id": proposal_id,
+            "parent_proposal_checksum": base_checksum,
+            "previous_proposal": proposal,
+            "reviewer_output": review,
+            "recovery_failure_execution_id": failure_id,
+            "recovery_failure_code": failure_code,
+            "recovery_failure_message": failure_message,
+            "grounding_instructions": _PROPOSER_GROUNDING_INSTRUCTIONS,
+        }
+        child_id = f"repair-{context['stage_id']}-{int(context['attempt_number']) + 1}"
+        stored = self._write_revision_context(
+            context,
+            child_id=child_id,
+            payload=revision_context,
+            instruction=instruction,
+        )
+        try:
+            with self._scope() as session:
+                existing = session.scalar(
+                    select(WorkflowEventModel).where(
+                        WorkflowEventModel.run_id == run_id,
+                        WorkflowEventModel.idempotency_key.like(f"%:{event_key}"),
+                    )
+                )
+                if existing is not None:
+                    self._remove_uncommitted_artifact(stored)
+                    child = session.get(
+                        RepairAttemptModel,
+                        (existing.payload or {}).get("child_attempt_id"),
+                    )
+                    if child is None:
+                        raise RepairApplicationError(
+                            "REPAIR_RECOVERY_REPLAY_INVALID",
+                            "Recovery replay child is missing",
+                        )
+                    return {"attempt_id": child.id, "status": child.status, "idempotent_replay": True}
+                continuation = session.scalar(
+                    select(TransformationContinuationModel).where(
+                        TransformationContinuationModel.run_id == run_id
+                    )
+                )
+                attempt = session.get(RepairAttemptModel, attempt_id)
+                if (
+                    continuation is None
+                    or attempt is None
+                    or continuation.state_version != expected_state_version
+                    or attempt.proposal_checksum != base_checksum
+                ):
+                    raise RepairApplicationError(
+                        "REPAIR_RECOVERY_STALE",
+                        "Durable state changed before recovery commit",
+                    )
+                self._register_artifact_metadata(session, context, stored)
+                now = self._now()
+                child = RepairAttemptModel(
+                    id=child_id,
+                    run_id=run_id,
+                    stage_id=attempt.stage_id,
+                    attempt_number=attempt.attempt_number + 1,
+                    state_version=1,
+                    status="evidence_frozen",
+                    risk_level="unknown",
+                    diagnosis=f"legacy G10 override recovery; parent={attempt.id}",
+                    checkpoint_id=attempt.checkpoint_id,
+                    failure_evidence_artifact_id=attempt.failure_evidence_artifact_id,
+                    failure_evidence_checksum=attempt.failure_evidence_checksum,
+                    failure_route_artifact_id=attempt.failure_route_artifact_id,
+                    failure_route_checksum=attempt.failure_route_checksum,
+                    context_pack_artifact_id=stored.ref.artifact_id,
+                    context_pack_checksum=stored.ref.checksum,
+                    pre_fingerprint=restored,
+                    failure_fingerprint=attempt.failure_fingerprint,
+                    parent_attempt_id=attempt.id,
+                    parent_review_artifact_id=attempt.review_artifact_id,
+                    parent_review_checksum=attempt.review_checksum,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(child)
+                attempt.status = "superseded"
+                attempt.completed_at = now
+                attempt.updated_at = now
+                continuation.status = "queued"
+                continuation.current_node = "propose_repair"
+                continuation.worker_id = None
+                continuation.lease_expires_at = None
+                continuation.next_attempt_at = None
+                continuation.waiting_execution_id = None
+                continuation.last_error_code = None
+                continuation.last_error_message = None
+                continuation.wake_sequence += 1
+                continuation.state_version += 1
+                continuation.updated_at = now
+                session.flush()
+                append_continuation_event(
+                    session,
+                    continuation,
+                    event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED,
+                    key=event_key,
+                    reason="legacy G10 override recovery requested",
+                    actor=actor,
+                    occurred_at=now,
+                    payload={
+                        "attempt_id": attempt.id,
+                        "child_attempt_id": child.id,
+                        "request_checksum": request_checksum,
+                        "expected_state_version": expected_state_version,
+                        "correlation_id": correlation_id,
+                    },
+                )
+                return {"attempt_id": child.id, "status": child.status, "idempotent_replay": False}
+        except RepairApplicationError:
+            self._remove_uncommitted_artifact(stored)
+            raise
+
+    def recover_bound_candidate(
+        self,
+        *,
+        run_id: str,
+        attempt_id: str,
+        expected_state_version: int,
+        idempotency_key: str,
+        actor: str,
+        correlation_id: str,
+    ) -> dict[str, object]:
+        """Rebind a valid immutable candidate after a backend-only bind failure."""
+        request_checksum = self._request_checksum(
+            {
+                "run_id": run_id,
+                "attempt_id": attempt_id,
+                "expected_state_version": expected_state_version,
+                "actor": actor,
+                "correlation_id": correlation_id,
+                "recovery": "bound-candidate-v1",
+            }
+        )
+        event_key = self._bound_candidate_recovery_event_key(idempotency_key)
+        with self._scope() as session:
+            existing = session.scalar(
+                select(WorkflowEventModel).where(
+                    WorkflowEventModel.run_id == run_id,
+                    WorkflowEventModel.idempotency_key.like(f"%:{event_key}"),
+                )
+            )
+            if existing is not None:
+                if (existing.payload or {}).get("request_checksum") != request_checksum:
+                    raise RepairApplicationError(
+                        "IDEMPOTENCY_PAYLOAD_MISMATCH",
+                        "Candidate recovery key has a different payload",
+                    )
+                child = session.get(
+                    RepairAttemptModel,
+                    (existing.payload or {}).get("child_attempt_id"),
+                )
+                if child is None:
+                    raise RepairApplicationError(
+                        "REPAIR_RECOVERY_REPLAY_INVALID",
+                        "Candidate recovery child is missing",
+                    )
+                return {"attempt_id": child.id, "status": child.status, "idempotent_replay": True}
+            attempt = session.get(RepairAttemptModel, attempt_id)
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == run_id,
+                    TransformationContinuationModel.current_stage_id == (
+                        attempt.stage_id if attempt is not None else ""
+                    ),
+                )
+            )
+            run = session.get(MigrationRunModel, run_id)
+            if (
+                attempt is None
+                or continuation is None
+                or run is None
+                or continuation.state_version != expected_state_version
+                or continuation.status != "blocked"
+                or continuation.current_node != "propose_repair"
+                or continuation.last_error_code not in _BOUND_CANDIDATE_RECOVERY_CODES
+                or attempt.status != "evidence_frozen"
+                or attempt.proposal_artifact_id is not None
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Attempt is not a blocked proposal-less binding recovery",
+                )
+            binding = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == run_id,
+                    StageWorkspaceBindingModel.stage_id == attempt.stage_id,
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            if binding is None or not attempt.pre_fingerprint:
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Repair workspace authority is missing",
+                )
+            try:
+                live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+            except OSError as error:
+                raise RepairApplicationError(
+                    "REPAIR_WORKSPACE_STALE",
+                    "Repair workspace is unavailable",
+                ) from error
+            if live != binding.workspace_fingerprint or live != attempt.pre_fingerprint:
+                raise RepairApplicationError(
+                    "REPAIR_WORKSPACE_STALE",
+                    "Repair workspace changed before candidate recovery",
+                )
+            invocation = session.scalar(
+                select(LlmInvocationModel)
+                .where(
+                    LlmInvocationModel.run_id == run_id,
+                    LlmInvocationModel.stage_id == attempt.stage_id,
+                    LlmInvocationModel.idempotency_key.like(f"{attempt.id}:proposer%"),
+                    LlmInvocationModel.status == "failed",
+                )
+                .order_by(LlmInvocationModel.created_at.desc())
+                .limit(1)
+            )
+            if invocation is None:
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Failed proposer invocation is missing",
+                )
+            store = LocalFilesystemArtifactStore(
+                Path(run.artifact_root).parent,
+                fixed_run_root=Path(run.artifact_root),
+            )
+            rejected = None
+            rejected_checksum = None
+            for artifact_id in invocation.artifact_ids or []:
+                metadata = session.get(ArtifactMetadataModel, "metadata-" + str(artifact_id))
+                if metadata is None or "rejected-proposer-candidate" not in metadata.relative_path:
+                    continue
+                stored = store.read_artifact(run_id, metadata.relative_path)
+                if stored.ref.artifact_id != artifact_id or stored.ref.checksum != metadata.checksum:
+                    continue
+                payload = json.loads(stored.content)
+                candidate = payload.get("candidate") if isinstance(payload, dict) else None
+                if isinstance(candidate, dict):
+                    rejected = candidate
+                    rejected_checksum = metadata.checksum
+                    break
+            if not isinstance(rejected, dict) or rejected.get("schema_invalid"):
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Immutable rejected candidate is not schema-valid",
+                )
+            historical_candidate = self._strip_legacy_candidate_provenance(rejected)
+            try:
+                RepairProposalCandidate.model_validate(historical_candidate)
+            except ValidationError as error:
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Immutable candidate cannot be safely rebound",
+                ) from error
+            source_invocation = {
+                "id": invocation.id,
+                "prompt_version": invocation.prompt_version,
+                "schema_version": invocation.schema_version,
+                "input_hashes": list(invocation.input_hashes or []),
+                "stage": invocation.stage,
+                "retries": invocation.retries,
+            }
+        context = self._attempt_context(attempt_id)
+        child_id = f"repair-{context['stage_id']}-{int(context['attempt_number']) + 1}"
+        child_context = dict(context)
+        child_context["attempt_id"] = child_id
+        root = Path(str(context["artifact_root"]))
+        child_context_pack = LocalFilesystemArtifactStore(
+            root.parent, fixed_run_root=root
+        ).write_text_artifact(
+            str(context["run_id"]),
+            f"05_repairs/attempt-{child_id}/recovery-context.json",
+            str(context["segments"][1]),
+            ArtifactType.JSON,
+            stage_id=str(context["stage_id"]),
+            attempt_id=child_id,
+            created_by="repair-bound-candidate-context",
+            created_at=self._now(),
+            input_hashes={"recovered_from": str(context["context_pack_checksum"])},
+            policy_version="repair-bound-candidate-context-v1",
+        )
+        child_context["context_pack_artifact_id"] = child_context_pack.ref.artifact_id
+        child_context["context_pack_checksum"] = child_context_pack.ref.checksum
+        proposal_artifact = None
+        safe_diff_artifact = None
+        try:
+            bound = self.validate_proposal(
+                self._bind_proposal_candidate(historical_candidate, child_context),
+                child_context,
+            )
+            proposal_artifact = self._write(child_context, "proposal", bound)
+            safe_diff_artifact = self._write_safe_diff(
+                child_context, bound, proposal_artifact.ref.checksum
+            )
+        except Exception:
+            self._remove_uncommitted_artifact(child_context_pack)
+            if proposal_artifact is not None:
+                self._remove_uncommitted_artifact(proposal_artifact)
+            if safe_diff_artifact is not None:
+                self._remove_uncommitted_artifact(safe_diff_artifact)
+            raise
+        child_invocation_id = f"{child_id}:proposer:binding-recovery-1"
+        invocation_checksum = self._request_checksum(
+            {
+                "source_invocation": source_invocation["id"],
+                "candidate_checksum": rejected_checksum,
+                "proposal_checksum": proposal_artifact.ref.checksum,
+                "canonicalizer": "repair-provenance-v1",
+            }
+        )
+        try:
+            with self._scope() as session:
+                existing = session.scalar(
+                    select(WorkflowEventModel).where(
+                        WorkflowEventModel.run_id == run_id,
+                        WorkflowEventModel.idempotency_key.like(f"%:{event_key}"),
+                    )
+                )
+                if existing is not None:
+                    self._remove_uncommitted_artifact(child_context_pack)
+                    self._remove_uncommitted_artifact(proposal_artifact)
+                    self._remove_uncommitted_artifact(safe_diff_artifact)
+                    child = session.get(
+                        RepairAttemptModel,
+                        (existing.payload or {}).get("child_attempt_id"),
+                    )
+                    if child is None:
+                        raise RepairApplicationError(
+                            "REPAIR_RECOVERY_REPLAY_INVALID",
+                            "Candidate recovery child is missing",
+                        )
+                    return {"attempt_id": child.id, "status": child.status, "idempotent_replay": True}
+                continuation = session.scalar(
+                    select(TransformationContinuationModel).where(
+                        TransformationContinuationModel.run_id == run_id
+                    )
+                )
+                attempt = session.get(RepairAttemptModel, attempt_id)
+                if (
+                    continuation is None
+                    or attempt is None
+                    or continuation.state_version != expected_state_version
+                    or attempt.status != "evidence_frozen"
+                    or attempt.proposal_artifact_id is not None
+                ):
+                    raise RepairApplicationError(
+                        "REPAIR_RECOVERY_STALE",
+                        "Durable state changed before candidate recovery commit",
+                    )
+                now = self._now()
+                self._register_artifact_metadata(session, child_context, child_context_pack)
+                self._register_artifact_metadata(session, child_context, proposal_artifact)
+                self._register_artifact_metadata(session, child_context, safe_diff_artifact)
+                child_invocation = LlmInvocationModel(
+                    id=child_invocation_id,
+                    run_id=run_id,
+                    stage_id=attempt.stage_id,
+                    idempotency_key=child_invocation_id,
+                    request_checksum=invocation_checksum,
+                    input_hashes=[
+                        *source_invocation["input_hashes"],
+                        f"rebind_of:{source_invocation['id']}",
+                        f"candidate:{rejected_checksum}",
+                    ],
+                    correlation_id=correlation_id,
+                    actor=actor,
+                    role="repair_proposer",
+                    task_type="repair_diagnosis",
+                    provider="factory",
+                    deployment_alias="deterministic-provenance-rebind",
+                    prompt_version=str(source_invocation["prompt_version"] or "repair-proposer"),
+                    schema_version="repair-provenance-rebind-v1",
+                    pricing_version="none",
+                    stage=source_invocation["stage"],
+                    redacted_summary=json.dumps(
+                        {"rebound_candidate": source_invocation["id"]}, sort_keys=True
+                    ),
+                    status="completed",
+                    artifact_ids=[proposal_artifact.ref.artifact_id, safe_diff_artifact.ref.artifact_id],
+                    artifact_checksums={
+                        proposal_artifact.ref.artifact_id: proposal_artifact.ref.checksum,
+                        safe_diff_artifact.ref.artifact_id: safe_diff_artifact.ref.checksum,
+                    },
+                    state_version=1,
+                    event_sequence=1,
+                    retries=int(source_invocation["retries"] or 0),
+                    response_received=False,
+                    response_kind="deterministic_rebind",
+                    transport_started=False,
+                    started_at=now,
+                    completed_at=now,
+                    created_at=now,
+                )
+                session.add(child_invocation)
+                child = RepairAttemptModel(
+                    id=child_id,
+                    run_id=run_id,
+                    stage_id=attempt.stage_id,
+                    attempt_number=attempt.attempt_number + 1,
+                    state_version=1,
+                    status="proposed",
+                    risk_level=str(bound["risk_level"]),
+                    diagnosis=f"deterministic provenance rebind; parent={attempt.id}",
+                    checkpoint_id=attempt.checkpoint_id,
+                    failure_evidence_artifact_id=attempt.failure_evidence_artifact_id,
+                    failure_evidence_checksum=attempt.failure_evidence_checksum,
+                    failure_route_artifact_id=attempt.failure_route_artifact_id,
+                    failure_route_checksum=attempt.failure_route_checksum,
+                    context_pack_artifact_id=child_context_pack.ref.artifact_id,
+                    context_pack_checksum=child_context_pack.ref.checksum,
+                    proposal_artifact_id=proposal_artifact.ref.artifact_id,
+                    proposal_checksum=proposal_artifact.ref.checksum,
+                    proposer_invocation_id=child_invocation_id,
+                    pre_fingerprint=attempt.pre_fingerprint,
+                    failure_fingerprint=attempt.failure_fingerprint,
+                    parent_attempt_id=attempt.id,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(child)
+                attempt.status = "superseded"
+                attempt.completed_at = now
+                attempt.updated_at = now
+                continuation.status = "queued"
+                continuation.current_node = "review_repair"
+                continuation.worker_id = None
+                continuation.lease_expires_at = None
+                continuation.next_attempt_at = None
+                continuation.last_error_code = None
+                continuation.last_error_message = None
+                continuation.waiting_execution_id = None
+                continuation.wake_sequence += 1
+                continuation.state_version += 1
+                continuation.updated_at = now
+                session.flush()
+                append_continuation_event(
+                    session,
+                    continuation,
+                    event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED,
+                    key=event_key,
+                    reason="deterministic bound candidate recovery requested",
+                    actor=actor,
+                    occurred_at=now,
+                    payload={
+                        "attempt_id": attempt.id,
+                        "child_attempt_id": child.id,
+                        "candidate_checksum": rejected_checksum,
+                        "proposal_checksum": proposal_artifact.ref.checksum,
+                        "request_checksum": request_checksum,
+                        "correlation_id": correlation_id,
+                    },
+                )
+                return {"attempt_id": child.id, "status": child.status, "idempotent_replay": False}
+        except RepairApplicationError:
+            self._remove_uncommitted_artifact(child_context_pack)
+            self._remove_uncommitted_artifact(proposal_artifact)
+            self._remove_uncommitted_artifact(safe_diff_artifact)
             raise
 
     def reject(
@@ -2403,6 +3731,337 @@ class RepairApplicationService:
                 "status": attempt.status,
                 "idempotent_replay": False,
             }
+
+    def recover_bound_context(
+        self,
+        *,
+        run_id: str,
+        attempt_id: str,
+        expected_state_version: int,
+        idempotency_key: str,
+        actor: str,
+        correlation_id: str,
+    ) -> dict[str, object]:
+        """Create a child when an earlier deterministic bind used a parent envelope."""
+        request_checksum = self._request_checksum(
+            {
+                "run_id": run_id,
+                "attempt_id": attempt_id,
+                "expected_state_version": expected_state_version,
+                "actor": actor,
+                "correlation_id": correlation_id,
+                "recovery": "bound-context-v1",
+            }
+        )
+        event_key = "repair-bound-context-recovery:" + hashlib.sha256(
+            idempotency_key.encode()
+        ).hexdigest()
+        with self._scope() as session:
+            existing = session.scalar(
+                select(WorkflowEventModel).where(
+                    WorkflowEventModel.run_id == run_id,
+                    WorkflowEventModel.idempotency_key.like(f"%:{event_key}"),
+                )
+            )
+            if existing is not None:
+                if (existing.payload or {}).get("request_checksum") != request_checksum:
+                    raise RepairApplicationError(
+                        "IDEMPOTENCY_PAYLOAD_MISMATCH",
+                        "Context recovery key has a different payload",
+                    )
+                child = session.get(
+                    RepairAttemptModel,
+                    (existing.payload or {}).get("child_attempt_id"),
+                )
+                if child is None:
+                    raise RepairApplicationError(
+                        "REPAIR_RECOVERY_REPLAY_INVALID",
+                        "Context recovery child is missing",
+                    )
+                return {"attempt_id": child.id, "status": child.status, "idempotent_replay": True}
+            attempt = session.get(RepairAttemptModel, attempt_id)
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == run_id
+                )
+            )
+            parent = (
+                session.get(RepairAttemptModel, attempt.parent_attempt_id)
+                if attempt is not None and attempt.parent_attempt_id
+                else None
+            )
+            binding = (
+                session.scalar(
+                    select(StageWorkspaceBindingModel).where(
+                        StageWorkspaceBindingModel.run_id == run_id,
+                        StageWorkspaceBindingModel.stage_id == attempt.stage_id,
+                        StageWorkspaceBindingModel.active.is_(True),
+                    )
+                )
+                if attempt is not None
+                else None
+            )
+            if (
+                attempt is None
+                or parent is None
+                or continuation is None
+                or binding is None
+                or continuation.state_version != expected_state_version
+                or continuation.status != "blocked"
+                or continuation.current_node != "review_repair"
+                or continuation.last_error_code != "REPAIR_ARTIFACT_RECOVERY_FAILED"
+                or attempt.status not in {"proposed", "blocked"}
+                or not attempt.proposal_artifact_id
+                or not attempt.proposal_checksum
+                or attempt.review_artifact_id is not None
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Attempt is not a blocked stale bound-context lineage",
+                )
+            try:
+                live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+            except OSError as error:
+                raise RepairApplicationError(
+                    "REPAIR_WORKSPACE_STALE", "Repair workspace is unavailable"
+                ) from error
+            if live != binding.workspace_fingerprint or live != attempt.pre_fingerprint:
+                raise RepairApplicationError(
+                    "REPAIR_WORKSPACE_STALE", "Repair workspace changed before context recovery"
+                )
+            metadata = session.get(
+                ArtifactMetadataModel, "metadata-" + attempt.proposal_artifact_id
+            )
+            run = session.get(MigrationRunModel, run_id)
+            if metadata is None or run is None or metadata.checksum != attempt.proposal_checksum:
+                raise RepairApplicationError(
+                    "REPAIR_PROPOSAL_STALE", "Bound proposal evidence is missing or stale"
+                )
+            store = LocalFilesystemArtifactStore(
+                Path(run.artifact_root).parent,
+                fixed_run_root=Path(run.artifact_root),
+            )
+            try:
+                stored = store.read_artifact(run_id, metadata.relative_path)
+                self._validate_artifact_envelope(
+                    stored,
+                    expected_run_id=run_id,
+                    expected_stage_id=attempt.stage_id,
+                    expected_attempt_id=attempt.id,
+                    pre_attempt=False,
+                    metadata_checksum=metadata.checksum,
+                )
+                payload = json.loads(stored.content)
+                proposal = RepairProposal.model_validate(payload)
+            except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, ValidationError) as error:
+                raise RepairApplicationError(
+                    "REPAIR_PROPOSAL_STALE", "Bound proposal cannot be verified"
+                ) from error
+            if (
+                proposal.failure_evidence_checksum != parent.failure_evidence_checksum
+                or proposal.context_pack_checksum != parent.context_pack_checksum
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Bound proposal is not tied to the parent context",
+                )
+            source_invocation = session.get(
+                LlmInvocationModel, attempt.proposer_invocation_id
+            )
+            if (
+                source_invocation is None
+                or source_invocation.status != "completed"
+                or source_invocation.deployment_alias != "deterministic-provenance-rebind"
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Deterministic source invocation is missing",
+                )
+        parent_context = self._attempt_context(parent.id)
+        child_id = f"repair-{parent_context['stage_id']}-{int(attempt.attempt_number) + 1}"
+        child_context = dict(parent_context)
+        child_context["attempt_id"] = child_id
+        child_context_pack = None
+        proposal_artifact = None
+        safe_diff_artifact = None
+        try:
+            root = Path(str(parent_context["artifact_root"]))
+            child_context_pack = LocalFilesystemArtifactStore(
+                root.parent, fixed_run_root=root
+            ).write_text_artifact(
+                str(run_id),
+                f"05_repairs/attempt-{child_id}/recovery-context.json",
+                str(parent_context["segments"][1]),
+                ArtifactType.JSON,
+                stage_id=str(parent_context["stage_id"]),
+                attempt_id=child_id,
+                created_by="repair-bound-context-recovery",
+                created_at=self._now(),
+                input_hashes={"recovered_from": str(parent_context["context_pack_checksum"])},
+                policy_version="repair-bound-context-v1",
+            )
+            child_context["context_pack_artifact_id"] = child_context_pack.ref.artifact_id
+            child_context["context_pack_checksum"] = child_context_pack.ref.checksum
+            rebound = proposal.model_dump(mode="json")
+            rebound["failure_evidence_checksum"] = child_context["failure_evidence_checksum"]
+            rebound["context_pack_checksum"] = child_context["context_pack_checksum"]
+            bound = RepairProposal.model_validate(rebound).model_dump(mode="json")
+            proposal_artifact = self._write(child_context, "proposal", bound)
+            safe_diff_artifact = self._write_safe_diff(
+                child_context, bound, proposal_artifact.ref.checksum
+            )
+            invocation_checksum = self._request_checksum(
+                {
+                    "source_invocation": source_invocation.id,
+                    "source_proposal": attempt.proposal_checksum,
+                    "proposal": proposal_artifact.ref.checksum,
+                    "canonicalizer": "repair-bound-context-v1",
+                }
+            )
+            with self._scope() as session:
+                existing = session.scalar(
+                    select(WorkflowEventModel).where(
+                        WorkflowEventModel.run_id == run_id,
+                        WorkflowEventModel.idempotency_key.like(f"%:{event_key}"),
+                    )
+                )
+                if existing is not None:
+                    for artifact in (child_context_pack, proposal_artifact, safe_diff_artifact):
+                        self._remove_uncommitted_artifact(artifact)
+                    child = session.get(
+                        RepairAttemptModel,
+                        (existing.payload or {}).get("child_attempt_id"),
+                    )
+                    if child is None:
+                        raise RepairApplicationError(
+                            "REPAIR_RECOVERY_REPLAY_INVALID", "Context recovery child is missing"
+                        )
+                    return {"attempt_id": child.id, "status": child.status, "idempotent_replay": True}
+                continuation = session.scalar(
+                    select(TransformationContinuationModel).where(
+                        TransformationContinuationModel.run_id == run_id
+                    )
+                )
+                attempt = session.get(RepairAttemptModel, attempt_id)
+                if (
+                    continuation is None
+                    or attempt is None
+                    or continuation.state_version != expected_state_version
+                    or attempt.status not in {"proposed", "blocked"}
+                    or attempt.proposal_checksum != metadata.checksum
+                ):
+                    raise RepairApplicationError(
+                        "REPAIR_RECOVERY_STALE", "Durable state changed before context recovery"
+                    )
+                now = self._now()
+                self._register_artifact_metadata(session, child_context, child_context_pack)
+                self._register_artifact_metadata(session, child_context, proposal_artifact)
+                self._register_artifact_metadata(session, child_context, safe_diff_artifact)
+                child_invocation_id = f"{child_id}:proposer:context-recovery-1"
+                session.add(
+                    LlmInvocationModel(
+                        id=child_invocation_id,
+                        run_id=run_id,
+                        stage_id=attempt.stage_id,
+                        idempotency_key=child_invocation_id,
+                        request_checksum=invocation_checksum,
+                        input_hashes=[
+                            f"rebind_of:{source_invocation.id}",
+                            f"proposal:{attempt.proposal_checksum}",
+                            f"context:{child_context_pack.ref.checksum}",
+                        ],
+                        correlation_id=correlation_id,
+                        actor=actor,
+                        role="repair_proposer",
+                        task_type="repair_diagnosis",
+                        provider="factory",
+                        deployment_alias="deterministic-provenance-rebind",
+                        prompt_version=str(source_invocation.prompt_version or "repair-proposer"),
+                        schema_version="repair-bound-context-v1",
+                        pricing_version="none",
+                        stage=source_invocation.stage,
+                        redacted_summary=json.dumps(
+                            {"rebound_context_of": source_invocation.id}, sort_keys=True
+                        ),
+                        status="completed",
+                        artifact_ids=[proposal_artifact.ref.artifact_id, safe_diff_artifact.ref.artifact_id],
+                        artifact_checksums={
+                            proposal_artifact.ref.artifact_id: proposal_artifact.ref.checksum,
+                            safe_diff_artifact.ref.artifact_id: safe_diff_artifact.ref.checksum,
+                        },
+                        state_version=1,
+                        event_sequence=1,
+                        retries=source_invocation.retries,
+                        response_received=False,
+                        response_kind="deterministic_rebind",
+                        transport_started=False,
+                        started_at=now,
+                        completed_at=now,
+                        created_at=now,
+                    )
+                )
+                child = RepairAttemptModel(
+                    id=child_id,
+                    run_id=run_id,
+                    stage_id=attempt.stage_id,
+                    attempt_number=attempt.attempt_number + 1,
+                    state_version=1,
+                    status="proposed",
+                    risk_level=proposal.risk_level,
+                    diagnosis=f"deterministic context rebind; parent={attempt.id}",
+                    checkpoint_id=attempt.checkpoint_id,
+                    failure_evidence_artifact_id=attempt.failure_evidence_artifact_id,
+                    failure_evidence_checksum=attempt.failure_evidence_checksum,
+                    failure_route_artifact_id=attempt.failure_route_artifact_id,
+                    failure_route_checksum=attempt.failure_route_checksum,
+                    context_pack_artifact_id=child_context_pack.ref.artifact_id,
+                    context_pack_checksum=child_context_pack.ref.checksum,
+                    proposal_artifact_id=proposal_artifact.ref.artifact_id,
+                    proposal_checksum=proposal_artifact.ref.checksum,
+                    proposer_invocation_id=child_invocation_id,
+                    pre_fingerprint=attempt.pre_fingerprint,
+                    failure_fingerprint=attempt.failure_fingerprint,
+                    parent_attempt_id=attempt.id,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(child)
+                attempt.status = "superseded"
+                attempt.completed_at = now
+                attempt.updated_at = now
+                continuation.status = "queued"
+                continuation.current_node = "review_repair"
+                continuation.worker_id = None
+                continuation.lease_expires_at = None
+                continuation.last_error_code = None
+                continuation.last_error_message = None
+                continuation.wake_sequence += 1
+                continuation.state_version += 1
+                continuation.updated_at = now
+                session.flush()
+                append_continuation_event(
+                    session,
+                    continuation,
+                    event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED,
+                    key=event_key,
+                    reason="deterministic bound candidate recovery requested",
+                    actor=actor,
+                    occurred_at=now,
+                    payload={
+                        "attempt_id": attempt.id,
+                        "child_attempt_id": child.id,
+                        "request_checksum": request_checksum,
+                        "source_proposal_checksum": metadata.checksum,
+                        "proposal_checksum": proposal_artifact.ref.checksum,
+                        "correlation_id": correlation_id,
+                    },
+                )
+                return {"attempt_id": child.id, "status": child.status, "idempotent_replay": False}
+        except Exception:
+            for artifact in (child_context_pack, proposal_artifact, safe_diff_artifact):
+                if artifact is not None:
+                    self._remove_uncommitted_artifact(artifact)
+            raise
 
     @staticmethod
     def _json_object_without_duplicates(pairs):
@@ -2634,7 +4293,7 @@ class RepairApplicationService:
                     )
                     continue
                 seen: dict[tuple[str, str], str] = {}
-                provenance: list[dict[str, str]] = []
+                dependency_changes: list[dict[str, str]] = []
                 for item in group:
                     fields = [item.get(name) for name in ("section", "package", "new_version")]
                     if not all(isinstance(field, str) and field.strip() for field in fields):
@@ -2681,16 +4340,13 @@ class RepairApplicationService:
                         if not isinstance(document.get(section), dict):
                             document[section] = {}
                         document[section][package] = new_version
-                        provenance.append(
+                        dependency_changes.append(
                             {
-                                "key": "llm_requested_version",
-                                "value": llm_requested_version,
-                            }
-                        )
-                        provenance.append(
-                            {
-                                "key": "policy_version",
-                                "value": DEPENDENCY_ADDITION_POLICY_VERSION,
+                                "operation": "dependency_add",
+                                "section": section,
+                                "package": package,
+                                "new_version": llm_requested_version,
+                                "policy_version": DEPENDENCY_ADDITION_POLICY_VERSION,
                             }
                         )
                         continue
@@ -2737,7 +4393,7 @@ class RepairApplicationService:
                             "Dependency changes produced no dependency state change",
                         )
                     document[section][package] = new_version
-                    provenance.append(
+                    dependency_changes.append(
                         {
                             "operation": "dependency_change",
                             "path": relative,
@@ -2746,6 +4402,25 @@ class RepairApplicationService:
                             "new_version": new_version,
                         }
                     )
+                dependency_changes.sort(
+                    key=lambda item: (
+                        item.get("section", ""),
+                        item.get("package", ""),
+                        item.get("new_version", ""),
+                        item.get("operation", ""),
+                    )
+                )
+                provenance = [
+                    {
+                        "key": "dependency_changes",
+                        "value": json.dumps(
+                            dependency_changes,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                    }
+                ]
                 newline = _dominant_newline(current)
                 canonical = json.dumps(document, ensure_ascii=False, indent=2).replace(
                     "\n", newline
@@ -2840,6 +4515,24 @@ class RepairApplicationService:
             operation['provenance'] = _normalize_provenance(operation.get('provenance'))
         return result
 
+    @staticmethod
+    def _strip_legacy_candidate_provenance(value: dict[str, object]) -> dict[str, object]:
+        """Read old candidates without allowing their metadata to become authority."""
+        candidate = dict(value)
+        operations = candidate.get("operations")
+        if isinstance(operations, list):
+            candidate["operations"] = [
+                {
+                    key: field_value
+                    for key, field_value in operation.items()
+                    if key != "provenance"
+                }
+                if isinstance(operation, dict)
+                else operation
+                for operation in operations
+            ]
+        return candidate
+
     def _bind_dependency_transition(
         self, value: dict[str, object], context: dict[str, object]
     ) -> dict[str, object]:
@@ -2917,7 +4610,14 @@ class RepairApplicationService:
             evidence, diagnosis = FailureEvidenceService.normalize_dependency_transition_evidence(
                 evidence
             )
-            backend_package = diagnosis.get("package") if isinstance(diagnosis, dict) else None
+            backend_package = (
+                diagnosis.get("blocking_dependency")
+                if isinstance(diagnosis, dict)
+                and diagnosis.get("source") == "npm_eresolve_peer_conflict"
+                else diagnosis.get("package")
+                if isinstance(diagnosis, dict)
+                else None
+            )
             if not isinstance(backend_package, str) or not backend_package:
                 raise ValueError(
                     "field=normalized_failure.failure_diagnosis.package; "
@@ -2927,7 +4627,14 @@ class RepairApplicationService:
                     f"execution_id={evidence.get('execution_id') or 'unavailable'}; "
                     "recovery=reparse the immutable command failure with the npm package-name grammar"
                 )
-            installed_version = installed_dependency_version(workspace, backend_package)
+            try:
+                installed_version = installed_dependency_version(
+                    workspace, backend_package
+                )
+            except ValueError:
+                installed_version = diagnosis.get("installed_version")
+                if not is_exact_version(installed_version):
+                    raise
             authority = validate_dependency_transition_evidence(
                 evidence,
                 package=backend_package,
@@ -3038,12 +4745,28 @@ class RepairApplicationService:
             for section in _DEPENDENCY_TRANSITION_TARGET_SECTIONS
             if isinstance(document.get(section), dict) and package in document[section]
         ]
-        if len(present) != 1:
+        detached = False
+        if not present:
+            try:
+                detached = (
+                    installed_dependency_version(workspace, package)
+                    == authority["installed_version"]
+                )
+            except ValueError:
+                detached = False
+        if len(present) != 1 and not detached:
             raise RepairApplicationError(
                 "REPAIR_DEPENDENCY_PACKAGE_MISSING",
                 "The backend blocking package is missing or ambiguous in authoritative package.json",
             )
-        return RepairProposal.model_validate(value).model_dump(mode="json")
+        try:
+            return RepairProposal.model_validate(value).model_dump(mode="json")
+        except ValidationError as error:
+            raise RepairApplicationError(
+                "REPAIR_BOUND_PROPOSAL_INVALID",
+                "Backend-bound dependency proposal violates authoritative invariants: "
+                + _proposal_validation_message(error),
+            ) from error
 
     def _causal_gate_rejection(self, context: dict[str, object], proposal: dict[str, object]):
         """Run the causal gate over the failure evidence and the bound proposal."""
@@ -3130,7 +4853,14 @@ class RepairApplicationService:
         }
         if any(item.get("operation") == "dependency_transition" for item in operations):
             return self._bind_dependency_transition(payload, context)
-        return RepairProposal.model_validate(payload).model_dump(mode="json")
+        try:
+            return RepairProposal.model_validate(payload).model_dump(mode="json")
+        except ValidationError as error:
+            raise RepairApplicationError(
+                "REPAIR_BOUND_PROPOSAL_INVALID",
+                "Backend-bound repair proposal violates authoritative invariants: "
+                + _proposal_validation_message(error),
+            ) from error
 
     def _context_pack_excerpts(self, context: dict[str, object]) -> dict[str, object]:
         try:
@@ -3589,7 +5319,14 @@ class RepairApplicationService:
     def validate_proposal(
         self, value: dict[str, object], context: dict[str, object]
     ) -> dict[str, object]:
-        proposal = RepairProposal.model_validate(value)
+        try:
+            proposal = RepairProposal.model_validate(value)
+        except ValidationError as error:
+            raise RepairApplicationError(
+                "REPAIR_BOUND_PROPOSAL_INVALID",
+                "Backend-bound repair proposal violates authoritative invariants: "
+                + _proposal_validation_message(error),
+            ) from error
         if (
             proposal.failure_evidence_checksum != context["failure_evidence_checksum"]
             or proposal.context_pack_checksum != context["context_pack_checksum"]
@@ -4782,15 +6519,7 @@ class RepairApplicationService:
                     role=role,
                     prompt_name=schema_name,
                     system_policy=policy,
-                    context=[
-                        LlmContextSegment(
-                            segment_id=f"evidence-{index}",
-                            label="untrusted repair evidence",
-                            content=content,
-                            untrusted=True,
-                        )
-                        for index, content in enumerate(context["segments"])
-                    ],
+                    context=self._llm_context_segments(context, role),
                     response_schema=schema_name,
                     max_output_tokens=16384,
                 )
@@ -4805,6 +6534,44 @@ class RepairApplicationService:
                     "Repair provider transport started without a response",
                 ) from exc
             raise translated from exc
+
+    @staticmethod
+    def _llm_context_segments(context, role):
+        segments = [
+            LlmContextSegment(
+                segment_id=f"evidence-{index}",
+                label="untrusted repair evidence",
+                content=content,
+                untrusted=True,
+            )
+            for index, content in enumerate(context["segments"])
+        ]
+        if role == LlmRole.REPAIR_PROPOSER:
+            for content in context["segments"]:
+                try:
+                    payload = json.loads(str(content))
+                except (TypeError, ValueError):
+                    continue
+                revision = payload.get("human_revision") if isinstance(payload, dict) else None
+                instruction = (
+                    str(revision.get("instruction") or "").strip()
+                    if isinstance(revision, dict)
+                    else ""
+                )
+                if instruction:
+                    # Keep operator intent explicit and bounded; it constrains
+                    # the proposer but never becomes authoritative workspace data.
+                    segments.insert(
+                        0,
+                        LlmContextSegment(
+                            segment_id="operator-revision-instruction",
+                            label="binding operator repair revision instruction",
+                            content=instruction[:4000],
+                            untrusted=False,
+                        ),
+                    )
+                    break
+        return segments
 
     def _retrieve_provider_response(
         self,
@@ -4828,15 +6595,7 @@ class RepairApplicationService:
             role=role,
             prompt_name=schema_name,
             system_policy="Retrieve and validate the already-created provider response.",
-            context=[
-                LlmContextSegment(
-                    segment_id=f"evidence-{index}",
-                    label="untrusted repair evidence",
-                    content=content,
-                    untrusted=True,
-                )
-                for index, content in enumerate(context["segments"])
-            ],
+            context=self._llm_context_segments(context, role),
             response_schema=schema_name,
             max_output_tokens=16384,
         )
@@ -4905,13 +6664,19 @@ class RepairApplicationService:
                 "prompt-repair-proposer-v1", "prompt-repair-reviewer-v1",
                 "repair-proposer-v1", "repair-reviewer-v1",
             }
+            deterministic_rebind = (
+                role == "proposer"
+                and invocation.deployment_alias == "deterministic-provenance-rebind"
+                and invocation.response_kind == "deterministic_rebind"
+                and invocation.response_received is False
+            )
             if schema_name and task_type and schema:
                 prompt_version = self._prompt_version(schema_name, task_type)
                 schema_version = get_settings().llm_schema_registry_version
                 expected_request = self._logical_request_checksum(
                     context["segments"], schema_name, prompt_version, schema_version
                 )
-                if not legacy_v1 and (
+                if not legacy_v1 and not deterministic_rebind and (
                     invocation.request_checksum != expected_request
                     or invocation.prompt_version != prompt_version
                     or invocation.schema_version != schema_version
@@ -5461,7 +7226,21 @@ class RepairApplicationService:
         )
         rejected_stored = None
         if rejected_candidate is not None and role == LlmRole.REPAIR_PROPOSER:
-            parsed_candidate = RepairProposalCandidate.model_validate(rejected_candidate).model_dump(mode="json")
+            try:
+                parsed_candidate = RepairProposalCandidate.model_validate(
+                    rejected_candidate
+                ).model_dump(mode="json")
+            except ValidationError as validation_error:
+                parsed_candidate = {
+                    "schema_invalid": True,
+                    "validation_error": _proposal_validation_message(validation_error),
+                    "candidate_keys": sorted(
+                        str(key)
+                        for key in rejected_candidate
+                    )
+                    if isinstance(rejected_candidate, dict)
+                    else [],
+                }
             rejected_payload = {
                 "attempt_id": context["attempt_id"],
                 "candidate": parsed_candidate,
@@ -5571,6 +7350,18 @@ class RepairApplicationService:
     def _revision_event_key(idempotency_key: str, *, reject: bool = False) -> str:
         prefix = "repair-reject:" if reject else "repair-revision:"
         return prefix + hashlib.sha256(idempotency_key.encode()).hexdigest()
+
+    @staticmethod
+    def _legacy_override_recovery_event_key(idempotency_key: str) -> str:
+        return "repair-legacy-g10-recovery:" + hashlib.sha256(
+            idempotency_key.encode()
+        ).hexdigest()
+
+    @staticmethod
+    def _bound_candidate_recovery_event_key(idempotency_key: str) -> str:
+        return "repair-bound-candidate-recovery:" + hashlib.sha256(
+            idempotency_key.encode()
+        ).hexdigest()
 
     def _revision_event(self, session, continuation, idempotency_key: str, *, reject=False):
         if continuation is None:

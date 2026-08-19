@@ -692,6 +692,80 @@ class WorkerLeaseModel(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
 
+class FactoryRuntimeModel(Base):
+    """Durable provenance and fencing authority for one Factory launcher."""
+
+    __tablename__ = "factory_runtimes"
+    __table_args__ = (
+        Index("uq_factory_runtimes_active_database", "database_identity", unique=True,
+              sqlite_where=text("status = 'active'")),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    factory_git_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    database_identity: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    alembic_head: Mapped[str] = mapped_column(String(128), nullable=False)
+    launcher_pid: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class StageRecoveryOperationModel(Base):
+    """Single durable owner for deterministic stage recovery phases."""
+
+    __tablename__ = "stage_recovery_operations"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id", "idempotency_key", name="uq_stage_recovery_operations_idempotency"
+        ),
+        Index("ix_stage_recovery_operations_run_stage", "run_id", "stage_id"),
+        Index(
+            "uq_stage_recovery_operations_active",
+            "run_id",
+            "stage_id",
+            unique=True,
+            sqlite_where=text("status NOT IN ('COMPLETED', 'FAILED')"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    continuation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("transformation_continuations.id"), nullable=True, index=True
+    )
+    stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    causal_execution_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    interrupted_execution_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    causal_evidence_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    checkpoint_id: Mapped[str] = mapped_column(ForeignKey("stage_checkpoints.id"), nullable=False, index=True)
+    source_state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_workspace_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    observed_workspace_fingerprint: Mapped[str | None] = mapped_column(String(128))
+    governed_workspace_fingerprint: Mapped[str | None] = mapped_column(String(128))
+    drift_classification: Mapped[str | None] = mapped_column(String(128))
+    interrupted_evidence_checksum: Mapped[str | None] = mapped_column(String(128))
+    request_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    recovery_checksum: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    repair_attempt_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    command_execution_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    preparation_artifact_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    preparation_checksum: Mapped[str | None] = mapped_column(String(128))
+    stale_lock_checksum: Mapped[str | None] = mapped_column(String(128))
+    manifest_checksum: Mapped[str | None] = mapped_column(String(128))
+    prepared_workspace_fingerprint: Mapped[str | None] = mapped_column(String(128))
+    source_error_code: Mapped[str | None] = mapped_column(String(128))
+    source_error_message: Mapped[str | None] = mapped_column(Text)
+    last_error_code: Mapped[str | None] = mapped_column(String(128))
+    last_error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class ActiveRunClaimModel(Base):
     """Durable single-run and target ownership claim."""
 

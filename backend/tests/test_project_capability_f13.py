@@ -45,6 +45,19 @@ def test_derive_capabilities_from_angular_project(tmp_path: Path):
     assert capabilities["lockfile"] == "package-lock"
 
 
+def test_derive_package_and_lockfile_capabilities(tmp_path: Path):
+    root = _angular_project(tmp_path)
+    package = json.loads((root / "package.json").read_text())
+    package["devDependencies"].update({"tslint": "^6.1.0", "codelyzer": "^6.0.0", "@angular-eslint/eslint-plugin": "^13.0.0"})
+    (root / "package.json").write_text(json.dumps(package))
+    (root / "package-lock.json").write_text(json.dumps({"lockfileVersion": 1, "dependencies": {}}))
+    capabilities = {c.key: c.value for c in ProjectCapabilityService().derive(root)}
+    assert capabilities["package:tslint"] == "present"
+    assert capabilities["package:codelyzer"] == "present"
+    assert capabilities["package:angular-eslint"] == "present"
+    assert capabilities["lockfile_format:v1"] == "present"
+
+
 def test_derive_capabilities_missing_project(tmp_path: Path):
     capabilities = ProjectCapabilityService().derive(tmp_path / "missing")
     assert capabilities[0].key == "source_root"

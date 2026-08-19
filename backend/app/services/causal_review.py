@@ -467,14 +467,53 @@ def g10_eligibility(session, run_id: str, stage_id: str, attempt_id: str) -> tup
         session, store, attempt, run_id, stage_id,
         "review_artifact_id", "review_checksum", pre_attempt=False,
     )
-    if review is None or review.get("decision") not in {"accept", "request_changes"}:
-        return False, "no accepted review"
+    if review is None or review.get("decision") != "accept":
+        return False, "reviewer request_changes requires a supported revision"
+    current_strategy = _semantic_strategy(proposal, attempt)
+    if current_strategy is not None:
+        prior_attempts = session.scalars(
+            select(RepairAttemptModel).where(
+                RepairAttemptModel.run_id == run_id,
+                RepairAttemptModel.stage_id == stage_id,
+                RepairAttemptModel.attempt_number < attempt.attempt_number,
+                RepairAttemptModel.apply_ledger_artifact_id.is_not(None),
+                RepairAttemptModel.status.in_(("validation_failed", "superseded")),
+            )
+        ).all()
+        for prior in prior_attempts:
+            prior_proposal = _load_attempt_artifact(
+                session, store, prior, run_id, stage_id,
+                "proposal_artifact_id", "proposal_checksum", pre_attempt=False,
+            )
+            if _semantic_strategy(prior_proposal, prior) == current_strategy:
+                return False, "REPAIR_STRATEGY_ALREADY_FAILED"
     rejection = causal_rejection(
         evidence, proposal, stage_plan_commands=_stage_plan_commands(session, run_id, stage_id)
     )
     if rejection is not None:
         return False, rejection.reason
     return True, None
+
+
+def _semantic_strategy(proposal: dict | None, attempt: RepairAttemptModel) -> tuple[str, ...] | None:
+    operations = proposal.get("operations") if isinstance(proposal, dict) else None
+    if not isinstance(operations, list) or len(operations) != 1 or not isinstance(operations[0], dict):
+        return None
+    operation = operations[0]
+    if operation.get("operation") != "dependency_transition":
+        return None
+    blocking = operation.get("blocking_dependency")
+    target = operation.get("target_state")
+    return (
+        "dependency_transition",
+        str(operation.get("repair_kind") or ""),
+        str(operation.get("strategy") or ""),
+        str(blocking.get("package") or "") if isinstance(blocking, dict) else "",
+        str(target.get("target_version") or "") if isinstance(target, dict) else "",
+        str(attempt.failure_fingerprint or ""),
+        str(attempt.checkpoint_id or ""),
+        str(attempt.pre_fingerprint or ""),
+    )
 
 
 def _angular_update_successors(session, run_id: str, stage_id: str) -> list | None:
@@ -606,11 +645,13 @@ def repair_budget(session, run_id: str, stage_id: str, repair_policy: dict) -> d
 
     Schema/semantic/duplicate-path/causal rejections, reviewer rejections,
     reconstruction-only states, command supersession retries, and warning-only
-    conditions never consume either count: an attempt consumes the budget only
-    when a valid proposal was persisted, the reviewer accepted, G10 approved
-    and operations executed (apply ledger), and the failed migration boundary
-    was re-executed after the apply (angular-update stages only).  Read-only;
-    never raises.
+    conditions never consume either count.  Once a reviewer-approved G10
+    repair has executed and produced an apply ledger, it consumes the bounded
+    repair budget immediately.  Waiting for a later boundary retry to finish
+    before counting it allows a second repair to be admitted while the command
+    retry budget is already exhausted, leaving an approved repair stranded at
+    the retry boundary.  Completion evidence is still tracked separately by
+    ``_repair_completed``.  Read-only; never raises.
     """
     try:
         max_attempts = int((repair_policy or {}).get("max_attempts") or 3)
@@ -630,11 +671,18 @@ def repair_budget(session, run_id: str, stage_id: str, repair_policy: dict) -> d
             .order_by(RepairAttemptModel.attempt_number)
         ).all()
         run = session.get(MigrationRunModel, run_id)
-        successors = _angular_update_successors(session, run_id, stage_id)
-        completed = [row for row in rows if _repair_completed(session, run, row, successors)]
-        consumed_applied = len(completed)
+        # Budget consumption is based on the irreversible governed apply, not
+        # on a later command result.  In particular, ``applied_verified`` and
+        # dependency-transition ``executing`` are durable post-apply states.
+        applied = [
+            row
+            for row in rows
+            if row.apply_ledger_artifact_id is not None
+            and row.status in _REVIEWER_ACCEPTED_STATUSES
+        ]
+        consumed_applied = len(applied)
         consumed_attempts = 0
-        for row in completed:
+        for row in applied:
             if not row.proposal_artifact_id or not row.proposal_checksum:
                 continue
             if row.review_artifact_id is None or row.status not in _REVIEWER_ACCEPTED_STATUSES:

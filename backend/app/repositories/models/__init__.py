@@ -29,6 +29,7 @@ from app.repositories.preflight_check_models import PreflightCheckResultModel
 from app.repositories.stage_knowledge_models import StageKnowledgeEntryModel
 from app.repositories.v2_planning_models import V2PlanningModel
 from app.repositories.failure_intelligence_models import FailureIntelligenceModel
+from app.repositories.transformation_replan_models import TransformationReplanRecoveryModel
 from app.repositories.proposal_cycle_models import ProposalCycleModel
 from app.repositories.candidate_promotion_models import CandidatePromotionModel
 from app.repositories.stage_chain_run_models import StageChainRunModel
@@ -54,6 +55,8 @@ from app.repositories.models.workflow import (
     CommandTemplateModel,
     EnvironmentCapabilityModel,
     EnvironmentDiagnosticEventModel,
+    FactoryRuntimeModel,
+    StageRecoveryOperationModel,
     LlmUsageRecordModel,
     LlmInvocationModel,
     UsageCostRecordModel,
@@ -150,6 +153,7 @@ __all__ = [
     "StageKnowledgeEntryModel",
     "V2PlanningModel",
     "FailureIntelligenceModel",
+    "TransformationReplanRecoveryModel",
     "ProposalCycleModel",
     "CandidatePromotionModel",
     "StageChainRunModel",
@@ -166,6 +170,8 @@ __all__ = [
     "CommandTemplateModel",
     "EnvironmentCapabilityModel",
     "EnvironmentDiagnosticEventModel",
+    "FactoryRuntimeModel",
+    "StageRecoveryOperationModel",
     "LlmUsageRecordModel",
     "MigrationRunModel",
     "PathValidationModel",

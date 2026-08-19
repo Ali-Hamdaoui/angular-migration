@@ -60,6 +60,17 @@ def test_baseline_uses_physical_nested_snapshot_and_fingerprint(tmp_path: Path):
     engine.dispose()
 
 
+def test_baseline_retry_reuses_unchanged_verified_workspace(tmp_path: Path):
+    service, sessions, engine = _fixture(tmp_path)
+    first = service.create_workspace("run-1", BaselineWorkspaceRequest(expected_state_version=1, idempotency_key="workspace-1", actor="operator"))
+    second = service.create_workspace("run-1", BaselineWorkspaceRequest(expected_state_version=first.state_version, idempotency_key="workspace-2", actor="operator"))
+
+    assert second.idempotent_replay is False
+    assert second.sandbox_path == first.sandbox_path
+    assert second.sandbox_fingerprint == first.sandbox_fingerprint
+    engine.dispose()
+
+
 def test_baseline_rejects_snapshot_from_another_run(tmp_path: Path):
     service, sessions, engine = _fixture(tmp_path)
     with sessions() as session:

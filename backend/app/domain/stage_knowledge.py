@@ -22,6 +22,8 @@ class StageKnowledgeEntry(_ImmutableModel):
     expected_transforms: tuple[str, ...] = Field(default_factory=tuple)
     validation_expectations: tuple[str, ...] = Field(default_factory=tuple)
     expected_dependency_changes: tuple[dict[str, str], ...] = Field(default_factory=tuple)
+    dependency_rules: tuple[dict[str, str], ...] = Field(default_factory=tuple)
+    migration_actions: tuple[dict[str, str], ...] = Field(default_factory=tuple)
     known_risks: tuple[str, ...] = Field(default_factory=tuple)
     version: int = Field(default=1, ge=1)
     notes: str = ""
@@ -39,6 +41,11 @@ def knowledge_entry_for(
         "transform": _transforms(source_major),
         "validate": ("build", "test"),
         "dependencies": _dependency_changes(source_major),
+        "rules": _dependency_rules(source_major, target_major),
+        "actions": (
+            {"action": "run-official-angular-migrations", "package": "@angular/core"},
+            {"action": "authorize-installed-migration-fallback", "package": "@angular/core"},
+        ),
         "risks": _risks(source_major),
     }
     return StageKnowledgeEntry(
@@ -47,6 +54,8 @@ def knowledge_entry_for(
         expected_transforms=expected["transform"],
         validation_expectations=expected["validate"],
         expected_dependency_changes=expected["dependencies"],
+        dependency_rules=expected["rules"],
+        migration_actions=expected["actions"],
         known_risks=expected["risks"],
         version=version,
         notes="seeded from the official ng update migration guidance",
@@ -85,3 +94,29 @@ def _risks(source_major: int) -> tuple[str, ...]:
     if source_major <= 15:
         risks.append("older ViewEngine-era decorators may require manual fixes")
     return tuple(risks)
+
+
+def _dependency_rules(source_major: int, target_major: int) -> tuple[dict[str, str], ...]:
+    """Capability predicates learned from historical Angular toolchains."""
+    rules: list[dict[str, str]] = []
+    if target_major >= 13:
+        rules.extend(
+            {
+                "package": package,
+                "action": "remove",
+                "capability": f"package:{package}",
+            }
+            for package in ("tslint", "codelyzer")
+        )
+        rules.append({"package": "@angular-eslint", "action": "align", "capability": "package:angular-eslint"})
+    if target_major == 12:
+        rules.extend(
+            {
+                "package": package,
+                "action": "align",
+                "capability": f"package:{package}",
+            }
+            for package in ("codelyzer", "karma", "karma-jasmine-html-reporter")
+        )
+    rules.append({"package": "package-lock", "action": "use-legacy-parser", "capability": "lockfile_format:v1"})
+    return tuple(rules)

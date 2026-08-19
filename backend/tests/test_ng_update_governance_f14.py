@@ -20,7 +20,7 @@ def test_spec_resolves_per_major_transition():
     spec = service.spec_for_transition(18, 19)
     assert spec.target_exact == "19.0.0"
     assert spec.target_cli_exact == "19.0.0"
-    assert spec.template_id == "tpl-angular-update-exact-v3"
+    assert spec.template_id == "tpl-angular-update-exact-v5"
     assert "@angular/cli@19.0.0" in spec.rendered_arguments
     assert "@angular/core@19.0.0" in spec.rendered_arguments
     assert spec.checksum.startswith("sha256:")

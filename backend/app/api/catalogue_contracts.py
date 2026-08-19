@@ -3,6 +3,8 @@
 from datetime import datetime
 from typing import Literal
 
+from pydantic import Field
+
 from app.domain.contracts import ContractModel
 
 
@@ -15,6 +17,7 @@ class CatalogueEntryDto(ContractModel):
     typescript_minimum: str | None = None
     typescript_exclusive_maximum: str | None = None
     rxjs_minimum: str | None = None
+    rxjs_ranges: list[str] = Field(default_factory=list)
     node_major: int
     npm_major: int
     node_minimum: str | None = None
@@ -24,6 +27,11 @@ class CatalogueEntryDto(ContractModel):
     known_risks: list[str]
     blockers: list[str]
     validated_runtime_profiles: list[list[str]]
+    proven_runtime_profiles: list[list[str]] = Field(default_factory=list)
+    proven_runtime_evidence: list[dict] = Field(default_factory=list)
+    proven_runtime_source: str | None = None
+    source_node_ranges: list[str] = Field(default_factory=list)
+    target_node_ranges: list[str] = Field(default_factory=list)
     certification_status: str | None = None
     certification_source: str | None = None
     certified_at: datetime | None = None

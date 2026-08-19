@@ -74,12 +74,18 @@ class V2PlannerService:
                 findings.append(V2AnalysisFinding(finding_id="capability_ready", severity="info", message="project capability ready"))
         return findings
 
-    def derive_plan(self, run_id: str, source_root: Path | None = None) -> V2MigrationPlan:
+    def derive_plan(
+        self,
+        run_id: str,
+        source_root: Path | None = None,
+        *,
+        capability_snapshot_id: str | None = None,
+    ) -> V2MigrationPlan:
         """Derive the deterministic migration plan (F18-02).
 
-        The checksum-bound plan captures only deterministic route/catalogue/
-        knowledge facts; source_root capability findings are advisory and are
-        NOT part of the immutable plan so the checksum is reproducible.
+        Source capabilities are bound to an immutable persisted snapshot. A
+        later validation therefore reloads the same facts instead of inspecting
+        a mutable workspace or silently using an empty capability set.
         """
         try:
             source_family, target_family = self._run_context(run_id)
@@ -88,6 +94,12 @@ class V2PlannerService:
             route = self._route.compute(source_major, target_major)
             catalogue = self._catalogue.load()
             findings = self.analyze(run_id, None)
+            snapshot = None
+            if source_root is not None:
+                snapshot = self._capabilities.snapshot(run_id, source_root)
+            elif capability_snapshot_id is not None:
+                snapshot = self._capabilities.get_snapshot(run_id, capability_snapshot_id)
+            capabilities = list(snapshot.capabilities) if snapshot is not None else []
             stages: list[V2PlannedStage] = []
             for stage in route.stages:
                 entry = catalogue.entry_for(stage.source_family, stage.target_family)
@@ -103,6 +115,7 @@ class V2PlannerService:
                         node_minimum=entry.node_minimum if entry else None,
                         expected_transforms=knowledge.expected_transforms,
                         validation_expectations=knowledge.validation_expectations,
+                        expected_dependency_changes=self._knowledge.dependency_dispositions(knowledge, capabilities),
                     )
                 )
         except V2PlanningError:
@@ -114,6 +127,8 @@ class V2PlannerService:
             source_major=source_major,
             target_major=target_major,
             catalogue_version=catalogue.version,
+            capability_snapshot_id=(self._capabilities.snapshot_id(run_id, snapshot.checksum) if snapshot else None),
+            capability_snapshot_checksum=snapshot.checksum if snapshot else None,
             findings=tuple(findings),
             stages=tuple(stages),
         )
@@ -138,6 +153,8 @@ class V2PlannerService:
                 source_major=plan.source_major,
                 target_major=plan.target_major,
                 catalogue_version=plan.catalogue_version,
+                capability_snapshot_id=plan.capability_snapshot_id,
+                capability_snapshot_checksum=plan.capability_snapshot_checksum,
                 findings=[finding.model_dump(mode="json") for finding in plan.findings],
                 stages=[stage.model_dump(mode="json") for stage in plan.stages],
                 checksum=plan.checksum,
@@ -163,10 +180,10 @@ class V2PlannerService:
         Raises PLAN_DRIFT when the persisted plan no longer matches the
         catalogue/knowledge-derived plan (immutability enforcement, F18-03).
         """
-        derived = self.derive_plan(run_id)
         persisted = self.get_run_plan(run_id)
         if persisted is None:
             raise V2PlanningError("PLAN_NOT_PERSISTED", f"run {run_id} has no persisted V2 plan")
+        derived = self.derive_plan(run_id, capability_snapshot_id=persisted.capability_snapshot_id)
         if persisted.checksum != derived.checksum or persisted.source_major != derived.source_major or persisted.target_major != derived.target_major:
             raise V2PlanningError(
                 "PLAN_DRIFT",

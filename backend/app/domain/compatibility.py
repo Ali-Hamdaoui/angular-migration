@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime
 from typing import Literal
 
@@ -40,6 +41,19 @@ class CompatibilityArtifact(CompatibilityModel):
     checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
+class RuntimeProofProfile(CompatibilityModel):
+    """Exact empirical target evidence; never an official range or certification."""
+
+    source_angular_exact: str = Field(pattern=r"^\d+\.\d+\.\d+$")
+    target_angular_exact: str = Field(pattern=r"^\d+\.\d+\.\d+$")
+    target_cli_exact: str = Field(pattern=r"^\d+\.\d+\.\d+$")
+    node_exact: str = Field(pattern=r"^\d+\.\d+\.\d+$")
+    npm_exact: str = Field(pattern=r"^\d+\.\d+\.\d+$")
+    proof_source: str = Field(min_length=1)
+    proof_status: Literal["observed", "replayed", "certified"]
+    proved_at: datetime | None = None
+
+
 class CompatibilityCatalogueEntry(CompatibilityModel):
     stage_id: str = Field(min_length=1)
     source_family: str = Field(pattern=r"^angular-(1[1-9]|2[01])\.x$")
@@ -51,6 +65,7 @@ class CompatibilityCatalogueEntry(CompatibilityModel):
     typescript_exclusive_maximum: str | None = None
     rxjs_exact: str | None = None
     rxjs_minimum: str | None = None
+    rxjs_ranges: tuple[str, ...] = ()
     zone_js_exact: str | None = None
     node_major: int = Field(ge=0)
     npm_major: int = Field(ge=0)
@@ -66,6 +81,9 @@ class CompatibilityCatalogueEntry(CompatibilityModel):
     validated_runtime_profiles: tuple[tuple[str, str], ...] = ()
     source_node_ranges: tuple[str, ...] = ()
     target_node_ranges: tuple[str, ...] = ()
+    proven_runtime_profiles: tuple[tuple[str, str], ...] = ()
+    proven_runtime_evidence: tuple[RuntimeProofProfile, ...] = ()
+    proven_runtime_source: str | None = None
     certification_status: str | None = None
     certification_source: str | None = None
     certified_at: datetime | None = None
@@ -80,6 +98,13 @@ class CompatibilityCatalogueEntry(CompatibilityModel):
             raise ValueError("historical_validated requires a passed fixture suite")
         if self.support_level == "blocked" and not self.blockers:
             raise ValueError("blocked compatibility entries require a blocker")
+        for proof in self.proven_runtime_evidence:
+            source_major = self.source_family.removeprefix("angular-").removesuffix(".x") + "."
+            target_major = self.target_family.removeprefix("angular-").removesuffix(".x") + "."
+            if not proof.source_angular_exact.startswith(source_major):
+                raise ValueError("runtime proof source exact does not match the catalogue source family")
+            if not proof.target_angular_exact.startswith(target_major) or not proof.target_cli_exact.startswith(target_major):
+                raise ValueError("runtime proof target exact does not match the catalogue target family")
         return self
 
 
@@ -99,6 +124,10 @@ class CompatibilityCatalogue(CompatibilityModel):
                 serialized.pop("source_node_ranges", None)
             if not entry.target_node_ranges:
                 serialized.pop("target_node_ranges", None)
+            if not entry.rxjs_ranges:
+                serialized.pop("rxjs_ranges", None)
+            if not entry.proven_runtime_profiles:
+                serialized.pop("proven_runtime_profiles", None)
             # Drop None-valued fields so the checksum is stable across schema
             # evolution and legacy versions checksum identically to their
             # original contracts.
@@ -127,7 +156,7 @@ class CompatibilityResolutionRequest(CompatibilityModel):
     idempotency_key: str = Field(min_length=1, max_length=128)
     actor: str = Field(min_length=1)
     source_angular_exact: str = Field(min_length=1)
-    target_family: str = Field(default="angular-21.x", pattern=r"^angular-21\.x$")
+    target_family: str = Field(default="angular-21.x", pattern=r"^angular-(1[1-9]|2[01])\.x$")
     catalogue_version: str = Field(min_length=1)
     registry_snapshot_id: str = Field(default="registry-snapshot-v1", min_length=1, max_length=128)
     registry_snapshot_checksum: str = Field(default="sha256:" + "0" * 64, pattern=r"^sha256:[0-9a-f]{64}$")
@@ -139,6 +168,17 @@ class CompatibilityResolutionRequest(CompatibilityModel):
     workspace_fingerprint: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     plan_version: str | None = Field(default=None, max_length=128)
     resolved_at: datetime
+
+    @model_validator(mode="before")
+    @classmethod
+    def canonicalize_target_family(cls, values):
+        if isinstance(values, dict) and isinstance(values.get("target_family"), str):
+            target = values["target_family"].strip()
+            if target.startswith("angular-"):
+                values = {**values, "target_family": target}
+            elif re.fullmatch(r"(?:1[1-9]|2[01])\.x", target):
+                values = {**values, "target_family": f"angular-{target}"}
+        return values
 
 
 class Stage1ExecutionProfile(CompatibilityModel):

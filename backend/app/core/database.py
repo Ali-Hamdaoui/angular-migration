@@ -19,12 +19,14 @@ LLM_PROVIDER_FAILURE_COLUMNS = (
     "failure_stage",
 )
 TRANSFORMER_TABLES = (
+    "factory_runtimes",
     "transformation_continuations",
     "stage_checkpoints",
     "stage_prompt_requests",
     "stage_gate_packages",
     "stage_gate_decisions",
     "stage_reconstruction_records",
+    "stage_recovery_operations",
 )
 
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 from sqlalchemy import select
@@ -20,6 +19,11 @@ from app.services.planning_application_service import (
     StageExecutionPlanService,
     run_scoped_stage_id,
 )
+from app.services.stage_preparation_primitives import StageSandboxCopier
+from app.services.stage_target_version_service import (
+    StageTargetVersionError,
+    StageTargetVersionService,
+)
 
 
 class NextStageMaterializerError(ValueError):
@@ -30,10 +34,9 @@ class NextStageMaterializerError(ValueError):
 
 
 class NextStageMaterializerService:
-    semver = re.compile(r"(?P<version>\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)")
-
     def __init__(self, *, planner=None) -> None:
         self._planner = planner or StageExecutionPlanService()
+        self._target_versions = StageTargetVersionService()
 
     def context(self, session, continuation, sealed_path: str, sealed_fingerprint: str):
         migration_plan = session.get(MigrationPlanModel, continuation.plan_id)
@@ -101,17 +104,21 @@ class NextStageMaterializerService:
         }
 
     def materialize(self, context: dict[str, object]) -> StageExecutionPlan | None:
-        observed = self._sealed_source_exact(Path(str(context["sealed_path"])))
-        expected = self._version(context["current_target_exact"])
-        if (
-            not expected
-            or not observed
-            or expected.split(".", 1)[0] != observed.split(".", 1)[0]
-        ):
+        sealed_root = Path(str(context["sealed_path"])).resolve(strict=True)
+        if StageSandboxCopier.fingerprint(sealed_root) != str(context["sealed_fingerprint"]):
+            raise NextStageMaterializerError(
+                "SEALED_SOURCE_FINGERPRINT_MISMATCH",
+                "The sealed predecessor changed before successor materialization",
+            )
+        try:
+            observed = self._target_versions.verify(
+                sealed_root, str(context["current_target_exact"])
+            )
+        except StageTargetVersionError as error:
             raise NextStageMaterializerError(
                 "SEALED_VERSION_MISMATCH",
-                "Sealed package and lockfile do not match the completed stage target",
-            )
+                error.message,
+            ) from error
         remaining = list(context["remaining_route"])
         if not remaining:
             return None
@@ -154,30 +161,3 @@ class NextStageMaterializerService:
             return self._planner.create(request, plan_version=int(context["plan_version"]))
         except PlanningApplicationError as error:
             raise NextStageMaterializerError(error.code, error.message) from error
-
-    def _sealed_source_exact(self, root: Path) -> str:
-        package = json.loads((root / "package.json").read_text(encoding="utf-8"))
-        lock = json.loads((root / "package-lock.json").read_text(encoding="utf-8"))
-        declared = self._version(
-            ((package.get("dependencies") or {}).get("@angular/core"))
-            or ((package.get("devDependencies") or {}).get("@angular/core"))
-        )
-        locked = self._version(
-            ((lock.get("packages") or {}).get("node_modules/@angular/core") or {}).get(
-                "version"
-            )
-        )
-        if (
-            not declared
-            or not locked
-            or declared.split(".", 1)[0] != locked.split(".", 1)[0]
-        ):
-            raise NextStageMaterializerError(
-                "SEALED_VERSION_EVIDENCE_INVALID",
-                "Sealed package.json and package-lock.json disagree on @angular/core",
-            )
-        return locked
-
-    def _version(self, value) -> str | None:
-        match = self.semver.search(str(value or ""))
-        return match.group("version") if match else None

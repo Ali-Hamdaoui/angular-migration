@@ -16,6 +16,29 @@ def test_discovers_production_build_and_configured_script_targets(tmp_path):
     assert any(item.target_id == "script:test" for item in inventory.targets)
 
 
+def test_custom_test_scripts_keep_their_declared_arguments(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"test": "node -e \\\"console.log('ok')\\\""}}), encoding="utf-8")
+
+    inventory = BaselineTargetDiscoveryService().discover(tmp_path)
+
+    script = next(item for item in inventory.targets if item.target_id == "script:test")
+    assert script.arguments == ("run", "test")
+
+
+def test_test_targets_are_non_watching_for_durable_validation(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"test": "ng test"}}), encoding="utf-8")
+    (tmp_path / "angular.json").write_text(json.dumps({"projects": {"app": {"architect": {
+        "test": {"builder": "@angular-devkit/build-angular:karma", "configurations": {"production": {}}}
+    }}}}), encoding="utf-8")
+
+    inventory = BaselineTargetDiscoveryService().discover(tmp_path)
+
+    angular = next(item for item in inventory.targets if item.target_id == "angular:app:test:production")
+    script = next(item for item in inventory.targets if item.target_id == "script:test")
+    assert angular.arguments == ("ng", "test", "app", "--configuration", "production", "--watch=false")
+    assert script.arguments == ("run", "test", "--", "--watch=false")
+
+
 def test_missing_lint_is_explicitly_not_configured(tmp_path):
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")
 

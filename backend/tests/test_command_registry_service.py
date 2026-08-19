@@ -200,13 +200,20 @@ class TestCommandRegistryService:
         assert "python.exe" in allowed
         assert "py" in allowed
 
-    def test_seed_defaults_creates_v1_and_v2_templates(self, registry, db_session):
-        """Both v1 and v2 angular-update-exact templates are seeded."""
+    def test_seed_defaults_creates_historical_angular_update_templates(self, registry, db_session):
+        """All immutable angular-update-exact templates remain seeded."""
         seeded = registry.seed_defaults(db_session)
         angular = [t for t in seeded if t.command_id == "angular-update-exact"]
-        assert len(angular) == 2
+        assert len(angular) == 5
         versions = {t.version for t in angular}
-        assert versions == {1, 2}
+        assert versions == {1, 2, 3, 4, 5}
+
+    def test_installed_migration_fallback_is_registered(self, registry, db_session):
+        seeded = registry.seed_defaults(db_session)
+        template = next(t for t in seeded if t.command_id == "angular-migrate-installed")
+        assert template.executable == "node"
+        assert template.arguments[0] == "backend/app/command_execution/run_installed_migrations.cjs"
+        assert "--force" not in template.arguments
 
     def test_find_registered_template_returns_correct_version(self, registry, db_session):
         """find_registered_template returns the right template by version."""

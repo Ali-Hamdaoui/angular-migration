@@ -180,14 +180,56 @@ class FrozenBaselineInspectionService:
 
     def _dependency_tree(self, sandbox: Path) -> DependencyTreeVerification:
         path = sandbox / "node_modules" / ".package-lock.json"
-        if not path.is_file():
+        if path.is_file():
+            try:
+                payload: Any = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                return DependencyTreeVerification("blocked", 0, "", ("DEPENDENCY_TREE_INVALID",))
+            packages = payload.get("packages") if isinstance(payload, dict) else None
+            if not isinstance(packages, dict):
+                return DependencyTreeVerification("blocked", 0, "", ("DEPENDENCY_TREE_INVALID",))
+            checksum = hashlib.sha256(path.read_bytes()).hexdigest()
+            return DependencyTreeVerification("verified", max(0, len(packages) - (1 if "" in packages else 0)), f"sha256:{checksum}")
+
+        # npm 6 (used by Angular 11-13 runtimes) does not write npm 7+'s
+        # node_modules/.package-lock.json.  Verify its installed package
+        # manifests instead of rejecting an otherwise successful frozen install.
+        node_modules = sandbox / "node_modules"
+        if not node_modules.is_dir():
             return DependencyTreeVerification("blocked", 0, "", ("DEPENDENCY_TREE_MISSING",))
-        try:
-            payload: Any = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            return DependencyTreeVerification("blocked", 0, "", ("DEPENDENCY_TREE_INVALID",))
-        packages = payload.get("packages") if isinstance(payload, dict) else None
-        if not isinstance(packages, dict):
-            return DependencyTreeVerification("blocked", 0, "", ("DEPENDENCY_TREE_INVALID",))
-        checksum = hashlib.sha256(path.read_bytes()).hexdigest()
-        return DependencyTreeVerification("verified", max(0, len(packages) - (1 if "" in packages else 0)), f"sha256:{checksum}")
+        manifests: list[dict[str, str]] = []
+        for package_json in node_modules.rglob("package.json"):
+            if package_json.is_symlink() or not package_json.is_file():
+                continue
+            if not self._is_installed_package_manifest(package_json, sandbox):
+                continue
+            try:
+                payload = json.loads(package_json.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                return DependencyTreeVerification("blocked", 0, "", ("DEPENDENCY_TREE_INVALID",))
+            if not isinstance(payload, dict) or not isinstance(payload.get("name"), str) or not isinstance(payload.get("version"), str):
+                return DependencyTreeVerification("blocked", 0, "", ("DEPENDENCY_TREE_INVALID",))
+            manifests.append({
+                "path": package_json.relative_to(sandbox).as_posix(),
+                "name": payload["name"],
+                "version": payload["version"],
+            })
+        if not manifests:
+            return DependencyTreeVerification("blocked", 0, "", ("DEPENDENCY_TREE_MISSING",))
+        encoded = json.dumps(sorted(manifests, key=lambda item: item["path"]), sort_keys=True, separators=(",", ":")).encode()
+        checksum = hashlib.sha256(encoded).hexdigest()
+        return DependencyTreeVerification("verified", len(manifests), f"sha256:{checksum}")
+
+    @staticmethod
+    def _is_installed_package_manifest(path: Path, sandbox: Path) -> bool:
+        """Ignore package metadata nested inside an installed package."""
+        current = path.parent
+        while current != sandbox and current.name != "node_modules":
+            current = current.parent
+        if current.name != "node_modules":
+            return False
+        relative = path.relative_to(current)
+        return (
+            len(relative.parts) == 2
+            or (len(relative.parts) == 3 and relative.parts[0].startswith("@"))
+        ) and relative.parts[-1] == "package.json"
