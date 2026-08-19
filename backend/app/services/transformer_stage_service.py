@@ -1140,7 +1140,11 @@ class TransformerStageService:
         if (
                 not pre_repair_fallback_authorized
                 and mode is not ReconstructionMode.AUTHORIZED_ROLLBACK
-                and (authoritative is None or binding.workspace_fingerprint != authoritative)
+                and (
+                    checkpoint_authoritative_fingerprint is None
+                    or binding.workspace_fingerprint
+                    != checkpoint_authoritative_fingerprint
+                )
             ):
                 transitions.append_audit_event(
                     run_id=continuation.run_id,
