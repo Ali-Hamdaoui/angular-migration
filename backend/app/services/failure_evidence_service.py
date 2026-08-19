@@ -220,7 +220,7 @@ class FailureEvidenceService:
                 "blocking_dependency": blocking,
                 "package_version": package_version,
                 "required_peer_range": required,
-                "installed_version": None,
+                "installed_version": _installed_version_of(message, blocking),
                 "required_ranges": {blocking: required},
                 "proposed_angular_version": None,
             }
