@@ -9,9 +9,11 @@ from pathlib import Path
 
 from sqlalchemy import select, update
 
+from app.artifact_store import ArtifactNotFoundError, ArtifactStoreError, LocalFilesystemArtifactStore
 from app.domain.contracts import WorkflowEventType
 from app.repositories.models import (
     ArtifactMetadataModel,
+    CommandAuthorizationAuditModel,
     CommandExecutionModel,
     MigrationRunModel,
     MigrationStageModel,
@@ -31,6 +33,7 @@ from app.services.lockfile_generation_runner import (
     LockfileGenerationError,
     LockfileGenerationRunner,
     is_npm_eresolve_failure,
+    workspace_excluding_governed_volatile_fingerprint,
 )
 from app.services.repair_lifecycle_service import RepairLifecycleService
 from app.services.stage_preparation_primitives import StageSandboxCopier
@@ -73,6 +76,14 @@ APPLIED_EVIDENCE_STATUSES = frozenset(
         "superseded",
     }
 )
+PROVEN_INTERRUPTED_PREPARATION_DRIFT = "PROVEN_INTERRUPTED_PREPARATION_DRIFT"
+EXPECTED_LOCKFILE_ARGUMENTS = [
+    "install",
+    "--package-lock-only",
+    "--ignore-scripts",
+    "--no-audit",
+    "--no-fund",
+]
 
 
 class StageRecoveryError(ValueError):
@@ -171,6 +182,10 @@ class StageRecoveryService:
                 "checkpoint_id": context["checkpoint"].id,
                 "repair_attempt_id": context["attempt"].id,
                 "source_workspace_fingerprint": context["source_workspace_fingerprint"],
+                "observed_workspace_fingerprint": context["observed_workspace_fingerprint"],
+                "governed_workspace_fingerprint": context["governed_workspace_fingerprint"],
+                "drift_classification": context["drift_classification"],
+                "interrupted_evidence_checksum": context["interrupted_evidence_checksum"],
                 "classification": context["diagnosis"]["classification"],
             }
             recovery_payload = dict(request_payload)
@@ -215,6 +230,10 @@ class StageRecoveryService:
                 source_error_message=continuation.last_error_message,
                 manifest_checksum=context["manifest_checksum"],
                 stale_lock_checksum=context["stale_lock_checksum"],
+                observed_workspace_fingerprint=context["observed_workspace_fingerprint"],
+                governed_workspace_fingerprint=context["governed_workspace_fingerprint"],
+                drift_classification=context["drift_classification"],
+                interrupted_evidence_checksum=context["interrupted_evidence_checksum"],
                 created_at=now,
                 updated_at=now,
             )
@@ -307,12 +326,6 @@ class StageRecoveryService:
                 "WORKSPACE_FINGERPRINT_MISMATCH",
                 "The governed recovery workspace cannot be read safely",
             ) from error
-        if live != binding.workspace_fingerprint:
-            raise StageRecoveryError(
-                "WORKSPACE_FINGERPRINT_MISMATCH",
-                "Live workspace does not match its durable binding",
-                {"live": live, "binding": binding.workspace_fingerprint},
-            )
         step = session.scalar(
             select(StageStepModel).where(
                 StageStepModel.run_id == continuation.run_id,
@@ -322,23 +335,20 @@ class StageRecoveryService:
         )
         interrupted = session.get(CommandExecutionModel, step.execution_id) if step and step.execution_id else None
         if not self._is_interrupted_lockfile(interrupted):
-            interrupted = session.scalar(
-                select(CommandExecutionModel)
-                .where(
-                    CommandExecutionModel.run_id == continuation.run_id,
-                    CommandExecutionModel.stage_id == continuation.current_stage_id,
-                    CommandExecutionModel.command_id == "npm-lockfile-generate",
-                    CommandExecutionModel.status == "interrupted",
-                    CommandExecutionModel.failure_code == "COMMAND_RECOVERY_REQUIRED",
-                )
-                .order_by(CommandExecutionModel.finished_at.desc())
-                .limit(1)
-            )
-        if interrupted is None:
             raise StageRecoveryError(
                 "COMMAND_RECOVERY_EVIDENCE_MISSING",
-                "No interrupted governed lockfile command authorizes stage recovery",
+                "The lockfile stage step does not point to an interrupted governed command",
             )
+        drift = self._validate_interrupted_preparation(
+            session,
+            run,
+            continuation.current_stage_id,
+            binding,
+            workspace,
+            live,
+            step,
+            interrupted,
+        )
         causal = None
         for candidate in session.scalars(
             select(CommandExecutionModel)
@@ -358,12 +368,12 @@ class StageRecoveryService:
                 "DEPENDENCY_STATE_RECOVERY_EVIDENCE_MISSING",
                 "No immutable failed ERESOLVE lockfile execution authorizes reconciliation",
             )
-        result = session.get(ArtifactMetadataModel, "metadata-" + str(causal.result_artifact_id))
-        if result is None or not result.immutable or result.execution_id != causal.id:
-            raise StageRecoveryError(
-                "DEPENDENCY_STATE_RECOVERY_EVIDENCE_INVALID",
-                "Causal ERESOLVE result evidence is missing or not immutable",
-            )
+        causal_evidence = self._validate_causal_evidence(
+            session,
+            run,
+            continuation.current_stage_id,
+            causal,
+        )
         diagnosis = DependencyRepairPreflightService().classify_current_state(
             workspace=workspace,
             source_family=stage.source_version_family or "",
@@ -391,13 +401,17 @@ class StageRecoveryService:
             "live": live,
             "interrupted": interrupted,
             "causal": causal,
-            "causal_evidence_checksum": result.checksum,
+            "causal_evidence_checksum": causal_evidence["checksum"],
+            "interrupted_evidence_checksum": drift["evidence_checksum"],
             "attempt": attempt,
             "checkpoint": checkpoint,
             "diagnosis": diagnosis,
             "manifest_checksum": self.file_checksum(workspace / "package.json"),
             "stale_lock_checksum": start.get("post_apply_pre_command_package_lock_sha256", "missing"),
             "source_workspace_fingerprint": binding.workspace_fingerprint,
+            "observed_workspace_fingerprint": drift["observed_workspace_fingerprint"],
+            "governed_workspace_fingerprint": drift["governed_workspace_fingerprint"],
+            "drift_classification": drift["classification"],
         }
 
     @staticmethod
@@ -408,6 +422,187 @@ class StageRecoveryService:
             and execution.status == "interrupted"
             and execution.failure_code == "COMMAND_RECOVERY_REQUIRED"
         )
+
+    def _validate_interrupted_preparation(
+        self,
+        session,
+        run,
+        stage_id: str,
+        binding,
+        workspace: Path,
+        live: str,
+        step,
+        execution,
+    ) -> dict[str, str]:
+        start = execution.start_fingerprint or {}
+        if (
+            execution.run_id != run.id
+            or execution.stage_id != stage_id
+            or step.execution_id != execution.id
+            or execution.arguments != EXPECTED_LOCKFILE_ARGUMENTS
+            or start.get("fingerprint_scope") != "lockfile-generation-mutation-v2"
+        ):
+            raise StageRecoveryError(
+                "WORKSPACE_AUTHORITY_MISMATCH",
+                "Interrupted lockfile preparation is not bound to the current stage authority",
+            )
+        authorization = session.get(CommandAuthorizationAuditModel, execution.authorization_id)
+        authorization_artifacts = list(authorization.artifact_ids or []) if authorization else []
+        if (
+            authorization is None
+            or authorization.run_id != run.id
+            or authorization.stage_id != stage_id
+            or authorization.command_id != execution.command_id
+            or authorization.decision != "accepted"
+            or not authorization_artifacts
+        ):
+            raise StageRecoveryError(
+                "WORKSPACE_AUTHORITY_MISMATCH",
+                "Interrupted lockfile preparation lacks accepted immutable authorization evidence",
+            )
+        evidence_refs = [
+            self._validated_artifact(
+                session,
+                run,
+                stage_id,
+                artifact_id,
+                expected_execution_id=None,
+            )
+            for artifact_id in authorization_artifacts
+        ]
+        for artifact_id in execution.artifact_ids or []:
+            evidence_refs.append(
+                self._validated_artifact(
+                    session,
+                    run,
+                    stage_id,
+                    artifact_id,
+                    expected_execution_id=execution.id,
+                )
+            )
+        expected_binding = start.get("post_apply_pre_command_binding_fingerprint")
+        expected_package = start.get("post_apply_pre_command_package_json_sha256")
+        expected_lock = start.get("post_apply_pre_command_package_lock_sha256")
+        expected_governed = start.get("post_apply_pre_command_governed_workspace_fingerprint")
+        actual_package = self.file_checksum(workspace / "package.json")
+        actual_lock = self.file_checksum(workspace / "package-lock.json")
+        actual_governed = workspace_excluding_governed_volatile_fingerprint(workspace)
+        if (
+            expected_binding != binding.workspace_fingerprint
+            or expected_package != actual_package
+            or expected_lock != actual_lock
+            or expected_governed != actual_governed
+        ):
+            raise StageRecoveryError(
+                "WORKSPACE_AUTHORITY_MISMATCH",
+                "Live workspace drift is not fully proven by the interrupted preparation evidence",
+                {
+                    "binding": binding.workspace_fingerprint,
+                    "live": live,
+                    "expected_package": expected_package,
+                    "actual_package": actual_package,
+                    "expected_lock": expected_lock,
+                    "actual_lock": actual_lock,
+                    "expected_governed": expected_governed,
+                    "actual_governed": actual_governed,
+                },
+            )
+        evidence_checksum = self.checksum(
+            {
+                "execution_id": execution.id,
+                "authorization_id": authorization.id,
+                "stage_step_id": step.id,
+                "start_fingerprint": start,
+                "artifact_refs": evidence_refs,
+                "observed_workspace_fingerprint": live,
+                "governed_workspace_fingerprint": actual_governed,
+            }
+        )
+        return {
+            "classification": (
+                PROVEN_INTERRUPTED_PREPARATION_DRIFT
+                if live != binding.workspace_fingerprint
+                else "NORMAL_AUTHORITY"
+            ),
+            "observed_workspace_fingerprint": live,
+            "governed_workspace_fingerprint": actual_governed,
+            "evidence_checksum": evidence_checksum,
+        }
+
+    def _validate_causal_evidence(
+        self,
+        session,
+        run,
+        stage_id: str,
+        execution,
+    ) -> dict[str, str]:
+        artifact_refs = []
+        for field in (
+            "stdout_artifact_id",
+            "stderr_artifact_id",
+            "command_log_artifact_id",
+            "manifest_artifact_id",
+            "result_artifact_id",
+        ):
+            artifact_refs.append(
+                self._validated_artifact(
+                    session,
+                    run,
+                    stage_id,
+                    getattr(execution, field),
+                    expected_execution_id=execution.id,
+                )
+            )
+        return {
+            "checksum": self.checksum(
+                {"execution_id": execution.id, "artifacts": artifact_refs}
+            )
+        }
+
+    @staticmethod
+    def _validated_artifact(
+        session,
+        run,
+        stage_id: str,
+        artifact_id: str | None,
+        *,
+        expected_execution_id: str | None,
+    ) -> dict[str, str]:
+        if not artifact_id:
+            raise StageRecoveryError(
+                "WORKSPACE_AUTHORITY_MISMATCH",
+                "Required immutable recovery evidence is missing",
+            )
+        clean_id = str(artifact_id).removeprefix("metadata-")
+        metadata = session.get(ArtifactMetadataModel, "metadata-" + clean_id)
+        if (
+            metadata is None
+            or metadata.run_id != run.id
+            or metadata.stage_id != stage_id
+            or not metadata.immutable
+            or (expected_execution_id is not None and metadata.execution_id != expected_execution_id)
+        ):
+            raise StageRecoveryError(
+                "WORKSPACE_AUTHORITY_MISMATCH",
+                "Recovery evidence metadata is missing, mutable, or cross-bound",
+            )
+        try:
+            store = LocalFilesystemArtifactStore(
+                Path(run.artifact_root).parent,
+                fixed_run_root=Path(run.artifact_root),
+            )
+            stored = store.read_artifact(run.id, metadata.relative_path)
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError) as error:
+            raise StageRecoveryError(
+                "WORKSPACE_AUTHORITY_MISMATCH",
+                "Recovery evidence bytes are missing or checksum-invalid",
+            ) from error
+        if stored.ref.artifact_id != clean_id or stored.ref.checksum != metadata.checksum:
+            raise StageRecoveryError(
+                "WORKSPACE_AUTHORITY_MISMATCH",
+                "Recovery evidence checksum does not match durable metadata",
+            )
+        return {"artifact_id": clean_id, "checksum": metadata.checksum}
 
     def _select_applied_attempt(self, session, continuation, binding):
         for attempt in session.scalars(
@@ -848,6 +1043,10 @@ class StageRecoveryService:
             "checkpoint_id": operation.checkpoint_id,
             "repair_attempt_id": operation.repair_attempt_id,
             "command_execution_id": operation.command_execution_id,
+            "observed_workspace_fingerprint": operation.observed_workspace_fingerprint,
+            "governed_workspace_fingerprint": operation.governed_workspace_fingerprint,
+            "drift_classification": operation.drift_classification,
+            "interrupted_evidence_checksum": operation.interrupted_evidence_checksum,
             "required_action": "RECOVER_STAGE",
             "idempotent_replay": replay,
         }

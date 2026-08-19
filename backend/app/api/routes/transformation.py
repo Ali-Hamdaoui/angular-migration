@@ -661,6 +661,18 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
         "recovery_command_execution_id": (
             recovery.command_execution_id if recovery is not None else None
         ),
+        "recovery_observed_workspace_fingerprint": (
+            recovery.observed_workspace_fingerprint if recovery is not None else None
+        ),
+        "recovery_governed_workspace_fingerprint": (
+            recovery.governed_workspace_fingerprint if recovery is not None else None
+        ),
+        "recovery_drift_classification": (
+            recovery.drift_classification if recovery is not None else None
+        ),
+        "recovery_interrupted_evidence_checksum": (
+            recovery.interrupted_evidence_checksum if recovery is not None else None
+        ),
         "angular_update_retry_attempt": (
             retry_execution.attempt_number if retry_execution else None
         ),
