@@ -778,6 +778,11 @@ class DependencyTransitionRunner:
             self._stage._wait_for_command(session, continuation, execution.id)
             return "waiting"
         if execution.status != "succeeded" or execution.exit_code != 0:
+            if self._retryable_prelaunch_failure(session, context, generation, execution):
+                retry_key = self._next_materialization_key(session, context, generation)
+                return self._queue_transition_command(
+                    session, continuation, context, "materialize", retry_key
+                )
             raise DependencyTransitionError(
                 execution.failure_code or "DEPENDENCY_MATERIALIZATION_FAILED",
                 execution.failure_message or "Checkpoint dependency state cannot be materialized with npm ci",
@@ -797,6 +802,33 @@ class DependencyTransitionRunner:
                 session, continuation, context, "materialize", retry_key
             )
         return "continue"
+
+    def _retryable_prelaunch_failure(self, session, context, generation: str, execution) -> bool:
+        """Allow one durable successor when the Factory failed before spawning npm."""
+        if (
+            execution.status != "failed"
+            or execution.process_id is not None
+            or execution.exit_code is not None
+            or any(
+                (
+                    execution.stdout_artifact_id,
+                    execution.stderr_artifact_id,
+                    execution.command_log_artifact_id,
+                    execution.result_artifact_id,
+                    execution.manifest_artifact_id,
+                )
+            )
+        ):
+            return False
+        return not any(
+            candidate.id != execution.id
+            and candidate.status == "failed"
+            and candidate.process_id is None
+            and candidate.exit_code is None
+            for candidate in self._materialization_executions(
+                session, context, generation
+            )
+        )
 
     def _verify_materialization(self, session, continuation, context, execution) -> None:
         workspace = context["workspace"]
