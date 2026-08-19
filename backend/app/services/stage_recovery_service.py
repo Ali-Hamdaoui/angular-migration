@@ -1550,27 +1550,48 @@ class StageRecoveryService:
                 continuation.last_error_message = message[:2000]
                 continuation.state_version += 1
                 continuation.updated_at = self._now()
-                append_continuation_event(
-                    session,
-                    continuation,
-                    event_type=(
-                        WorkflowEventType.TRANSFORMATION_CONTINUATION_FAILED
-                        if normal_failure_handoff
-                        else WorkflowEventType.TRANSFORMATION_CONTINUATION_BLOCKED
-                    ),
-                    key=f"stage-recovery:{operation.id}:failed:{code}",
-                    reason=(
-                        "Fresh npm ERESOLVE handed to normal failure classification"
-                        if normal_failure_handoff
-                        else message[:500]
-                    ),
-                    payload={
-                        "recovery_id": operation.id,
-                        "last_error_code": code,
-                        "expected_state_version": expected_state_version,
-                        "normal_failure_handoff": normal_failure_handoff,
-                    },
+                failure_event_type = (
+                    WorkflowEventType.TRANSFORMATION_CONTINUATION_FAILED
+                    if normal_failure_handoff
+                    else WorkflowEventType.TRANSFORMATION_CONTINUATION_BLOCKED
                 )
+                failure_event_key = f"stage-recovery:{operation.id}:failed:{code}"
+                existing_failure = session.scalar(
+                    select(WorkflowEventModel).where(
+                        WorkflowEventModel.run_id == operation.run_id,
+                        WorkflowEventModel.idempotency_key
+                        == f"{continuation.id}:{failure_event_key}",
+                    )
+                )
+                if existing_failure is not None:
+                    stable_payload = existing_failure.payload or {}
+                    if (
+                        existing_failure.event_type != failure_event_type
+                        or stable_payload.get("recovery_id") != operation.id
+                        or stable_payload.get("last_error_code") != code
+                    ):
+                        raise StageRecoveryError(
+                            "RECOVERY_FAILURE_EVENT_IDENTITY_MISMATCH",
+                            "Recovery failure event is bound to different durable evidence",
+                        )
+                else:
+                    append_continuation_event(
+                        session,
+                        continuation,
+                        event_type=failure_event_type,
+                        key=failure_event_key,
+                        reason=(
+                            "Fresh npm ERESOLVE handed to normal failure classification"
+                            if normal_failure_handoff
+                            else message[:500]
+                        ),
+                        payload={
+                            "recovery_id": operation.id,
+                            "last_error_code": code,
+                            "expected_state_version": expected_state_version,
+                            "normal_failure_handoff": normal_failure_handoff,
+                        },
+                    )
             self._operation_event(
                 session,
                 operation,
