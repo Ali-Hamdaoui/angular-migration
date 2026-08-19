@@ -174,15 +174,21 @@ class StageRecoveryService:
         correlation_id: str | None = None,
     ) -> dict[str, object]:
         if self._legacy_dependency_recovery_required(run_id, expected_state_version):
-            from app.services.repair_application_service import RepairApplicationService
-
-            return RepairApplicationService(scope=self._scope).recover_stale_dependency_state(
-                run_id=run_id,
-                attempt_id=self._legacy_dependency_attempt_id(run_id),
-                expected_state_version=expected_state_version,
-                idempotency_key=idempotency_key,
-                actor=actor,
+            from app.services.repair_application_service import (
+                RepairApplicationError,
+                RepairApplicationService,
             )
+
+            try:
+                return RepairApplicationService(scope=self._scope).recover_stale_dependency_state(
+                    run_id=run_id,
+                    attempt_id=self._legacy_dependency_attempt_id(run_id),
+                    expected_state_version=expected_state_version,
+                    idempotency_key=idempotency_key,
+                    actor=actor,
+                )
+            except RepairApplicationError as error:
+                raise StageRecoveryError(error.code, error.message) from error
         with self._scope() as session:
             continuation = session.scalar(
                 select(TransformationContinuationModel).where(
