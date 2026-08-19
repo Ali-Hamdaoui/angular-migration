@@ -1384,7 +1384,6 @@ class StageRecoveryService:
             if operation is None or operation.status != "PREPARING":
                 return
             continuation = self._continuation_for_operation(session, operation)
-            causal = session.get(CommandExecutionModel, operation.causal_execution_id)
             step = session.scalar(
                 select(StageStepModel).where(
                     StageStepModel.run_id == operation.run_id,
@@ -1392,8 +1391,12 @@ class StageRecoveryService:
                     StageStepModel.name == "lockfile_generation-0",
                 )
             )
-            if continuation is None or causal is None or step is None:
+            if continuation is None or step is None:
                 raise StageRecoveryError("RECOVERY_AUTHORITY_MISSING", "Recovery lockfile command authority is incomplete")
+            context = self._resolve_context(session, continuation)
+            causal = context["causal"]
+            operation.causal_execution_id = causal.id
+            operation.causal_evidence_checksum = context["causal_evidence_checksum"]
             step.execution_id = causal.id
             step.status = "FAILED"
             step.completed_at = causal.finished_at
