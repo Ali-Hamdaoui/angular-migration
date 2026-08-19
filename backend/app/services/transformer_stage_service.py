@@ -37,6 +37,7 @@ from app.repositories.models import (
     StageWorkspaceBindingModel,
     StageRuntimeBindingModel,
     TransformationContinuationModel,
+    WorkflowEventModel,
 )
 from app.repositories.session import session_scope
 from app.services.command_executor_service import (
@@ -1262,11 +1263,29 @@ class TransformerStageService:
                     "WORKSPACE_FINGERPRINT_MISMATCH",
                     "Durable workspace binding no longer matches the reconstruction checkpoint",
                 )
+        started_key = (
+            f"reconstruct:v2:{reconstruction_request_checksum.removeprefix('sha256:')}:started"
+        )
+        existing_started = session.scalar(
+            select(WorkflowEventModel).where(
+                WorkflowEventModel.run_id == continuation.run_id,
+                WorkflowEventModel.idempotency_key == started_key,
+            )
+        )
+        if existing_started is not None:
+            if (
+                existing_started.event_type != WorkflowEventType.STAGE_WORKSPACE_RECONSTRUCTION_STARTED
+                or (existing_started.payload or {}).get("reconstruction_request_checksum")
+                != reconstruction_request_checksum
+            ):
+                raise TransformerStageError(
+                    "RECONSTRUCTION_IDENTITY_MISMATCH",
+                    "Reconstruction start identity is bound to different durable evidence",
+                )
+            return reconstruction_request_checksum
         transitions.append_audit_event(
             run_id=continuation.run_id,
-            idempotency_key=(
-                f"reconstruct:v2:{reconstruction_request_checksum.removeprefix('sha256:')}:started"
-            ),
+            idempotency_key=started_key,
             event_type=WorkflowEventType.STAGE_WORKSPACE_RECONSTRUCTION_STARTED,
             actor="transformer",
             reason=f"workspace reconstruction started ({reason})",
