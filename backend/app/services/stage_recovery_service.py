@@ -509,21 +509,13 @@ class StageRecoveryService:
                 StageStepModel.name == "lockfile_generation-0",
             )
         )
-        interrupted = session.get(CommandExecutionModel, step.execution_id) if step and step.execution_id else None
-        if not self._is_interrupted_lockfile(interrupted):
-            raise StageRecoveryError(
-                "COMMAND_RECOVERY_EVIDENCE_MISSING",
-                "The lockfile stage step does not point to an interrupted governed command",
-            )
-        drift = self._validate_interrupted_preparation(
+        interrupted, drift = self._select_interrupted_preparation(
             session,
             run,
             continuation.current_stage_id,
             binding,
             workspace,
             live,
-            step,
-            interrupted,
         )
         causal = None
         for candidate in session.scalars(
@@ -599,6 +591,62 @@ class StageRecoveryService:
             and execution.failure_code == "COMMAND_RECOVERY_REQUIRED"
         )
 
+    def _select_interrupted_preparation(
+        self,
+        session,
+        run,
+        stage_id: str,
+        binding,
+        workspace: Path,
+        live: str,
+        step,
+    ) -> tuple[object, dict[str, str]]:
+        candidates = []
+        seen = set()
+        if step is not None and step.execution_id:
+            pointed = session.get(CommandExecutionModel, step.execution_id)
+            if pointed is not None:
+                candidates.append(pointed)
+                seen.add(pointed.id)
+        candidates.extend(
+            candidate
+            for candidate in session.scalars(
+                select(CommandExecutionModel)
+                .where(
+                    CommandExecutionModel.run_id == run.id,
+                    CommandExecutionModel.stage_id == stage_id,
+                    CommandExecutionModel.command_id == "npm-lockfile-generate",
+                    CommandExecutionModel.status == "interrupted",
+                )
+                .order_by(CommandExecutionModel.created_at.desc())
+            )
+            if candidate.id not in seen
+        )
+        for candidate in candidates:
+            if not self._is_interrupted_lockfile(candidate):
+                continue
+            try:
+                drift = self._validate_interrupted_preparation(
+                    session,
+                    run,
+                    stage_id,
+                    binding,
+                    workspace,
+                    live,
+                    step,
+                    candidate,
+                    require_stage_step_pointer=False,
+                )
+            except StageRecoveryError:
+                continue
+            if step is not None and step.execution_id != candidate.id:
+                step.execution_id = candidate.id
+            return candidate, drift
+        raise StageRecoveryError(
+            "COMMAND_RECOVERY_EVIDENCE_MISSING",
+            "No interrupted governed command matches the current workspace authority",
+        )
+
     def _validate_interrupted_preparation(
         self,
         session,
@@ -609,12 +657,17 @@ class StageRecoveryService:
         live: str,
         step,
         execution,
+        *,
+        require_stage_step_pointer: bool = True,
     ) -> dict[str, str]:
         start = execution.start_fingerprint or {}
         if (
             execution.run_id != run.id
             or execution.stage_id != stage_id
-            or step.execution_id != execution.id
+            or (
+                require_stage_step_pointer
+                and (step is None or step.execution_id != execution.id)
+            )
             or execution.arguments != EXPECTED_LOCKFILE_ARGUMENTS
             or start.get("fingerprint_scope") != "lockfile-generation-mutation-v2"
         ):
