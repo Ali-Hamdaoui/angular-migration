@@ -3541,8 +3541,19 @@ class TransformerOrchestrator:
         if step is None or not step.execution_id:
             return False
         execution = session.get(CommandExecutionModel, step.execution_id)
+        latest = session.scalar(
+            select(CommandExecutionModel)
+            .where(
+                CommandExecutionModel.run_id == continuation.run_id,
+                CommandExecutionModel.stage_id == continuation.current_stage_id,
+            )
+            .order_by(CommandExecutionModel.requested_at.desc())
+            .limit(1)
+        )
         return (
             execution is not None
+            and latest is not None
+            and latest.id == execution.id
             and execution.command_id == "angular-update-exact"
         )
 
