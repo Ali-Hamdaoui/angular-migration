@@ -1004,6 +1004,12 @@ class DependencyTransitionRunner:
                 "DEPENDENCY_TRANSITION_ANGULAR_EVIDENCE_MISSING",
                 "Angular update terminal evidence is incomplete",
             )
+        live = STAGE_FINGERPRINT_PROFILE.fingerprint(context["workspace"])
+        execution.end_fingerprint = {"canonical_source": live}
+        if live != context["binding"].workspace_fingerprint:
+            self._update_binding_fingerprint(
+                session, continuation, context["binding"], live
+            )
         if execution.status == "succeeded" and execution.exit_code == 0:
             step = session.scalar(
                 select(StageStepModel).where(
@@ -1012,18 +1018,12 @@ class DependencyTransitionRunner:
                     StageStepModel.name == "angular_update-0",
                 )
             )
-            live = STAGE_FINGERPRINT_PROFILE.fingerprint(context["workspace"])
-            execution.end_fingerprint = {"canonical_source": live}
             if step is not None:
                 step.execution_id = execution.id
                 step.status = "PASSED"
                 step.completed_at = self._now()
                 step.workspace_fingerprint = live
                 step.updated_at = self._now()
-            if live != context["binding"].workspace_fingerprint:
-                self._update_binding_fingerprint(
-                    session, continuation, context["binding"], live
-                )
             return "continue"
         if not fresh_evidence:
             raise DependencyTransitionError(
