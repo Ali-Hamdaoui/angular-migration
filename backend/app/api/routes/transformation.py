@@ -1348,7 +1348,10 @@ def restart_transformation(
             .order_by(StageRecoveryOperationModel.created_at.desc())
             .limit(1)
         )
-        if StageRecoveryService.recovery_required(continuation, recovery):
+        if (
+            StageRecoveryService.recovery_required(continuation, recovery)
+            and not StageRecoveryService.normal_failure_handoff_allowed(session, continuation)
+        ):
             return error_response(
                 request,
                 status_code=409,

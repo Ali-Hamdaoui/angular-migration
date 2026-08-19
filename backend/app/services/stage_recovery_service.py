@@ -128,6 +128,42 @@ class StageRecoveryService:
             and continuation.last_error_code in RECOVERY_REQUIRED_ERRORS
         )
 
+    @classmethod
+    def normal_failure_handoff_allowed(cls, session, continuation) -> bool:
+        if continuation.last_error_code != "LOCKFILE_RECONCILIATION_WORKSPACE_STALE":
+            return False
+        active = session.scalar(
+            select(StageRecoveryOperationModel).where(
+                StageRecoveryOperationModel.run_id == continuation.run_id,
+                StageRecoveryOperationModel.stage_id == continuation.current_stage_id,
+                StageRecoveryOperationModel.status.in_(ACTIVE_RECOVERY_STATUSES),
+            )
+        )
+        if active is not None:
+            return False
+        operation = session.scalar(
+            select(StageRecoveryOperationModel)
+            .where(
+                StageRecoveryOperationModel.run_id == continuation.run_id,
+                StageRecoveryOperationModel.stage_id == continuation.current_stage_id,
+                StageRecoveryOperationModel.status == "FAILED",
+            )
+            .order_by(StageRecoveryOperationModel.updated_at.desc())
+        )
+        execution = (
+            session.get(CommandExecutionModel, operation.command_execution_id)
+            if operation is not None and operation.command_execution_id
+            else None
+        )
+        return bool(
+            operation is not None
+            and operation.last_error_code == "COMMAND_EXIT_NONZERO"
+            and execution is not None
+            and execution.command_id == "npm-lockfile-generate"
+            and execution.status == "failed"
+            and is_npm_eresolve_failure(execution)
+        )
+
     def create(
         self,
         *,
@@ -1403,8 +1439,21 @@ class StageRecoveryService:
             operation.updated_at = self._now()
             if continuation is not None:
                 expected_state_version = continuation.state_version
-                continuation.status = "blocked"
-                continuation.current_node = "lockfile_generation"
+                execution = (
+                    session.get(CommandExecutionModel, operation.command_execution_id)
+                    if operation.command_execution_id
+                    else None
+                )
+                normal_failure_handoff = bool(
+                    execution is not None
+                    and execution.command_id == "npm-lockfile-generate"
+                    and execution.status == "failed"
+                    and is_npm_eresolve_failure(execution)
+                )
+                continuation.status = "queued" if normal_failure_handoff else "blocked"
+                continuation.current_node = (
+                    "classify_failure" if normal_failure_handoff else "lockfile_generation"
+                )
                 continuation.worker_id = None
                 continuation.lease_expires_at = None
                 continuation.waiting_execution_id = None
@@ -1415,13 +1464,22 @@ class StageRecoveryService:
                 append_continuation_event(
                     session,
                     continuation,
-                    event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_BLOCKED,
+                    event_type=(
+                        WorkflowEventType.TRANSFORMATION_CONTINUATION_FAILED
+                        if normal_failure_handoff
+                        else WorkflowEventType.TRANSFORMATION_CONTINUATION_BLOCKED
+                    ),
                     key=f"stage-recovery:{operation.id}:failed:{code}",
-                    reason=message[:500],
+                    reason=(
+                        "Fresh npm ERESOLVE handed to normal failure classification"
+                        if normal_failure_handoff
+                        else message[:500]
+                    ),
                     payload={
                         "recovery_id": operation.id,
                         "last_error_code": code,
                         "expected_state_version": expected_state_version,
+                        "normal_failure_handoff": normal_failure_handoff,
                     },
                 )
             self._operation_event(
