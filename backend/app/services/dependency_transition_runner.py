@@ -1017,6 +1017,12 @@ class DependencyTransitionRunner:
                 execution.failure_message or "Angular update failed after dependency detach",
             )
         self._record_fresh_failure(session, continuation, context, execution)
+        live = STAGE_FINGERPRINT_PROFILE.fingerprint(context["workspace"])
+        execution.end_fingerprint = {"canonical_source": live}
+        if live != context["binding"].workspace_fingerprint:
+            self._update_binding_fingerprint(
+                session, continuation, context["binding"], live
+            )
         return "continue"
 
     @staticmethod
