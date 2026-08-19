@@ -1364,24 +1364,6 @@ class CommandExecutorService:
                     prompt_stdin = TransformerPromptService.selected_stdin(prompt) if prompt else None
                 artifact_root = Path(run.artifact_root)
                 store = LocalFilesystemArtifactStore(artifact_root, fixed_run_root=artifact_root)
-                request = CommandRequestDto(
-                    command_id=command_id,
-                    run_id=run_id,
-                    stage_id=stage_id,
-                    requested_by=authorization.actor,
-                    requester=authorization.actor,
-                    executable=executable,
-                    arguments=arguments,
-                    shell=False,
-                    working_directory_alias=workspace_alias,
-                    runtime_profile_id=execution_profile_id,
-                    timeout_seconds=timeout_seconds,
-                    network_profile=network_profile,
-                    cancellation_policy=CancellationPolicy.TERMINATE_PROCESS_TREE,
-                    idempotency_key=idempotency_key,
-                    requested_at=requested_at,
-                )
-
                 # G07 stage binding is the executable authority. The legacy
                 # execution profile remains authorization provenance only.
                 stage_runtime_authority = _stage_runtime_authority(session, run, stage_id)
@@ -1395,18 +1377,31 @@ class CommandExecutorService:
                     if stage_runtime_authority is not None
                     else execution_profile_id
                 )
-                request.runtime_profile_id = runtime_profile_id
                 model.runtime_profile_id = runtime_profile_id
                 session.flush()
 
             # Fail-closed runtime binding: resolve the profile's executables to
             # PATH-independent, checksum-bound descriptors.  Probing runs
             # outside the database session (no transaction across processes).
-            if stage_runtime_authority is None:
-                runtime_bindings = _runtime_bindings_from_profile(selected_profile)
-                runtime_profile_id = execution_profile_id
-            else:
+            if stage_runtime_authority is not None:
                 _verify_stage_runtime_files(stage_runtime_authority)
+            request = CommandRequestDto(
+                command_id=command_id,
+                run_id=run_id,
+                stage_id=stage_id,
+                requested_by=authorization.actor,
+                requester=authorization.actor,
+                executable=executable,
+                arguments=arguments,
+                shell=False,
+                working_directory_alias=workspace_alias,
+                runtime_profile_id=runtime_profile_id,
+                timeout_seconds=timeout_seconds,
+                network_profile=network_profile,
+                cancellation_policy=CancellationPolicy.TERMINATE_PROCESS_TREE,
+                idempotency_key=idempotency_key,
+                requested_at=requested_at,
+            )
             if runtime_bindings:
                 policy = CommandPolicy(
                     sandbox_root=root,

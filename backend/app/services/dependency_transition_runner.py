@@ -777,15 +777,15 @@ class DependencyTransitionRunner:
         if execution.status in {"pending", "queued", "running"}:
             self._stage._wait_for_command(session, continuation, execution.id)
             return "waiting"
+        if execution.status != "succeeded" or execution.exit_code != 0:
+            raise DependencyTransitionError(
+                execution.failure_code or "DEPENDENCY_MATERIALIZATION_FAILED",
+                execution.failure_message or "Checkpoint dependency state cannot be materialized with npm ci",
+            )
         if not self._command_evidence_complete(session, execution):
             raise DependencyTransitionError(
                 "DEPENDENCY_MATERIALIZATION_EVIDENCE_INVALID",
                 "npm ci terminal evidence is incomplete",
-            )
-        if execution.status != "succeeded" or execution.exit_code != 0:
-            raise DependencyTransitionError(
-                "DEPENDENCY_MATERIALIZATION_FAILED",
-                execution.failure_message or "Checkpoint dependency state cannot be materialized with npm ci",
             )
         try:
             self._verify_materialization(session, continuation, context, execution)
