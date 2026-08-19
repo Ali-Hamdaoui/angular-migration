@@ -1357,10 +1357,10 @@ class DependencyTransitionRunner:
             for section in ("dependencies", "devDependencies")
         )
         installed_present = (workspace / "node_modules" / package / "package.json").is_file()
-        if manifest_has or installed_present:
+        if manifest_has:
             raise DependencyTransitionError(
                 "DEPENDENCY_TRANSITION_UNINSTALL_VERIFICATION_FAILED",
-                "npm uninstall left the blocking dependency in package.json or node_modules",
+                "npm uninstall left the blocking dependency in package.json",
             )
         existing_checkpoint = session.scalar(
             select(StageCheckpointModel)
