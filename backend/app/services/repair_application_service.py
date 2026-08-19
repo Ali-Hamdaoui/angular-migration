@@ -4391,7 +4391,14 @@ class RepairApplicationService:
                     f"execution_id={evidence.get('execution_id') or 'unavailable'}; "
                     "recovery=reparse the immutable command failure with the npm package-name grammar"
                 )
-            installed_version = installed_dependency_version(workspace, backend_package)
+            try:
+                installed_version = installed_dependency_version(
+                    workspace, backend_package
+                )
+            except ValueError:
+                installed_version = diagnosis.get("installed_version")
+                if not is_exact_version(installed_version):
+                    raise
             authority = validate_dependency_transition_evidence(
                 evidence,
                 package=backend_package,
