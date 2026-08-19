@@ -4745,7 +4745,16 @@ class RepairApplicationService:
             for section in _DEPENDENCY_TRANSITION_TARGET_SECTIONS
             if isinstance(document.get(section), dict) and package in document[section]
         ]
-        if len(present) != 1:
+        detached = False
+        if not present:
+            try:
+                detached = (
+                    installed_dependency_version(workspace, package)
+                    == authority["installed_version"]
+                )
+            except ValueError:
+                detached = False
+        if len(present) != 1 and not detached:
             raise RepairApplicationError(
                 "REPAIR_DEPENDENCY_PACKAGE_MISSING",
                 "The backend blocking package is missing or ambiguous in authoritative package.json",
