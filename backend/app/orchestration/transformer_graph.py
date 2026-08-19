@@ -1174,33 +1174,8 @@ class TransformerOrchestrator:
         ):
             with self._scope() as session:
                 continuation = self._owned(session, continuation_id, worker_id)
-                recovery = (
-                    session.scalar(
-                        select(StageRecoveryOperationModel)
-                        .where(
-                            StageRecoveryOperationModel.run_id == continuation.run_id,
-                            StageRecoveryOperationModel.stage_id
-                            == continuation.current_stage_id,
-                            StageRecoveryOperationModel.command_execution_id
-                            == execution.id,
-                            StageRecoveryOperationModel.status == "FAILED",
-                        )
-                        .order_by(StageRecoveryOperationModel.updated_at.desc())
-                        .limit(1)
-                    )
-                    if execution is not None
-                    else None
-                )
-                attempt = (
-                    session.get(RepairAttemptModel, recovery.repair_attempt_id)
-                    if recovery is not None and recovery.repair_attempt_id
-                    else session.query(RepairAttemptModel)
-                    .filter_by(
-                        run_id=continuation.run_id,
-                        stage_id=continuation.current_stage_id,
-                    )
-                    .order_by(RepairAttemptModel.attempt_number.desc())
-                    .first()
+                attempt = self._failure_repair_attempt(
+                    session, continuation, execution
                 )
                 binding = self._stage._binding(session, continuation)
                 live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
@@ -1321,10 +1296,9 @@ class TransformerOrchestrator:
                 for artifact in (failure, route_artifact, context):
                     if artifact is not None:
                         self._stage.register_artifact(session, artifact, continuation)
-                attempt = session.query(RepairAttemptModel).filter_by(
-                    run_id=continuation.run_id,
-                    stage_id=continuation.current_stage_id,
-                ).order_by(RepairAttemptModel.attempt_number.desc()).first()
+                attempt = self._failure_repair_attempt(
+                    session, continuation, execution
+                )
                 if self._is_angular_update_failure(session, continuation):
                     if route.value == "angular_update_command_policy":
                         attempt = session.query(RepairAttemptModel).filter(
@@ -1629,6 +1603,37 @@ class TransformerOrchestrator:
                     continuation_id,
                     cleanup_error,
                 )
+
+    @staticmethod
+    def _failure_repair_attempt(session, continuation, execution):
+        recovery = (
+            session.scalar(
+                select(StageRecoveryOperationModel)
+                .where(
+                    StageRecoveryOperationModel.run_id == continuation.run_id,
+                    StageRecoveryOperationModel.stage_id
+                    == continuation.current_stage_id,
+                    StageRecoveryOperationModel.command_execution_id
+                    == execution.id,
+                    StageRecoveryOperationModel.status == "FAILED",
+                )
+                .order_by(StageRecoveryOperationModel.updated_at.desc())
+                .limit(1)
+            )
+            if execution is not None
+            else None
+        )
+        if recovery is not None and recovery.repair_attempt_id:
+            return session.get(RepairAttemptModel, recovery.repair_attempt_id)
+        return (
+            session.query(RepairAttemptModel)
+            .filter_by(
+                run_id=continuation.run_id,
+                stage_id=continuation.current_stage_id,
+            )
+            .order_by(RepairAttemptModel.attempt_number.desc())
+            .first()
+        )
 
     @staticmethod
     def _has_deterministic_replan_intelligence(session, continuation, evidence) -> bool:
