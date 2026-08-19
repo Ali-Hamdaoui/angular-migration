@@ -469,7 +469,7 @@ def g10_eligibility(session, run_id: str, stage_id: str, attempt_id: str) -> tup
     )
     if review is None or review.get("decision") != "accept":
         return False, "reviewer request_changes requires a supported revision"
-    current_strategy = _semantic_strategy(proposal)
+    current_strategy = _semantic_strategy(proposal, attempt)
     if current_strategy is not None:
         prior_attempts = session.scalars(
             select(RepairAttemptModel).where(
@@ -485,7 +485,7 @@ def g10_eligibility(session, run_id: str, stage_id: str, attempt_id: str) -> tup
                 session, store, prior, run_id, stage_id,
                 "proposal_artifact_id", "proposal_checksum", pre_attempt=False,
             )
-            if _semantic_strategy(prior_proposal) == current_strategy:
+            if _semantic_strategy(prior_proposal, prior) == current_strategy:
                 return False, "REPAIR_STRATEGY_ALREADY_FAILED"
     rejection = causal_rejection(
         evidence, proposal, stage_plan_commands=_stage_plan_commands(session, run_id, stage_id)
@@ -495,7 +495,7 @@ def g10_eligibility(session, run_id: str, stage_id: str, attempt_id: str) -> tup
     return True, None
 
 
-def _semantic_strategy(proposal: dict | None) -> tuple[str, str, str, str] | None:
+def _semantic_strategy(proposal: dict | None, attempt: RepairAttemptModel) -> tuple[str, ...] | None:
     operations = proposal.get("operations") if isinstance(proposal, dict) else None
     if not isinstance(operations, list) or len(operations) != 1 or not isinstance(operations[0], dict):
         return None
@@ -506,9 +506,13 @@ def _semantic_strategy(proposal: dict | None) -> tuple[str, str, str, str] | Non
     target = operation.get("target_state")
     return (
         "dependency_transition",
+        str(operation.get("repair_kind") or ""),
         str(operation.get("strategy") or ""),
         str(blocking.get("package") or "") if isinstance(blocking, dict) else "",
         str(target.get("target_version") or "") if isinstance(target, dict) else "",
+        str(attempt.failure_fingerprint or ""),
+        str(attempt.checkpoint_id or ""),
+        str(attempt.pre_fingerprint or ""),
     )
 
 
