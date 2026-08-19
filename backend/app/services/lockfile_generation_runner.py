@@ -305,6 +305,7 @@ class LockfileGenerationRunner:
             )
         start = {
             "fingerprint_scope": LOCKFILE_GENERATION_FINGERPRINT_SCOPE,
+            "reconciliation_generation": generation == 3,
             "post_apply_pre_command_package_json_sha256": _file_checksum(workspace / "package.json"),
             "post_apply_pre_command_package_lock_sha256": _file_checksum(workspace / "package-lock.json"),
             "post_apply_pre_command_governed_workspace_fingerprint": workspace_excluding_governed_volatile_fingerprint(workspace),
@@ -345,7 +346,10 @@ class LockfileGenerationRunner:
         return f"{attempt.id}{marker}"
 
     def _stale_lock_reconciliation_allowed(self, session, continuation, execution) -> bool:
-        if LOCKFILE_RECONCILIATION_MARKER in str(execution.idempotency_key or ""):
+        if (
+            LOCKFILE_RECONCILIATION_MARKER in str(execution.idempotency_key or "")
+            or (execution.start_fingerprint or {}).get("reconciliation_generation")
+        ):
             return False
         run, _attempt, _binding, workspace = self._authority(session, continuation)
         stage = session.get(MigrationStageModel, continuation.current_stage_id)
