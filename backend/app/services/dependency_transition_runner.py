@@ -1203,8 +1203,8 @@ class DependencyTransitionRunner:
                 fixed_run_root=Path(str(context["run"].artifact_root)),
             ).read_artifact(context["run"].id, metadata.relative_path)
             payload = json.loads(stored.content)
-            diagnosis = (payload.get("normalized_failure") or {}).get(
-                "failure_diagnosis"
+            _, diagnosis = FailureEvidenceService.normalize_dependency_transition_evidence(
+                payload
             )
             if (
                 stored.ref.artifact_id != metadata.id.removeprefix("metadata-")

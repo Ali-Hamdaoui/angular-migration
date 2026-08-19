@@ -134,6 +134,9 @@ class FailureEvidenceService:
         message = _ANSI_ESCAPE.sub("", message)
         if not message:
             return None
+        npm_diagnosis = FailureEvidenceService.diagnose_npm_eresolve_failure(normalized)
+        if npm_diagnosis is not None:
+            return npm_diagnosis
         lowered = message.lower()
         if not any(marker in lowered for marker in _ANGULAR_PEER_CONFLICT_MARKERS):
             return None
@@ -191,7 +194,10 @@ class FailureEvidenceService:
         normalized: dict[str, object],
     ) -> dict[str, object] | None:
         """Parse only npm's persisted ERESOLVE peer-conflict structure."""
-        if not str(normalized.get("command_id") or "").startswith("npm-"):
+        command_id = str(normalized.get("command_id") or "")
+        if not (
+            command_id.startswith("npm-") or command_id == "angular-update-exact"
+        ):
             return None
         message = _ANSI_ESCAPE.sub(
             "", str(normalized.get("failure_message") or "")
@@ -235,6 +241,12 @@ class FailureEvidenceService:
                 not isinstance(diagnosis, dict)
                 or not isinstance(diagnosis.get("package"), str)
                 or not diagnosis.get("required_ranges")
+                or (
+                    _NPM_ERESOLVE_MARKER_RE.search(
+                        str(normalized.get("failure_message") or "")
+                    )
+                    and diagnosis.get("source") != "npm_eresolve_peer_conflict"
+                )
             )
         ):
             reparsed = (
