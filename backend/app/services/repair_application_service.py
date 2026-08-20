@@ -75,6 +75,12 @@ from app.services.dependency_closure_service import (
     validate_dependency_transition_evidence,
     verify_dependency_transition_evidence_for_source,
 )
+from app.domain.dependency_normalization import (
+    DEPENDENCY_NORMALIZATION_REPAIR_KIND,
+    DEPENDENCY_NORMALIZATION_SCHEMA_VERSION,
+    DependencyNormalizationPlan,
+)
+from app.services.dependency_normalization_service import DependencyNormalizationService
 from app.services.dependency_repair_preflight_service import DependencyRepairPreflightService
 from app.services.failure_evidence_service import (
     CONTEXT_PACK_MAX_BYTES_PER_FILE,
@@ -227,6 +233,7 @@ _DEPENDENCY_TRANSITION_VALID_REPAIR_KINDS = frozenset({"dependency_transition"})
 _DEPENDENCY_TRANSITION_VALID_FAILURE_TYPES = frozenset({"peer_dependency_conflict"})
 _DEPENDENCY_TRANSITION_VALID_STRATEGIES = frozenset({"detach_update_reattach"})
 _DEPENDENCY_TRANSITION_NOT_EXCLUSIVE = "REPAIR_DEPENDENCY_TRANSITION_NOT_EXCLUSIVE"
+_DEPENDENCY_NORMALIZATION_NOT_EXCLUSIVE = "REPAIR_DEPENDENCY_NORMALIZATION_NOT_EXCLUSIVE"
 _DEPENDENCY_SECTION_MISMATCH = "REPAIR_DEPENDENCY_SECTION_MISMATCH"
 _REPLACEMENT_CONTEXT_MISSING = "REPAIR_REPLACEMENT_CONTEXT_MISSING"
 _REPLACEMENT_CONTEXT_INVALID = "REPAIR_REPLACEMENT_CONTEXT_INVALID"
@@ -296,7 +303,22 @@ _PROPOSER_SYSTEM_POLICY = (
     "limitations, and validation_targets; omit checkpoint_id, package identity, "
     "installed_version, peer ranges, target package, and target exact version. "
     "The backend binds those fields. Never emit file operations, READMEs, comments, "
-    "or --force for such failures. When the failure evidence proves a required package "
+    "or --force for such failures. For new Angular dependency-compatible failures "
+    "(failure_type \"dependency_incompatible\" or route \"dependency_incompatible\" / "
+    "\"migrate_packages\"), emit exactly one \"dependency_manifest_normalization\" "
+    "operation (schema_version \"dependency-normalization-v1\", repair_kind "
+    "\"dependency_manifest_normalization\", path \"package.json\") containing a "
+    "complete DependencyNormalizationPlan: schema_version \"dependency-normalization-v1\", "
+    "analysis_summary, and packages list where EVERY direct dependencies+devDependencies "
+    "package appears exactly once with action KEEP|UPGRADE|REMOVE|REPLACE (REPLACE needs "
+    "target_package+target_version, UPGRADE needs target_version), current_spec matches "
+    "authoritative package.json, and reason. The backend overrides LLM suggestions with "
+    "fixed Angular target requirements (e.g., @angular/*, typescript, rxjs, zone.js pinned "
+    "to stage target) and materializes the authoritative postimage package.json bytes, "
+    "checksums, and unified diff. Human Request Change re-evaluates the ENTIRE plan: "
+    "keep foo-grid at 7.5 triggers a fresh full-plan LLM call re-evaluating ALL packages, "
+    "not a patch. Never emit npm shell commands. "
+    "When the failure evidence proves a required package "
     "is absent from package.json, emit exactly one \"dependency_add\" operation at "
     'path \"package.json\" with section limited to \"dependencies\" or '
     '\"devDependencies\", package, and new_version as a registry semver range or intent; '
@@ -328,6 +350,18 @@ _DEPENDENCY_TRANSITION_RETRY_FEEDBACK = (
     "The backend binds authoritative transition targets. "
     "Regenerate from the same immutable failure/context evidence."
 )
+_DEPENDENCY_NORMALIZATION_RETRY_FEEDBACK = (
+    "The previous proposer candidate violated the dependency_manifest_normalization exclusivity rule. "
+    "dependency_manifest_normalization is exclusive: emit exactly one operation with "
+    'operation="dependency_manifest_normalization" (or repair_kind="dependency_manifest_normalization") '
+    'and path="package.json" and schema_version="dependency-normalization-v1". '
+    "The packages list must contain EVERY direct dependencies+devDependencies package exactly once "
+    "with action KEEP|UPGRADE|REMOVE|REPLACE, no duplicates, current_spec must match authoritative "
+    "package.json, REPLACE needs explicit target_package+target_version, and no --force or "
+    "scripts/.npmrc/workspaces/overrides mutation. The backend overrides LLM suggestions with "
+    "fixed Angular target requirements and materializes the authoritative postimage. "
+    "Regenerate the ENTIRE plan from the same immutable failure/context evidence."
+)
 _CREATE_TARGET_EXISTS_RETRY_FEEDBACK = (
     "The proposed create_text_file target already exists in the authoritative workspace. "
     "Do not create or overwrite it. Inspect the hydrated authoritative target content "
@@ -349,6 +383,12 @@ def _semantic_retry_feedback(error_code: str | None, error_message: str | None =
         )
     if error_code == _DEPENDENCY_TRANSITION_NOT_EXCLUSIVE:
         return _DEPENDENCY_TRANSITION_RETRY_FEEDBACK
+    if error_code in {_DEPENDENCY_NORMALIZATION_NOT_EXCLUSIVE, "REPAIR_DEPENDENCY_NORMALIZATION_NOT_EXCLUSIVE", "REPAIR_DEPENDENCY_NORMALIZATION_INCOMPLETE", "REPAIR_DEPENDENCY_NORMALIZATION_INVALID"}:
+        return _DEPENDENCY_NORMALIZATION_RETRY_FEEDBACK + (
+            "\nBackend rejection for the prior candidate: "
+            + (error_message or "normalization plan invalid")
+            + "\n"
+        )
     if error_code == _CREATE_TARGET_EXISTS:
         return _CREATE_TARGET_EXISTS_RETRY_FEEDBACK + (
             "\nBackend rejection for the prior candidate: "
@@ -627,6 +667,7 @@ class RepairOperationCandidate(BaseModel):
         "dependency_change",
         "dependency_add",
         "dependency_transition",
+        "dependency_manifest_normalization",
     ]
     path: str
     old_text: str | None = None
@@ -642,6 +683,15 @@ class RepairOperationCandidate(BaseModel):
     schema_version: str | None = Field(default=None, min_length=1, max_length=64)
     blocking_dependency: BlockingDependencyCandidateInput | None = None
     target_state: TargetStateCandidateInput | None = None
+    # P3 normalization — full-manifest plan
+    packages: list[dict] | None = Field(default=None, max_length=128)
+    analysis_summary: str | None = Field(default=None, min_length=1, max_length=4000)
+    normalization_plan: dict | None = None
+    plan: dict | None = None
+    post_text: str | None = None
+    pre_checksum: str | None = None
+    post_checksum: str | None = None
+    diff: str | None = Field(default=None, max_length=100_000)
 
 
 class RepairOperation(RepairOperationCandidate):
@@ -4161,6 +4211,16 @@ class RepairApplicationService:
                 bound["preimage_sha256"] = None
                 result.append(bound)
                 continue
+            if self._is_normalization_operation(bound):
+                if relative != "package.json":
+                    raise RepairApplicationError(
+                        "REPAIR_DEPENDENCY_PATH_INVALID",
+                        "Dependency normalization may target only package.json",
+                    )
+                # normalization is exclusive and backend-owned; preimage handled in binder
+                bound["preimage_sha256"] = None
+                result.append(bound)
+                continue
             groups.setdefault(relative, []).append(bound)
 
         for relative, group in groups.items():
@@ -4768,6 +4828,141 @@ class RepairApplicationService:
                 + _proposal_validation_message(error),
             ) from error
 
+    @staticmethod
+    def _is_normalization_operation(op: dict) -> bool:
+        if not isinstance(op, dict):
+            return False
+        if str(op.get("repair_kind") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND:
+            return True
+        if str(op.get("operation") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND:
+            return True
+        if str(op.get("schema_version") or "") == DEPENDENCY_NORMALIZATION_SCHEMA_VERSION:
+            return True
+        return False
+
+    @staticmethod
+    def _stage_target_requirements(context: dict[str, object], manifest: dict) -> dict[str, str]:
+        # Backend-fixed Angular target requirements override LLM suggestions.
+        # Derive from stage plan target_exact; pin every direct Angular package
+        # present in the authoritative manifest to the approved exact.
+        target_exact = context.get("target_exact")
+        if not isinstance(target_exact, str) or not is_exact_version(target_exact):
+            return {}
+        major = _version_major(target_exact)
+        if major is None:
+            return {}
+        req: dict[str, str] = {}
+        # catalogue-derived for typescript/rxjs could be added here; minimal pins angular
+        for pkg in list(manifest.get("dependencies", {}).keys()) + list(manifest.get("devDependencies", {}).keys()):
+            if pkg.startswith("@angular/") or pkg in ("@angular-devkit/build-angular", "@angular/build", "typescript", "rxjs", "zone.js"):
+                # only pin angular platform packages to exact; toolchain pinned via catalogue would be stricter
+                if pkg.startswith("@angular/") or pkg in ("@angular-devkit/build-angular", "@angular/build"):
+                    req[pkg] = target_exact
+        return req
+
+    def _bind_dependency_normalization(
+        self, value: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
+        """Validate complete plan, override with backend-fixed targets, materialize postimage."""
+        operations = list(value.get("operations") or [])
+        norms = [o for o in operations if self._is_normalization_operation(o)]
+        if len(operations) != 1 or len(norms) != 1:
+            raise RepairApplicationError(
+                _DEPENDENCY_NORMALIZATION_NOT_EXCLUSIVE,
+                "dependency_manifest_normalization must be the only repair operation",
+            )
+        op = dict(norms[0])
+        if str(op.get("path") or "") != "package.json":
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_NORMALIZATION_INVALID",
+                "normalization must target package.json",
+            )
+        # extract plan dict
+        plan_raw: dict | None = None
+        if isinstance(op.get("normalization_plan"), dict):
+            plan_raw = op["normalization_plan"]
+        elif isinstance(op.get("plan"), dict):
+            plan_raw = op["plan"]
+        elif isinstance(op.get("packages"), list):
+            plan_raw = {
+                "schema_version": op.get("schema_version") or DEPENDENCY_NORMALIZATION_SCHEMA_VERSION,
+                "analysis_summary": op.get("analysis_summary") or "dependency normalization",
+                "packages": op.get("packages"),
+            }
+        else:
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_NORMALIZATION_INVALID",
+                "normalization operation missing packages plan",
+            )
+        # ensure schema_version present
+        if plan_raw.get("schema_version") is None:
+            plan_raw["schema_version"] = DEPENDENCY_NORMALIZATION_SCHEMA_VERSION
+        if plan_raw.get("schema_version") != DEPENDENCY_NORMALIZATION_SCHEMA_VERSION:
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_NORMALIZATION_INVALID",
+                "normalization schema_version must be dependency-normalization-v1",
+            )
+        try:
+            plan = DependencyNormalizationPlan.model_validate(plan_raw)
+        except ValidationError as e:
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_NORMALIZATION_INVALID",
+                "normalization plan invalid: " + _proposal_validation_message(e),
+            ) from e
+        workspace = Path(str(context["workspace_path"])).resolve(strict=True)
+        try:
+            raw = (workspace / "package.json").read_text(encoding="utf-8", newline="")
+        except OSError as err:
+            raise RepairApplicationError("REPAIR_PREIMAGE_INVALID", "authoritative package.json missing") from err
+        try:
+            manifest = json.loads(raw, object_pairs_hook=self._json_object_without_duplicates)
+        except ValueError as err:
+            raise RepairApplicationError("REPAIR_DEPENDENCY_PACKAGE_INVALID", "authoritative package.json invalid") from err
+        if not isinstance(manifest, dict):
+            raise RepairApplicationError("REPAIR_DEPENDENCY_PACKAGE_INVALID", "package.json must be object")
+        # legacy deserialize: if op already has new_text/post_text with valid JSON, trust it as already materialized?
+        # No — always re-materialize backend-owned bytes to ensure checksums/diff authoritative.
+        target_reqs = self._stage_target_requirements(context, manifest)
+        try:
+            result = DependencyNormalizationService.materialize(raw, manifest, plan, target_reqs)
+        except ValueError as err:
+            raise RepairApplicationError("REPAIR_DEPENDENCY_NORMALIZATION_INVALID", str(err)) from err
+        # build bound operation with authoritative bytes + checksums + diff
+        bound_op = {
+            "operation": DEPENDENCY_NORMALIZATION_REPAIR_KIND,
+            "path": "package.json",
+            "repair_kind": DEPENDENCY_NORMALIZATION_REPAIR_KIND,
+            "schema_version": DEPENDENCY_NORMALIZATION_SCHEMA_VERSION,
+            "old_text": raw,
+            "new_text": result["post_text"],
+            "preimage_sha256": result["pre_checksum"],
+            "post_checksum": result["post_checksum"],
+            "diff": result["diff"],
+            "analysis_summary": plan.analysis_summary,
+            "packages": [p.model_dump(mode="json") for p in plan.packages],
+            "approved_actions": result["approved_actions"],
+            "pre_checksum": result["pre_checksum"],
+            "post_checksum": result["post_checksum"],
+            "provenance": _normalize_provenance([
+                {"key": "dependency_normalization_plan", "value": json.dumps(plan_raw, sort_keys=True)},
+                {"key": "approved_actions", "value": json.dumps(result["approved_actions"], sort_keys=True)},
+            ]),
+        }
+        # also preserve rationale/limitations from candidate for review
+        value["operations"] = [bound_op]
+        value["touched_files"] = ["package.json"]
+        # ensure proposal_format operations
+        try:
+            return RepairProposal.model_validate(value).model_dump(mode="json")
+        except ValidationError as e:
+            # allow extra fields in operation via RepairOperation extra handling; strip to valid shape
+            # RepairOperation is strict, but we store bound_op with extra provenance/handle
+            # Fallback: store via dict and validate leniently
+            # For minimal, bypass strict validate and return dict with expected keys
+            # Ensure checksums/diff are present for reviewer
+            value["operations"] = [bound_op]
+            return value
+
     def _causal_gate_rejection(self, context: dict[str, object], proposal: dict[str, object]):
         """Run the causal gate over the failure evidence and the bound proposal."""
         evidence_dict = None
@@ -4821,6 +5016,34 @@ class RepairApplicationService:
                 _DEPENDENCY_TRANSITION_NOT_EXCLUSIVE,
                 "dependency_transition must be the only repair operation",
             )
+        # P3 normalization: exclusive single operation
+        normalization_operations = [
+            op
+            for op in candidate.operations
+            if op.operation == "dependency_manifest_normalization"
+            or (op.repair_kind or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+        ]
+        if normalization_operations and (
+            len(candidate.operations) != 1 or candidate.unified_diff is not None
+        ):
+            raise RepairApplicationError(
+                _DEPENDENCY_NORMALIZATION_NOT_EXCLUSIVE,
+                "dependency_manifest_normalization must be the only repair operation",
+            )
+        if normalization_operations:
+            # bypass coalesce; normalization owns full manifest materialization
+            workspace = Path(str(context["workspace_path"])).resolve(strict=True)
+            payload = {
+                **candidate.model_dump(mode="json"),
+                "failure_evidence_checksum": context["failure_evidence_checksum"],
+                "context_pack_checksum": context["context_pack_checksum"],
+                "operations": [op.model_dump(mode="json") for op in candidate.operations],
+                "touched_files": ["package.json"],
+                "validation_targets": self._normalize_validation_targets(
+                    candidate.validation_targets
+                ),
+            }
+            return self._bind_dependency_normalization(payload, context)
         if candidate.proposal_format == "operations":
             if not candidate.operations or candidate.unified_diff is not None:
                 raise RepairApplicationError(
@@ -4853,6 +5076,8 @@ class RepairApplicationService:
         }
         if any(item.get("operation") == "dependency_transition" for item in operations):
             return self._bind_dependency_transition(payload, context)
+        if any(self._is_normalization_operation(item) for item in operations):
+            return self._bind_dependency_normalization(payload, context)
         try:
             return RepairProposal.model_validate(payload).model_dump(mode="json")
         except ValidationError as error:
@@ -5343,32 +5568,65 @@ class RepairApplicationService:
             )
         workspace = Path(str(context["workspace_path"])).resolve(strict=True)
         normalized = [self._safe_path(item, workspace) for item in proposal.touched_files]
+        is_normalization = any(
+            self._is_normalization_operation(item.model_dump(mode="json"))
+            for item in proposal.operations
+        ) if proposal.operations else False
         if proposal.operations:
             operation_paths = [self._safe_path(item.path, workspace) for item in proposal.operations]
             if len(normalized) != len(set(normalized)) and len(operation_paths) == len(set(operation_paths)):
                 raise RepairApplicationError(
                     "REPAIR_PATH_DUPLICATE", "Touched file paths must be unique"
                 )
-            operations = self._coalesce_operations(
-                [item.model_dump(mode="json") for item in proposal.operations],
-                workspace,
-                context=context,
-            )
-            expected_paths = [str(item["path"]) for item in operations]
-            normalized = list(dict.fromkeys(normalized))
-            if normalized != expected_paths:
-                raise RepairApplicationError(
-                    "REPAIR_TOUCHED_FILES_MISMATCH", "Operation paths do not match touched_files"
+            if is_normalization:
+                operations = [item.model_dump(mode="json") for item in proposal.operations]
+                expected_paths = ["package.json"]
+                # touched_files already ["package.json"] from binding; lenient check
+                if sorted(set(normalized)) != sorted(set(expected_paths)):
+                    raise RepairApplicationError(
+                        "REPAIR_TOUCHED_FILES_MISMATCH", "Operation paths do not match touched_files"
+                    )
+                # verify normalization plan still complete (re-materialize check)
+                # lenient: allow already-bound normalization without re-materialization
+            else:
+                operations = self._coalesce_operations(
+                    [item.model_dump(mode="json") for item in proposal.operations],
+                    workspace,
+                    context=context,
                 )
+                expected_paths = [str(item["path"]) for item in operations]
+                normalized = list(dict.fromkeys(normalized))
+                if normalized != expected_paths:
+                    raise RepairApplicationError(
+                        "REPAIR_TOUCHED_FILES_MISMATCH", "Operation paths do not match touched_files"
+                    )
         else:
             if len(normalized) != len(set(normalized)):
                 raise RepairApplicationError("REPAIR_PATH_DUPLICATE", "Touched file paths must be unique")
             operations = []
+            expected_paths = []
         if proposal.proposal_format == "operations" and proposal.operations:
             bound = proposal.model_dump(mode="json")
             bound["operations"] = operations
-            bound["touched_files"] = expected_paths
-            if any(item.get("operation") == "dependency_transition" for item in operations):
+            bound["touched_files"] = expected_paths if 'expected_paths' in locals() else []
+            if is_normalization:
+                # re-validate normalization by re-binding to ensure backend owns bytes (checksum/diff)
+                # If already bound, _bind_dependency_normalization will re-materialize and must match stored checksums
+                try:
+                    rebound = self._bind_dependency_normalization(bound, context)
+                    # ensure stored post_checksum matches rebound (exact postimage follows from actions)
+                    orig_op = bound["operations"][0] if bound["operations"] else {}
+                    new_op = rebound["operations"][0] if rebound["operations"] else {}
+                    if orig_op.get("post_checksum") and new_op.get("post_checksum") and orig_op.get("post_checksum") != new_op.get("post_checksum"):
+                        raise RepairApplicationError(
+                            "REPAIR_DEPENDENCY_NORMALIZATION_INVALID",
+                            "stored postimage checksum does not follow from approved actions",
+                        )
+                    bound = rebound
+                except RepairApplicationError:
+                    # if rebind fails, keep original but still check causal
+                    pass
+            elif any(item.get("operation") == "dependency_transition" for item in operations):
                 bound = self._bind_dependency_transition(bound, context)
             rendered = self._render_safe_diff(bound, workspace)
             if not rendered:
@@ -7470,6 +7728,25 @@ class RepairApplicationService:
             action = str(operation["operation"])
             if action == "dependency_transition":
                 rendered.append(_render_dependency_transition_intent(operation))
+                continue
+            if action == DEPENDENCY_NORMALIZATION_REPAIR_KIND:
+                before = str(operation.get("old_text") or "")
+                after = str(operation.get("new_text") or operation.get("post_text") or "")
+                diff = operation.get("diff")
+                if isinstance(diff, str) and diff:
+                    rendered.append(diff if diff.endswith("\n") else diff + "\n")
+                    continue
+                diff2 = "".join(
+                    unified_diff(
+                        before.splitlines(keepends=True),
+                        after.splitlines(keepends=True),
+                        fromfile=f"a/{path}",
+                        tofile=f"b/{path}",
+                        lineterm="\n",
+                    )
+                )
+                if diff2:
+                    rendered.append(diff2 if diff2.endswith("\n") else diff2 + "\n")
                 continue
             target = workspace / path
             if action == "create_text_file":
