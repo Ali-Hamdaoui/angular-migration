@@ -6,6 +6,10 @@ import json
 import re
 from pathlib import Path
 
+from app.domain.dependency_normalization import (
+    DEPENDENCY_NORMALIZATION_REPAIR_KIND,
+    DEPENDENCY_NORMALIZATION_SCHEMA_VERSION,
+)
 from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
 from app.services.stage_knowledge_service import StageKnowledgeRegistry
 
@@ -227,6 +231,63 @@ class DependencyRepairPreflightService:
         for operation in operations:
             if not isinstance(operation, dict):
                 continue
+            # dependency_manifest_normalization: backend materializes full package.json; preflight
+            # can use the authoritative new_text directly (preserves legacy handling).
+            # Also handle legacy plan-in-operation without new_text by reconstructing.
+            if operation.get("repair_kind") == DEPENDENCY_NORMALIZATION_REPAIR_KIND or operation.get(
+                "operation"
+            ) == DEPENDENCY_NORMALIZATION_REPAIR_KIND:
+                # prefer explicit new_text/post_text if present (materialized path)
+                text_candidate = (
+                    operation.get("new_text")
+                    or operation.get("post_text")
+                    or operation.get("postimage_text")
+                )
+                if isinstance(text_candidate, str):
+                    try:
+                        value = json.loads(text_candidate)
+                    except json.JSONDecodeError as error:
+                        raise DependencyRepairPreflightError(
+                            "REPAIR_DEPENDENCY_PREFLIGHT_FAILED",
+                            "Dependency normalization package.json is invalid JSON",
+                            {},
+                        ) from error
+                    if not isinstance(value, dict):
+                        raise DependencyRepairPreflightError(
+                            "REPAIR_DEPENDENCY_PREFLIGHT_FAILED",
+                            "Dependency normalization package.json is not an object",
+                            {},
+                        )
+                    proposed = value
+                    continue
+                # fallback: inline plan with dependencies/devDependencies snapshots
+                plan = operation.get("normalization_plan") or operation.get("plan") or {}
+                if isinstance(plan, dict) and isinstance(plan.get("packages"), list):
+                    # minimal inline apply without target overrides (overrides checked elsewhere)
+                    inline_proposed = dict(proposed)
+                    for pkg_act in plan["packages"]:
+                        if not isinstance(pkg_act, dict):
+                            continue
+                        pkg = pkg_act.get("package")
+                        sec = pkg_act.get("section")
+                        act = pkg_act.get("action")
+                        tgt_pkg = pkg_act.get("target_package")
+                        tgt_ver = pkg_act.get("target_version")
+                        if not isinstance(pkg, str) or not isinstance(sec, str):
+                            continue
+                        sec_dict = inline_proposed.get(sec)
+                        if not isinstance(sec_dict, dict):
+                            sec_dict = {}
+                            inline_proposed[sec] = sec_dict
+                        if act == "REMOVE":
+                            sec_dict.pop(pkg, None)
+                        elif act == "UPGRADE" and isinstance(tgt_ver, str):
+                            sec_dict[pkg] = tgt_ver
+                        elif act == "REPLACE" and isinstance(tgt_pkg, str) and isinstance(tgt_ver, str):
+                            sec_dict.pop(pkg, None)
+                            sec_dict[tgt_pkg] = tgt_ver
+                    proposed = inline_proposed
+                    continue
             if operation.get("path") == "package.json" and isinstance(operation.get("new_text"), str):
                 try:
                     value = json.loads(operation["new_text"])
@@ -275,6 +336,14 @@ class DependencyRepairPreflightService:
                 version = target_state.get("version") or target_state.get("target_version")
             if isinstance(package, str) and isinstance(section, str) and isinstance(version, str):
                 proposed.setdefault(section, {})[package] = version
+        # scripts / workspaces / overrides are immutable for normalization
+        for field in ("scripts", "workspaces", "overrides"):
+            if current.get(field) != proposed.get(field):
+                raise DependencyRepairPreflightError(
+                    "REPAIR_DEPENDENCY_PREFLIGHT_FAILED",
+                    f"forbidden mutation of package.json field: {field}",
+                    {"field": field},
+                )
         return proposed
 
     @staticmethod

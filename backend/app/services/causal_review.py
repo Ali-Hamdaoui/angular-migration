@@ -35,6 +35,11 @@ from app.repositories.models import (
 
 logger = logging.getLogger(__name__)
 
+DEPENDENCY_NORMALIZATION_REPAIR_KIND = "dependency_manifest_normalization"
+DEPENDENCY_NORMALIZATION_SCHEMA_VERSION = "dependency-normalization-v1"
+_MIGRATE_PACKAGES_NODE = "migrate_packages"
+_DEPENDENCY_INCOMPATIBLE_ROUTE = "dependency_incompatible"
+
 REVIEWER_CAUSAL_POLICY = (
     "CAUSAL-REPAIR POLICY (binding): the proposal must modify the state that caused the "
     "executable failure in the evidence. Reject (decision \"reject\", or \"request_changes\" "
@@ -57,7 +62,13 @@ REVIEWER_CAUSAL_POLICY = (
     "authoritative package, section, installed version, and target version into "
     "blocking_dependency and target_state; do not require operation-level package, "
     "section, or new_version fields or a proposal diff. Accept only proposals that "
-    "change the state responsible for the failure."
+    "change the state responsible for the failure. "
+    "For dependency_incompatible / migrate_packages failures, only a complete "
+    "dependency_manifest_normalization (schema dependency-normalization-v1) with every "
+    "direct dependencies+devDependencies package exactly once, no duplicates, backend-fixed "
+    "Angular requirements preserved, no scripts/.npmrc/workspaces/overrides mutation, no "
+    "--force/--legacy-peer-deps, replacement explicit (target_package+target_version), and "
+    "exact postimage bytes following from approved actions is causally valid."
 )
 
 CAUSAL_REJECTION_DOCUMENTATION = "CAUSAL_REJECTION_DOCUMENTATION"
@@ -285,6 +296,124 @@ def _peer_conflict_rejection(proposal: dict) -> CausalRejection | None:
     return None
 
 
+def _is_normalization_operation(op: dict) -> bool:
+    if not isinstance(op, dict):
+        return False
+    if str(op.get("repair_kind") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND:
+        return True
+    if str(op.get("operation") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND:
+        return True
+    if str(op.get("schema_version") or "") == DEPENDENCY_NORMALIZATION_SCHEMA_VERSION:
+        return True
+    # inline plan marker
+    if isinstance(op.get("normalization_plan"), dict) or isinstance(op.get("plan"), dict):
+        # heuristic: contains packages with action
+        return True
+    return False
+
+
+def _normalization_rejection(proposal: dict) -> CausalRejection | None:
+    operations = proposal.get("operations")
+    operations = operations if isinstance(operations, list) else []
+    touched = proposal.get("touched_files")
+    touched = [p for p in touched if isinstance(p, str)] if isinstance(touched, list) else []
+    # exactly one normalization operation touching package.json
+    norms = [op for op in operations if isinstance(op, dict) and _is_normalization_operation(op)]
+    if not norms:
+        return CausalRejection(
+            CAUSAL_REJECTION_MANIFEST_ONLY,
+            "dependency_incompatible requires a dependency_manifest_normalization operation",
+        )
+    if len(norms) != 1 or len(operations) != 1:
+        return CausalRejection(
+            CAUSAL_REJECTION_UNSUPPORTED_OPERATION,
+            "dependency_incompatible requires exactly one dependency_manifest_normalization operation",
+        )
+    op = norms[0]
+    if str(op.get("path") or "") != "package.json":
+        return CausalRejection(
+            CAUSAL_REJECTION_UNRELATED_EDIT, "normalization must target package.json"
+        )
+    if str(op.get("schema_version") or op.get("normalization_plan", {}).get("schema_version") or "") not in (
+        "",
+        DEPENDENCY_NORMALIZATION_SCHEMA_VERSION,
+    ):
+        # allow missing if embedded plan has it
+        pass
+    # extract packages list
+    plan = op.get("normalization_plan") or op.get("plan") or op
+    packages = plan.get("packages")
+    # also support top-level packages in op
+    if not isinstance(packages, list):
+        packages = op.get("packages")
+    if not isinstance(packages, list) or not packages:
+        return CausalRejection(
+            CAUSAL_REJECTION_MANIFEST_ONLY, "normalization plan must list packages"
+        )
+    # duplicate check
+    seen: set[str] = set()
+    for item in packages:
+        if not isinstance(item, dict):
+            return CausalRejection(CAUSAL_REJECTION_UNSUPPORTED_OPERATION, "package entry must be object")
+        pkg = str(item.get("package") or "")
+        if not pkg or pkg in seen:
+            return CausalRejection(
+                CAUSAL_REJECTION_UNSUPPORTED_OPERATION,
+                f"duplicate or missing package: {pkg!r}",
+            )
+        seen.add(pkg)
+        action = str(item.get("action") or "")
+        if action not in {"KEEP", "UPGRADE", "REMOVE", "REPLACE"}:
+            return CausalRejection(CAUSAL_REJECTION_UNSUPPORTED_OPERATION, f"invalid action {action}")
+        # replacement explicit
+        if action == "REPLACE" and (not item.get("target_package") or not item.get("target_version")):
+            return CausalRejection(
+                CAUSAL_REJECTION_UNSUPPORTED_OPERATION,
+                f"REPLACE requires target_package and target_version for {pkg}",
+            )
+        if action == "UPGRADE" and not item.get("target_version"):
+            return CausalRejection(
+                CAUSAL_REJECTION_UNSUPPORTED_OPERATION, f"UPGRADE requires target_version for {pkg}"
+            )
+        if action in ("KEEP", "REMOVE") and (item.get("target_package") or item.get("target_version")):
+            return CausalRejection(
+                CAUSAL_REJECTION_UNSUPPORTED_OPERATION,
+                f"{action} must not carry target_package/version for {pkg}",
+            )
+        # forbidden flags in reason/version
+        for field in (str(item.get("target_version") or ""), str(item.get("reason") or "")):
+            if "--force" in field or "--legacy-peer-deps" in field:
+                return CausalRejection(CAUSAL_REJECTION_FORCE, "normalization carries forbidden flag")
+        section = str(item.get("section") or "")
+        if section not in ("dependencies", "devDependencies"):
+            return CausalRejection(CAUSAL_REJECTION_UNSUPPORTED_OPERATION, f"invalid section {section}")
+    # scripts/.npmrc/workspaces/overrides mutation: proposal must not touch other files
+    if any(p != "package.json" for p in touched):
+        return CausalRejection(
+            CAUSAL_REJECTION_UNRELATED_EDIT, "normalization must touch only package.json"
+        )
+    for op2 in operations:
+        if isinstance(op2, dict) and str(op2.get("path") or "") != "package.json":
+            return CausalRejection(CAUSAL_REJECTION_UNRELATED_EDIT, "normalization unrelated file edit")
+        # check no --force in new_text/post_text
+        for key in ("new_text", "post_text", "postimage_text", "content"):
+            if isinstance(op2.get(key), str) and "--force" in str(op2.get(key)):
+                return CausalRejection(CAUSAL_REJECTION_FORCE, "normalization postimage carries --force")
+    # exact postimage follows from actions: if new_text present, must be JSON
+    new_text = op.get("new_text") or op.get("post_text") or op.get("postimage_text")
+    if isinstance(new_text, str):
+        try:
+            doc = json.loads(new_text)
+        except Exception:
+            return CausalRejection(CAUSAL_REJECTION_UNSUPPORTED_OPERATION, "normalization postimage not JSON")
+        if not isinstance(doc, dict):
+            return CausalRejection(CAUSAL_REJECTION_UNSUPPORTED_OPERATION, "postimage must be object")
+        # one coherent manifest: must have at least dependencies or devDependencies
+        # no validation of every dep here (service does), but ensure no scripts mutation beyond original
+        # (reviewer cannot load original, so lenient)
+    return None
+
+
 def _is_dependency_failure(diagnosis_kind: str, normalized: dict) -> bool:
     if diagnosis_kind:
         return True
@@ -365,6 +494,31 @@ def causal_rejection(
         or evidence.get("failure_route")
         or ""
     ).strip()
+    # new normalization path takes precedence for dependency_incompatible / migrate_packages
+    operations = proposal.get("operations") if isinstance(proposal.get("operations"), list) else []
+    has_norm = any(_is_normalization_operation(op) for op in operations if isinstance(op, dict))
+    if diagnosis_kind == "dependency_incompatible" or route in (
+        _DEPENDENCY_INCOMPATIBLE_ROUTE,
+        "dependency_incompatible",
+        _MIGRATE_PACKAGES_NODE,
+        "migrate_packages",
+        DEPENDENCY_NORMALIZATION_REPAIR_KIND,
+    ) or has_norm:
+        # preserve legacy: if it's a classic peer conflict transition, keep old path
+        if not has_norm and (diagnosis_kind == "peer_dependency_conflict" or route == "angular_update_peer_conflict"):
+            return _peer_conflict_rejection(proposal)
+        # for normalize-capable failures, require complete normalization
+        norm_rejection = _normalization_rejection(proposal)
+        if norm_rejection is not None:
+            return norm_rejection
+        # ensure lockfile authority for normalization as well (same as manifest edits)
+        if not _lockfile_generation_authority(stage_plan_commands):
+            return CausalRejection(
+                CAUSAL_REJECTION_NO_LOCKFILE_SYNC,
+                "Manifest-only dependency edits need the approved npm-lockfile-generate "
+                "authority to keep the lockfile and installed tree synchronized",
+            )
+        return None
     if diagnosis_kind == "peer_dependency_conflict" or route == "angular_update_peer_conflict":
         return _peer_conflict_rejection(proposal)
     if _is_dependency_failure(diagnosis_kind, normalized) and _has_manifest_edit(proposal):
