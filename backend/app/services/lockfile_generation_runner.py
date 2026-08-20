@@ -53,6 +53,11 @@ LOCKFILE_RECONCILIATION_MARKER = ":reconcile-stale-lock"
 LOCKFILE_GENERATION_ETARGET = "LOCKFILE_GENERATION_ETARGET"
 LOCKFILE_GENERATION_ERESOLVE = "LOCKFILE_GENERATION_ERESOLVE"
 
+#: Frozen contract for P4 V2.2 dependency normalization — preserve-first materialization.
+DEPENDENCY_NORMALIZATION_REPAIR_KIND = "dependency_manifest_normalization"
+DEPENDENCY_NORMALIZATION_SCHEMA_VERSION = "dependency-normalization-v1"
+DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED = "DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED"
+
 _NPM_ERROR_PREFIX = r"npm\s+(?:error|ERR!)"
 _NPM_ETARGET_CODE = re.compile(
     rf"(?im)^\s*{_NPM_ERROR_PREFIX}\s+code\s+ETARGET\b"
@@ -63,6 +68,13 @@ _NPM_NO_MATCHING_VERSION = re.compile(
 _NPM_ERESOLVE = re.compile(
     rf"(?im)^\s*(?:{_NPM_ERROR_PREFIX}|npm\s+WARN)\s+ERESOLVE\b"
     rf"|^\s*(?:{_NPM_ERROR_PREFIX}\s+)?(?:code\s+)?ERESOLVE\b"
+)
+
+# lock-specific malformed/unsupported evidence — NOT ERESOLVE/ETARGET peer conflict.
+_NPM_LOCK_MALFORMED = re.compile(
+    r"(?im)EBADLOCK|EINVALID|lockfile.*(?:corrupt|invalid|unsupported)|"
+    r"unsupported.*lockfile|lockfileVersion.*unsupported|"
+    r"must be.*lockfileVersion|ETARGET.*lockfile"
 )
 
 
@@ -104,6 +116,51 @@ def _file_checksum(path: Path) -> str:
         if path.is_file() and not path.is_symlink()
         else "missing"
     )
+
+
+def _is_normalization_op(op: object) -> bool:
+    if not isinstance(op, dict):
+        return False
+    return (
+        str(op.get("repair_kind") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+        or str(op.get("operation") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+        or str(op.get("schema_version") or "") == DEPENDENCY_NORMALIZATION_SCHEMA_VERSION
+    )
+
+
+def _proposal_is_normalization(proposal: object) -> bool:
+    if not isinstance(proposal, dict):
+        return False
+    ops = proposal.get("operations")
+    if not isinstance(ops, list):
+        return False
+    return any(_is_normalization_op(op) for op in ops)
+
+
+def _is_lock_malformed_evidence(workspace: Path) -> bool:
+    lock = workspace / "package-lock.json"
+    if not lock.is_file() or lock.is_symlink():
+        return True
+    try:
+        data = json.loads(lock.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return True
+    if not isinstance(data, dict):
+        return True
+    ver = data.get("lockfileVersion")
+    if not isinstance(ver, int) or ver < 1 or ver > 3:
+        return True
+    # structural: packages vs dependencies missing entirely
+    if not isinstance(data.get("packages"), dict) and not isinstance(data.get("dependencies"), dict):
+        # empty lockfile without packages is considered malformed for v3 verification
+        # treat as unusable only when lockfileVersion claims v3
+        if ver >= 3:
+            return True
+    return False
+
+
+def _failure_message_indicates_lock_corrupt(message: str) -> bool:
+    return bool(_NPM_LOCK_MALFORMED.search(message or ""))
 
 
 def validate_generated_lockfile(workspace: Path) -> str:
@@ -165,6 +222,154 @@ class LockfileGenerationRunner:
         self._stage = stage_service or TransformerStageService()
         self._now = now_provider or (lambda: datetime.now(UTC))
 
+    def _detect_normalization(self, session, continuation) -> tuple[bool, object | None]:
+        """True when the active applied repair is dependency_manifest_normalization.
+
+        Reads the immutable repair proposal artifact bound to the active attempt
+        (same as _authority's check) and inspects repair_kind / operation /
+        schema_version without touching filesystem outside the store.
+        """
+        try:
+            run = session.get(MigrationRunModel, continuation.run_id)
+            attempt = session.scalar(
+                select(RepairAttemptModel)
+                .where(
+                    RepairAttemptModel.run_id == continuation.run_id,
+                    RepairAttemptModel.stage_id == continuation.current_stage_id,
+                    RepairAttemptModel.status.in_(("applied", "applied_verified")),
+                )
+                .order_by(RepairAttemptModel.attempt_number.desc())
+            )
+            if run is None or attempt is None or not run.artifact_root:
+                return False, None
+            if not attempt.proposal_artifact_id or not attempt.proposal_checksum:
+                return False, None
+            metadata = session.get(ArtifactMetadataModel, "metadata-" + attempt.proposal_artifact_id)
+            if metadata is None or metadata.checksum != attempt.proposal_checksum:
+                return False, None
+            stored = LocalFilesystemArtifactStore(
+                Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+            ).read_artifact(run.id, metadata.relative_path)
+            if stored.ref.checksum != attempt.proposal_checksum:
+                return False, None
+            proposal = json.loads(stored.content)
+            if _proposal_is_normalization(proposal):
+                return True, attempt
+            # also accept the Pydantic view for legacy stored shape
+            try:
+                parsed = RepairProposal.model_validate(proposal)
+                for item in parsed.operations:
+                    if item.operation == DEPENDENCY_NORMALIZATION_REPAIR_KIND or (item.repair_kind or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND:
+                        return True, attempt
+            except Exception:
+                pass
+            return False, attempt
+        except Exception:
+            return False, None
+
+    def _normalization_fresh_fallback_qualified(self, workspace: Path, execution) -> bool:
+        """Qualified fresh-lock fallback: only when lock itself proves malformed/unsupported/corrupt.
+
+        Never on mere ERESOLVE/ETARGET peer-conflict evidence. Reuses the lock-malformed
+        predicate and lock-specific corrupt pattern; callers reuse the existing governed
+        stale-lock preparation primitive rather than building a second recovery system.
+        """
+        if _is_lock_malformed_evidence(workspace):
+            return True
+        if _failure_message_indicates_lock_corrupt(str(execution.failure_message or "")):
+            return True
+        return False
+
+    def _record_normalization_failure_evidence(self, session, continuation, execution, workspace, attempt) -> None:
+        """Persist immutable normalized evidence for a DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED.
+
+        The evidence freezes package.json / package-lock checksums, plan number, generation,
+        and the npm failure message so P6 can enforce plan1->new constraint->plan2->BLOCK.
+        """
+        try:
+            run = session.get(MigrationRunModel, continuation.run_id)
+            if run is None or not run.artifact_root:
+                return
+            store = LocalFilesystemArtifactStore(
+                Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+            )
+            start = execution.start_fingerprint or {}
+            plan_number = getattr(attempt, "attempt_number", None) if attempt is not None else None
+            generation = start.get("normalization_generation") or start.get("reconciliation_generation") or 1
+            payload = {
+                "schema_version": "dependency-normalization-failure-v1",
+                "repair_kind": DEPENDENCY_NORMALIZATION_REPAIR_KIND,
+                "normalization_schema_version": DEPENDENCY_NORMALIZATION_SCHEMA_VERSION,
+                "plan_number": plan_number,
+                "generation": generation,
+                "attempt_id": getattr(attempt, "id", None),
+                "execution_id": execution.id,
+                "stage_id": continuation.current_stage_id,
+                "run_id": continuation.run_id,
+                "package_json_sha256": _file_checksum(workspace / "package.json"),
+                "package_lock_sha256": _file_checksum(workspace / "package-lock.json"),
+                "pre_command_package_json_sha256": start.get("post_apply_pre_command_package_json_sha256"),
+                "pre_command_package_lock_sha256": start.get("post_apply_pre_command_package_lock_sha256"),
+                "pre_command_governed_workspace_fingerprint": start.get("post_apply_pre_command_governed_workspace_fingerprint"),
+                "failure_code": execution.failure_code,
+                "failure_message": execution.failure_message,
+                "exit_code": execution.exit_code,
+                "command_id": execution.command_id,
+                "arguments": list(execution.arguments or []),
+                "preserve_first": start.get("preserve_first") is True,
+                "package_lock_only": start.get("package_lock_only") is True,
+                "immutable": True,
+            }
+            content = json.dumps(payload, sort_keys=True, indent=2)
+            checksum = "sha256:" + hashlib.sha256(content.encode()).hexdigest()
+            relative = f"05_repairs/attempt-{attempt.id}/dependency-normalization-failure.{execution.id}.{checksum[7:15]}.json" if attempt and getattr(attempt, "id", None) else f"04_workflow_state/command_executions/{execution.id}.dependency-normalization-failure.json"
+            stored = store.write_text_artifact(
+                run.id,
+                relative,
+                content,
+                ArtifactType.JSON,
+                stage_id=continuation.current_stage_id,
+                attempt_id=getattr(attempt, "id", None),
+                created_by="lockfile-generation-runner",
+                created_at=self._now(),
+                input_hashes={
+                    "execution": execution.id,
+                    "package_json": payload["package_json_sha256"],
+                    "package_lock": payload["package_lock_sha256"],
+                    "failure_message": hashlib.sha256(str(execution.failure_message or "").encode()).hexdigest()[:16],
+                },
+                policy_version="dependency-normalization-failure-v1",
+            )
+            meta_id = "metadata-" + stored.ref.artifact_id
+            if session.get(ArtifactMetadataModel, meta_id) is None:
+                session.add(
+                    ArtifactMetadataModel(
+                        id=meta_id,
+                        run_id=run.id,
+                        stage_id=continuation.current_stage_id,
+                        artifact_type=stored.ref.artifact_type.value,
+                        relative_path=stored.ref.relative_path,
+                        checksum=stored.ref.checksum,
+                        schema_version=stored.envelope.schema_version,
+                        created_at=stored.ref.created_at,
+                        finalized_at=stored.ref.created_at,
+                        immutable=True,
+                        execution_id=execution.id,
+                        owner_reference=f"{execution.id}:dependency-normalization-failure",
+                        correlation_id=execution.correlation_id,
+                        safe_metadata={
+                            "repair_kind": DEPENDENCY_NORMALIZATION_REPAIR_KIND,
+                            "schema_version": DEPENDENCY_NORMALIZATION_SCHEMA_VERSION,
+                            "plan_number": plan_number,
+                            "generation": generation,
+                            "immutable_normalized_evidence": True,
+                        },
+                    )
+                )
+                session.flush()
+        except Exception:
+            return
+
     def advance(self, session, continuation, *, next_node: str) -> str:
         step = session.scalar(
             select(StageStepModel).where(
@@ -192,6 +397,50 @@ class LockfileGenerationRunner:
             self._stage._wait_for_command(session, continuation, execution.id)
             return "waiting"
         if execution.status != "succeeded" or execution.exit_code != 0:
+            # P4 V2.2 preserve-first normalization path — ERESOLVE/ETARGET become
+            # DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED with immutable evidence.
+            # Historical reconciliation routes are preserved for non-normalization.
+            is_norm, norm_attempt = self._detect_normalization(session, continuation)
+            if is_norm and (is_npm_etarget_failure(execution) or is_npm_eresolve_failure(execution)):
+                workspace_for_norm: Path | None = None
+                binding_for_norm = session.scalar(
+                    select(StageWorkspaceBindingModel).where(
+                        StageWorkspaceBindingModel.run_id == continuation.run_id,
+                        StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+                        StageWorkspaceBindingModel.active.is_(True),
+                    )
+                )
+                if binding_for_norm is not None:
+                    try:
+                        workspace_for_norm = Path(binding_for_norm.workspace_path).resolve(strict=True)
+                    except (OSError, ValueError):
+                        workspace_for_norm = None
+                # package.json mutation guard — do not hide a mutation behind a resolution failure
+                if workspace_for_norm is not None:
+                    start_guard = execution.start_fingerprint or {}
+                    expected_pkg = start_guard.get("post_apply_pre_command_package_json_sha256")
+                    if expected_pkg is not None and _file_checksum(workspace_for_norm / "package.json") != expected_pkg:
+                        raise LockfileGenerationError(
+                            "LOCKFILE_GENERATION_PACKAGE_JSON_MUTATED",
+                            "npm-lockfile-generate modified approved package.json",
+                        )
+                    # qualified fresh-lock fallback ONLY when lock itself is malformed/unsupported/corrupt
+                    if self._normalization_fresh_fallback_qualified(workspace_for_norm, execution):
+                        try:
+                            return self._queue_stale_lock_reconciliation(session, continuation, execution)
+                        except LockfileGenerationError as error:
+                            if error.code not in {
+                                "LOCKFILE_RECONCILIATION_WORKSPACE_STALE",
+                                "LOCKFILE_RECONCILIATION_EVIDENCE_MISSING",
+                                "LOCKFILE_RECONCILIATION_EVIDENCE_INVALID",
+                            }:
+                                raise
+                            pass
+                    self._record_normalization_failure_evidence(session, continuation, execution, workspace_for_norm, norm_attempt)
+                raise LockfileGenerationError(
+                    DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED,
+                    execution.failure_message or "npm reported an unresolved dependency tree for normalized manifest",
+                )
             if is_npm_etarget_failure(execution):
                 raise LockfileGenerationError(
                     LOCKFILE_GENERATION_ETARGET,
@@ -356,6 +605,19 @@ class LockfileGenerationRunner:
             "post_apply_pre_command_governed_workspace_fingerprint": workspace_excluding_governed_volatile_fingerprint(workspace),
             "post_apply_pre_command_binding_fingerprint": binding.workspace_fingerprint,
         }
+        # P4 V2.2 preserve-first / package-lock-only visibility for P6 enforcement
+        is_norm_start, _norm_att_start = self._detect_normalization(session, continuation)
+        if is_norm_start:
+            start["normalization_repair_kind"] = DEPENDENCY_NORMALIZATION_REPAIR_KIND
+            start["normalization_schema_version"] = DEPENDENCY_NORMALIZATION_SCHEMA_VERSION
+            start["normalization_plan_number"] = getattr(attempt, "attempt_number", None)
+            start["normalization_generation"] = generation
+            start["dependency_normalization_generation"] = generation
+            start["preserve_first"] = True
+            start["package_lock_only"] = True
+        else:
+            start["preserve_first"] = generation == 1
+            start["package_lock_only"] = True
         if start["post_apply_pre_command_package_json_sha256"] == "missing":
             raise LockfileGenerationError("PACKAGE_JSON_MISSING", "Approved package.json is missing")
         try:
@@ -840,16 +1102,37 @@ class LockfileGenerationRunner:
                 Path(run.artifact_root).parent,
                 fixed_run_root=Path(run.artifact_root),
             ).read_artifact(run.id, metadata.relative_path)
-            proposal = RepairProposal.model_validate(json.loads(stored.content))
-        except (OSError, ValueError):
+            proposal_raw = json.loads(stored.content)
+        except (OSError, ValueError, Exception):
             return False
+        is_norm_raw = _proposal_is_normalization(proposal_raw)
+        try:
+            proposal = RepairProposal.model_validate(proposal_raw)
+        except Exception:
+            if is_norm_raw:
+                return (
+                    stored.ref.checksum == attempt.proposal_checksum
+                    and stored.envelope is not None
+                    and stored.envelope.stage_id == stage_id
+                    and stored.envelope.attempt_id == attempt.id
+                )
+            return False
+        if is_norm_raw:
+            return (
+                stored.ref.checksum == attempt.proposal_checksum
+                and stored.envelope is not None
+                and stored.envelope.stage_id == stage_id
+                and stored.envelope.attempt_id == attempt.id
+            )
         return (
             stored.ref.checksum == attempt.proposal_checksum
             and stored.envelope is not None
             and stored.envelope.stage_id == stage_id
             and stored.envelope.attempt_id == attempt.id
             and any(
-                item.operation in {"dependency_change", "dependency_add"}
+                item.operation in {"dependency_change", "dependency_add", DEPENDENCY_NORMALIZATION_REPAIR_KIND}
+                or (getattr(item, "repair_kind", None) or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+                or (getattr(item, "schema_version", None) or "") == DEPENDENCY_NORMALIZATION_SCHEMA_VERSION
                 for item in proposal.operations
             )
         )
