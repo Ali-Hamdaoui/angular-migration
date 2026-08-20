@@ -189,14 +189,24 @@ class PackageMigrationService:
                                 "PACKAGE_REMOVAL_MIGRATION_DECISION_REQUIRED",
                                 f"Package {pkg} declares ng-update.migrations and is being removed",
                             )
-                        # Check if normalization indicates REPLACE with no certified path
+                        # Only block REPLACE when actually proven migration semantics
                         if action == "REPLACE":
-                            target_pkg = act.get("target_package") if isinstance(act, dict) else getattr(act, "target_package", None)
-                            if target_pkg:
-                                raise PackageMigrationError(
-                                    "PACKAGE_REPLACEMENT_MIGRATION_DECISION_REQUIRED",
-                                    f"Package {pkg} replaced by {target_pkg} requires migration decision",
-                                )
+                            # Only block if source had migrations or reason indicates migration
+                            src_declares_for_replace, _ = _declares_migrations(ck_root, pkg)
+                            reason_for_replace = act.get("reason") if isinstance(act, dict) else getattr(act, "reason", "")
+                            has_migration_reason = isinstance(reason_for_replace, str) and "migration" in reason_for_replace.lower()
+                            if src_declares_for_replace or has_migration_reason:
+                                target_pkg = act.get("target_package") if isinstance(act, dict) else getattr(act, "target_package", None)
+                                if target_pkg:
+                                    raise PackageMigrationError(
+                                        "PACKAGE_REPLACEMENT_MIGRATION_DECISION_REQUIRED",
+                                        f"Package {pkg} replaced by {target_pkg} requires migration decision: {reason_for_replace}",
+                                    )
+                                else:
+                                    raise PackageMigrationError(
+                                        "PACKAGE_REPLACEMENT_MIGRATION_DECISION_REQUIRED",
+                                        f"Package {pkg} replacement requires migration decision: {reason_for_replace}",
+                                    )
                 # Also check source checkpoint's installed metadata for migrations (if node_modules exists)
                 src_declares, _ = _declares_migrations(ck_root, pkg)
                 if src_declares:
