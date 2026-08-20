@@ -80,6 +80,7 @@ class TransformationNode(str, Enum):
     RETRY_MIGRATION = "retry_migration"
     DEPENDENCY_TRANSITION = "dependency_transition"
     ANGULAR_UPDATE_RETRY = "angular_update_retry"
+    MIGRATE_PACKAGES = "migrate_packages"
     REPAIR_REVALIDATE = "repair_revalidate"
     CREATE_G11 = "create_g11"
     WAIT_G11 = "wait_g11"
@@ -160,6 +161,7 @@ class TransformationProjection(ContractModel):
     completed_transition_phases: list[dict[str, object]] = Field(default_factory=list)
     repair_verification: dict[str, object] | None = None
     dependency_closure: dict[str, object] | None = None
+    dependency_normalization: dict[str, object] | None = None
     validation_results: dict[str, object] = Field(default_factory=dict)
     active_error: dict[str, str] | None = None
     historical_diagnostics: list[dict[str, object]] = Field(default_factory=list)
