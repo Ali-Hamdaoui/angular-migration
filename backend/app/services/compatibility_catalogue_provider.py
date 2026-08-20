@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from app.domain.compatibility import CompatibilityCatalogue, CompatibilityCatalogueEntry, RuntimeProofProfile
+from app.domain.execution_profile import Version
 
 #: Node.js minimum per target Angular major (official Angular compatibility).
 _NODE_MINIMUMS: dict[int, str] = {
@@ -61,7 +62,7 @@ _RXJS_RANGES: dict[int, tuple[str, ...]] = {
 # Angular-major range and is governed by executable/probe policy instead.
 _NODE_RANGES: dict[int, tuple[str, ...]] = {
     11: ("^10.13.0", "^12.11.0"),
-    12: ("^12.14.0", "^14.15.0", "^16.10.0"),
+    12: ("^12.14.0", "^14.15.0"),
     13: ("^12.20.0", "^14.15.0", "^16.10.0"),
     14: ("^14.15.0", "^16.10.0"),
     15: ("^14.20.0", "^16.13.0", "^18.10.0"),
@@ -189,6 +190,23 @@ class CompatibilityCatalogueProvider:
             validated = ()
             node_exact = None
             npm_exact = None
+        source_node_ranges = _NODE_RANGES.get(major, ())
+        target_node_ranges = _NODE_RANGES.get(target, ())
+        # Stop promoting a DEV_RUNTIMES_PROVEN runtime when its exact Node falls
+        # outside the official source/target intersection. Do not invent a
+        # replacement merely to keep the entry populated.
+        raw_proven = DEV_RUNTIMES_PROVEN_PROFILES.get((major, target), ())
+        proven_profiles = tuple(
+            p for p in raw_proven if _node_in_intersection(p[0], source_node_ranges, target_node_ranges)
+        )
+        raw_evidence = DEV_RUNTIMES_PROVEN_EVIDENCE.get((major, target))
+        if raw_evidence is not None and _node_in_intersection(raw_evidence.node_exact, source_node_ranges, target_node_ranges) and proven_profiles:
+            proven_evidence: tuple[RuntimeProofProfile, ...] = (raw_evidence,)
+        else:
+            proven_evidence = ()
+            # evidence invalid => also drop profiles to keep them consistent
+            if raw_evidence is not None and not _node_in_intersection(raw_evidence.node_exact, source_node_ranges, target_node_ranges):
+                proven_profiles = ()
         return CompatibilityCatalogueEntry(
             stage_id=f"angular-{major}-to-{target}",
             source_family=f"angular-{major}.x",
@@ -210,11 +228,11 @@ class CompatibilityCatalogueProvider:
             validation_policy_id="angular-stage-standard-v2",
             known_risks=() if certified else ("historical_fixture_evidence_incomplete",),
             validated_runtime_profiles=validated,
-            source_node_ranges=_NODE_RANGES.get(major, ()),
-            target_node_ranges=_NODE_RANGES.get(target, ()),
-            proven_runtime_profiles=DEV_RUNTIMES_PROVEN_PROFILES.get((major, target), ()),
-            proven_runtime_evidence=(DEV_RUNTIMES_PROVEN_EVIDENCE[(major, target)],),
-            proven_runtime_source="dev-runtimes-real-e2e",
+            source_node_ranges=source_node_ranges,
+            target_node_ranges=target_node_ranges,
+            proven_runtime_profiles=proven_profiles,
+            proven_runtime_evidence=proven_evidence,
+            proven_runtime_source="dev-runtimes-real-e2e" if proven_profiles else None,
             certification_status="certified" if certified else "seeded_official",
             certification_source="angular.dev/reference/versions" if not certified else "bridge-certification",
             certified_at=CERTIFIED_AT if certified else None,
@@ -223,3 +241,21 @@ class CompatibilityCatalogueProvider:
 
 def _node_major_for(minimum: str) -> int:
     return int(minimum.split(".", 1)[0])
+
+
+def _satisfies_caret(version: Version, value: str) -> bool:
+    if not value.startswith("^"):
+        return False
+    minimum = Version.parse(value[1:])
+    return bool(minimum and version.at_least(minimum) and version.major == minimum.major)
+
+
+def _satisfies_any(version: Version, ranges: tuple[str, ...]) -> bool:
+    return any(_satisfies_caret(version, v) for v in ranges)
+
+
+def _node_in_intersection(node_exact: str, source_ranges: tuple[str, ...], target_ranges: tuple[str, ...]) -> bool:
+    ver = Version.parse(node_exact)
+    if ver is None:
+        return False
+    return _satisfies_any(ver, source_ranges) and _satisfies_any(ver, target_ranges)
