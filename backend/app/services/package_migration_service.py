@@ -121,7 +121,12 @@ def _declares_migrations(workspace_path: Path, package: str) -> tuple[bool, str 
 class PackageMigrationService:
     """Discovery of package-level migrate-only requests using exact resolved versions."""
 
-    def discover(self, checkpoint_path: Path, workspace_path: Path) -> tuple[PackageMigrationRequest, ...]:
+    def discover(
+        self,
+        checkpoint_path: Path,
+        workspace_path: Path,
+        normalization_actions: dict[str, dict] | None = None,
+    ) -> tuple[PackageMigrationRequest, ...]:
         ck_root = Path(checkpoint_path)
         ws_root = Path(workspace_path)
         checkpoint_pkg = _read_package_json(ck_root)
@@ -163,15 +168,45 @@ class PackageMigrationService:
                 # ADDED — no source, no generic migrate
                 continue
             if source_declared is not None and target_declared is None:
-                # REMOVED — check if removal needs migration decision
-                # P0-5: if source package declares migrations or normalization indicates removal, fail closed
-                # For minimal, check if source package had migrations before removal
-                # If we cannot prove no migration needed, block when evidence suggests
-                # For now, allow removal without migrate unless we have explicit evidence
-                # We check installed source checkpoint: if source package had ng-update.migrations, block
-                src_declares, _ = _declares_migrations(ck_root, pkg)  # ck_root may not have node_modules, so check ws
-                # Instead, check if normalization plan says REMOVE with migration semantics
-                # For now, skip without blocking (ordinary removal)
+                # REMOVED — fail closed if migration semantics would be lost
+                # Check normalization action authority first
+                if normalization_actions is not None and pkg in normalization_actions:
+                    act = normalization_actions[pkg]
+                    action = act.get("action") if isinstance(act, dict) else getattr(act, "action", None)
+                    # If action is REMOVE/REPLACE and has migration hint, block
+                    if action in ("REMOVE", "REPLACE"):
+                        # Check if action indicates migration needed (reason contains migration or explicit flag)
+                        reason = act.get("reason") if isinstance(act, dict) else getattr(act, "reason", "")
+                        if isinstance(reason, str) and "migration" in reason.lower():
+                            raise PackageMigrationError(
+                                "PACKAGE_REMOVAL_MIGRATION_DECISION_REQUIRED",
+                                f"Package {pkg} removal requires migration decision: {reason}",
+                            )
+                        # Also if source had migrations, block
+                        src_declares2, _ = _declares_migrations(ck_root, pkg)
+                        if src_declares2:
+                            raise PackageMigrationError(
+                                "PACKAGE_REMOVAL_MIGRATION_DECISION_REQUIRED",
+                                f"Package {pkg} declares ng-update.migrations and is being removed",
+                            )
+                        # Check if normalization indicates REPLACE with no certified path
+                        if action == "REPLACE":
+                            target_pkg = act.get("target_package") if isinstance(act, dict) else getattr(act, "target_package", None)
+                            if target_pkg:
+                                raise PackageMigrationError(
+                                    "PACKAGE_REPLACEMENT_MIGRATION_DECISION_REQUIRED",
+                                    f"Package {pkg} replaced by {target_pkg} requires migration decision",
+                                )
+                # Also check source checkpoint's installed metadata for migrations (if node_modules exists)
+                src_declares, _ = _declares_migrations(ck_root, pkg)
+                if src_declares:
+                    # Source declares migrations, removal after npm ci would lose migration
+                    raise PackageMigrationError(
+                        "PACKAGE_REMOVAL_MIGRATION_DECISION_REQUIRED",
+                        f"Package {pkg} declares ng-update.migrations and is being removed without certified path",
+                    )
+                # Also check if normalization plan has explicit REMOVE/REPLACE for this package via fallback
+                # If no evidence of required migration, ordinary removal → continue
                 continue
             # For UPGRADED/VERSION_CHANGED/UNCHANGED, need exact resolved
             source_exact = _resolve_from_lock(ck_lock, pkg)
@@ -236,5 +271,9 @@ class PackageMigrationService:
 
 
 # Functional alias for imports that expect a plain function
-def discover(checkpoint_path: Path, workspace_path: Path) -> tuple[PackageMigrationRequest, ...]:
-    return PackageMigrationService().discover(checkpoint_path, workspace_path)
+def discover(
+    checkpoint_path: Path,
+    workspace_path: Path,
+    normalization_actions: dict[str, dict] | None = None,
+) -> tuple[PackageMigrationRequest, ...]:
+    return PackageMigrationService().discover(checkpoint_path, workspace_path, normalization_actions)
