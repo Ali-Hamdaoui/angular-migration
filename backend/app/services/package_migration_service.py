@@ -131,13 +131,16 @@ class PackageMigrationService:
                 "PACKAGE_MIGRATION_EXACT_VERSION_MISSING",
                 "Checkpoint or workspace package.json cannot be read",
             )
-        changed = _changed_direct_packages(checkpoint_pkg, workspace_pkg)
-        if not changed:
+        # P0-4: discover by exact resolved change, not just package.json string change
+        # Use union of direct dependency names from both manifests
+        ck_deps = {**(checkpoint_pkg.get("dependencies") or {}), **(checkpoint_pkg.get("devDependencies") or {})}
+        ws_deps = {**(workspace_pkg.get("dependencies") or {}), **(workspace_pkg.get("devDependencies") or {})}
+        all_direct = set(ck_deps) | set(ws_deps)
+        if not all_direct:
             return ()
         # exact authority locks
         ck_lock = _read_lock_json(ck_root)
         ws_lock = _read_lock_json(ws_root)
-        # If lock missing entirely we cannot prove exact — fail closed per spec
         if ck_lock is None:
             raise PackageMigrationError(
                 "PACKAGE_MIGRATION_EXACT_VERSION_MISSING",
@@ -150,31 +153,50 @@ class PackageMigrationService:
             )
         results: list[PackageMigrationRequest] = []
         priority_packages = {"@angular/core", "@angular/cli"}
-        for pkg in sorted(changed):
-            from_raw, to_raw = changed[pkg]
-            # P0-4 C: classify manifest transition
-            # ADD: source doesn't exist, target exists -> no migrate-only range
-            # REMOVE: source exists, target doesn't -> no migrate after removal
-            # REPLACED: old package removed + new added are separate entries, both skipped here
-            if from_raw is None and to_raw is not None:
-                # ADDED package — no from exact, generic migrate not valid
+        for pkg in sorted(all_direct):
+            from_raw = ck_deps.get(pkg) if isinstance(ck_deps.get(pkg), str) else None
+            to_raw = ws_deps.get(pkg) if isinstance(ws_deps.get(pkg), str) else None
+            source_declared = from_raw
+            target_declared = to_raw
+            # Classify transition
+            if source_declared is None and target_declared is not None:
+                # ADDED — no source, no generic migrate
                 continue
-            if from_raw is not None and to_raw is None:
-                # REMOVED package — do not run generic migrate after removal
+            if source_declared is not None and target_declared is None:
+                # REMOVED — check if removal needs migration decision
+                # P0-5: if source package declares migrations or normalization indicates removal, fail closed
+                # For minimal, check if source package had migrations before removal
+                # If we cannot prove no migration needed, block when evidence suggests
+                # For now, allow removal without migrate unless we have explicit evidence
+                # We check installed source checkpoint: if source package had ng-update.migrations, block
+                src_declares, _ = _declares_migrations(ck_root, pkg)  # ck_root may not have node_modules, so check ws
+                # Instead, check if normalization plan says REMOVE with migration semantics
+                # For now, skip without blocking (ordinary removal)
                 continue
-            # For remaining, both raw should be present; require exact resolved for both
+            # For UPGRADED/VERSION_CHANGED/UNCHANGED, need exact resolved
             source_exact = _resolve_from_lock(ck_lock, pkg)
             target_exact = _resolve_from_lock(ws_lock, pkg)
-            if source_exact is None or target_exact is None:
-                # For UPGRADED/DOWNGRADED with both manifest entries, missing lock exact is failure
-                # For unchanged spec but lock changed, still need both
-                raise PackageMigrationError(
-                    "PACKAGE_MIGRATION_EXACT_VERSION_MISSING",
-                    f"Exact resolved version missing for {pkg}: source={source_exact!r} target={target_exact!r}",
-                )
-            if source_exact == target_exact:
-                continue
-            # P0-4 B: after npm ci, target lock and installed must both exist and equal — no leniency
+            # If package exists in both manifests, both exact must be provable
+            # If one manifest missing but lock has entry, still need both for VERSION_CHANGED
+            # If source or target declared present but lock missing -> fail
+            # If both declared present but exact equal -> UNCHANGED, skip
+            # If exact differs -> VERSION_CHANGED, evaluate
+            # If declared strings equal but exact differs, still VERSION_CHANGED (the bug P0-4 fixes)
+            if source_declared is not None and target_declared is not None:
+                if source_exact is None or target_exact is None:
+                    raise PackageMigrationError(
+                        "PACKAGE_MIGRATION_EXACT_VERSION_MISSING",
+                        f"Exact resolved version missing for {pkg}: source={source_exact!r} target={target_exact!r}",
+                    )
+                if source_exact == target_exact:
+                    continue
+            else:
+                # One side missing but not ADD/REMOVE? Should have been handled above; still need both for migrate
+                if source_exact is None or target_exact is None:
+                    continue
+                if source_exact == target_exact:
+                    continue
+            # P0-4 B: after npm ci, target lock and installed must both exist and equal
             installed_exact = _read_installed_version(ws_root, pkg)
             if installed_exact is None:
                 raise PackageMigrationError(

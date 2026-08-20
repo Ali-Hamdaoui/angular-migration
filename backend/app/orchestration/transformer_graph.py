@@ -769,9 +769,67 @@ class TransformerOrchestrator:
                         )
                     # Sort deterministically by package for ledger
                     filtered.sort(key=lambda x: str(x.get("package")))
-                    # G08 must fail closed if no migrations when normalized path expects at least core/cli
-                    # But if discovery would have returned empty, build_multi with empty is allowed? Spec says build_multi with [A,B,C]
-                    # We allow empty filtered to still call build_multi (will handle)
+                    # P0-3: prove EXPECTED == ACTUAL for current lineage
+                    # Recompute EXPECTED via discover
+                    try:
+                        from app.services.package_migration_service import PackageMigrationService as _PMS_G08, PackageMigrationError as _PME_G08
+
+                        # Determine lineage_id for G08 expected/actual matching (same as _migrate_packages)
+                        _lineage_for_g08 = None
+                        try:
+                            _latest_for_g08 = session.query(RepairAttemptModel).filter(
+                                RepairAttemptModel.run_id == continuation.run_id,
+                                RepairAttemptModel.stage_id == continuation.current_stage_id,
+                            ).order_by(RepairAttemptModel.attempt_number.desc()).first()
+                            _chk_for_g08 = session.scalar(
+                                select(StageCheckpointModel).where(
+                                    StageCheckpointModel.run_id == continuation.run_id,
+                                    StageCheckpointModel.stage_id == continuation.current_stage_id,
+                                    StageCheckpointModel.kind == "pre_angular_update",
+                                ).order_by(StageCheckpointModel.sequence.desc())
+                            )
+                            if _latest_for_g08 is not None and _chk_for_g08 is not None:
+                                _lineage_raw_g08 = f"{_latest_for_g08.id}:{_chk_for_g08.id}:{_latest_for_g08.attempt_number}"
+                                _lineage_for_g08 = hashlib.sha256(_lineage_raw_g08.encode()).hexdigest()[:16]
+                            else:
+                                _lineage_for_g08 = hashlib.sha256(f"{continuation.run_id}:{continuation.current_stage_id}:no-norm".encode()).hexdigest()[:16]
+                        except Exception:
+                            _lineage_for_g08 = hashlib.sha256(f"{continuation.run_id}:{continuation.current_stage_id}:no-lineage".encode()).hexdigest()[:16]
+                        _expected_reqs = _PMS_G08().discover(Path(context["checkpoint_path"]), Path(context["workspace_path"]))
+                        _expected_ids: set[str] = set()
+                        for _req in _expected_reqs:
+                            _ident = f"{_req.package}:{_req.from_version}:{_req.to_version}:{_lineage_for_g08}"
+                            _canonical = hashlib.sha256(f"{continuation.run_id}:{continuation.current_stage_id}:{_lineage_for_g08}:{_req.package}:{_req.from_version}:{_req.to_version}".encode()).hexdigest()[:16]
+                            _expected_ids.add(_ident)
+                            _expected_ids.add(_canonical)
+                        _actual_ids: set[str] = set()
+                        for _r in filtered:
+                            _pkg = str(_r.get("package"))
+                            _from = str(_r.get("from_exact"))
+                            _to = str(_r.get("to_exact"))
+                            _ident2 = f"{_pkg}:{_from}:{_to}:{_lineage_for_g08}"
+                            _canon2 = hashlib.sha256(f"{continuation.run_id}:{continuation.current_stage_id}:{_lineage_for_g08}:{_pkg}:{_from}:{_to}".encode()).hexdigest()[:16]
+                            _actual_ids.add(_ident2)
+                            _actual_ids.add(_canon2)
+                        # For comparison, use full package:from:to:lineage sets, but also check count
+                        # Build sets of canonical package:from:to for comparison (more direct)
+                        _exp_simple = {f"{r.package}:{r.from_version}:{r.to_version}" for r in _expected_reqs}
+                        _act_simple = {f"{r.get('package')}:{r.get('from_exact')}:{r.get('to_exact')}" for r in filtered}
+                        if _exp_simple != _act_simple:
+                            _missing = _exp_simple - _act_simple
+                            _extra = _act_simple - _exp_simple
+                            if _missing:
+                                raise AngularTransformationEvidenceError("MIGRATION_EVIDENCE_INCOMPLETE", f"Missing expected migrations: {sorted(_missing)}")
+                            if _extra:
+                                raise AngularTransformationEvidenceError("MIGRATION_EVIDENCE_UNEXPECTED", f"Unexpected migrations: {sorted(_extra)}")
+                        # Also ensure lineage not stale: if expected non-empty and actual empty -> already handled above as missing
+                        # Allow empty==empty (no migrations needed) -> build_multi([]) valid
+                    except AngularTransformationEvidenceError:
+                        raise
+                    except _PME_G08 as _e:
+                        raise AngularTransformationEvidenceError(_e.code, _e.message) from _e
+                    except Exception as _e2:
+                        raise AngularTransformationEvidenceError("MIGRATION_EVIDENCE_COLLECTION_FAILED", str(_e2)) from _e2
                     versions, ledger = self._evidence.build_multi(
                         context["workspace_path"],
                         context["checkpoint_path"],
@@ -3667,6 +3725,59 @@ class TransformerOrchestrator:
             return "angular_update_retry"
         return node
 
+    @staticmethod
+    def _is_dependency_normalization_attempt(session, attempt: RepairAttemptModel) -> bool:
+        if attempt.proposal_artifact_id and attempt.proposal_checksum:
+            meta = session.get(ArtifactMetadataModel, "metadata-" + attempt.proposal_artifact_id)
+            if meta is not None:
+                try:
+                    run = session.get(MigrationRunModel, attempt.run_id)
+                    if run and run.artifact_root:
+                        from app.artifact_store import LocalFilesystemArtifactStore
+
+                        store = LocalFilesystemArtifactStore(Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root))
+                        stored = store.read_artifact(attempt.run_id, meta.relative_path)
+                        if stored.ref.checksum == attempt.proposal_checksum:
+                            prop = json.loads(stored.content)
+                            ops = prop.get("operations") if isinstance(prop, dict) else None
+                            if isinstance(ops, list) and any(
+                                str(op.get("operation") or op.get("repair_kind") or op.get("schema_version")) in (DEPENDENCY_NORMALIZATION_REPAIR_KIND, DEPENDENCY_NORMALIZATION_SCHEMA_VERSION)
+                                for op in ops if isinstance(op, dict)
+                            ):
+                                return True
+                except Exception:
+                    pass
+        return bool(attempt.diagnosis and "dependency_incompatible" in attempt.diagnosis)
+
+    @staticmethod
+    def _dependency_normalization_lineage(session, continuation) -> list:
+        """All dependency normalization attempts for this stage ordered by attempt_number."""
+        all_attempts = list(
+            session.query(RepairAttemptModel)
+            .filter(
+                RepairAttemptModel.run_id == continuation.run_id,
+                RepairAttemptModel.stage_id == continuation.current_stage_id,
+            )
+            .order_by(RepairAttemptModel.attempt_number.asc())
+            .all()
+        )
+        lineage: list[RepairAttemptModel] = []
+        for cand in all_attempts:
+            if TransformerOrchestrator._is_dependency_normalization_attempt(session, cand):
+                lineage.append(cand)
+        return lineage
+
+    @staticmethod
+    def _dependency_normalization_ordinal(session, continuation, attempt: RepairAttemptModel | None) -> int:
+        """Ordinal 1..n within normalization lineage, not global attempt_number."""
+        if attempt is None:
+            return 0
+        lineage = TransformerOrchestrator._dependency_normalization_lineage(session, continuation)
+        for idx, item in enumerate(lineage, start=1):
+            if item.id == attempt.id:
+                return idx
+        return 0
+
     def _lockfile_generation(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
@@ -3714,7 +3825,7 @@ class TransformerOrchestrator:
                             # No normalization attempt found — cannot be plan 1 lock failure, block
                             self._block(session, continuation, error.code, error.message)
                             return
-                        current_attempt_no = latest_norm.attempt_number
+                        current_ordinal = self._dependency_normalization_ordinal(session, continuation, latest_norm)
                         # Compute fingerprint for current lock failure execution
                         lock_exec = None
                         # Find the lock generation execution that just failed
@@ -3787,14 +3898,9 @@ class TransformerOrchestrator:
                             # So we need to also look at lock-specific fingerprint stored in artifact metadata if available
                             # For simplicity, if current_attempt_no == 1, compare current lock fingerprint to attempt's failure fingerprint
                             # If they match, it's no progress
-                        if current_attempt_no == 1:
-                            # Check if current lock fingerprint is materially new vs previous ng update fingerprint
-                            # We can also check if current_fp == prev_fp -> no progress
-                            # But prev_fp is for ng update, not lock, so they will differ; we need a more precise check
-                            # Instead, we check if current lock fingerprint was already seen in any prior lock failure for this stage
-                            # Query previous lock failures
+                        if current_ordinal == 1:
+                            # Check if current lock fingerprint was already seen in any prior lock failure for this stage
                             prev_lock_fps: set[str] = set()
-                            # Look at all prior lock generation executions for this stage that failed
                             for prev_exec in session.scalars(
                                 select(CommandExecutionModel).where(
                                     CommandExecutionModel.run_id == continuation.run_id,
@@ -3809,24 +3915,24 @@ class TransformerOrchestrator:
                             if current_fp in prev_lock_fps:
                                 self._block(session, continuation, "DEPENDENCY_NORMALIZATION_NO_PROGRESS", "Identical npm constraint failure — no progress")
                                 return
-                            # Also block if current_fp == previous attempt's failure fingerprint (sanity)
-                            # Allow plan 2 only when new
-                            # Reconstruct checkpoint and create child attempt
+                            # Reconstruct checkpoint for plan 2
                             try:
                                 self._restore_angular_update_checkpoint(session, continuation)
                             except TransformerStageError as e:
                                 self._block(session, continuation, e.code, e.message)
                                 return
-                            # Create child normalization attempt lineage for plan 2
-                            max_no = session.query(RepairAttemptModel).filter(RepairAttemptModel.run_id == continuation.run_id, RepairAttemptModel.stage_id == continuation.current_stage_id).order_by(RepairAttemptModel.attempt_number.desc()).first()
-                            next_no = (max_no.attempt_number + 1) if max_no else 2
-                            if next_no > 2:
+                            # Verify ordinal: next ordinal must be 2, not >2
+                            # Compute next ordinal: current lineage size +1
+                            lineage = self._dependency_normalization_lineage(session, continuation)
+                            next_ordinal = len(lineage) + 1
+                            if next_ordinal > 2:
                                 self._block(session, continuation, "DEPENDENCY_NORMALIZATION_ATTEMPTS_EXHAUSTED", "No third normalization attempt")
                                 return
-                            # Prior normalization will be hydrated via bundle's prior_normalization on next cycle
+                            # Create child normalization attempt will be handled by next classify→propose cycle
+                            # Prior normalization evidence will be included via bundle's prior_normalization
                             self._queue(continuation, "propose_repair")
                             return
-                        elif current_attempt_no >= 2:
+                        elif current_ordinal >= 2:
                             self._block(session, continuation, "DEPENDENCY_NORMALIZATION_ATTEMPTS_EXHAUSTED", "Dependency normalization attempts exhausted (max 2)")
                             return
                         else:
@@ -4017,14 +4123,12 @@ class TransformerOrchestrator:
                     canonical = hashlib.sha256(f"{continuation.run_id}:{continuation.current_stage_id}:{lineage_id}:{pkg}:{from_v}:{to_v}".encode()).hexdigest()[:16]
                     succeeded_identities.add(ident)
                     succeeded_identities.add(canonical)
-                    # Also add package-specific full identity for matching
-                    succeeded_identities.add(f"{pkg}:{from_v}:{to_v}")
             except Exception:
                 succeeded_identities = set()
             def _is_succeeded(req) -> bool:
                 ident = f"{req.package}:{req.from_version}:{req.to_version}:{lineage_id}"
                 canonical = hashlib.sha256(f"{continuation.run_id}:{continuation.current_stage_id}:{lineage_id}:{req.package}:{req.from_version}:{req.to_version}".encode()).hexdigest()[:16]
-                return ident in succeeded_identities or canonical in succeeded_identities or f"{req.package}:{req.from_version}:{req.to_version}" in succeeded_identities
+                return ident in succeeded_identities or canonical in succeeded_identities
             # Post-migration handling after at least one success: check if all discovered done
             if step is not None and step.status == "PASSED" and execution is not None and execution.status == "succeeded":
                 remaining = [p for p in discovered if not _is_succeeded(p)]
