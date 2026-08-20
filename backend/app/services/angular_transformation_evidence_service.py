@@ -140,6 +140,155 @@ class AngularTransformationEvidenceService:
         }
         return ledger
 
+    def migration_ledger_multi(
+        self,
+        checkpoint_path: str | Path,
+        workspace_path: str | Path,
+        *,
+        migration_executions: tuple[dict[str, object], ...] | list[dict[str, object]] = (),
+        expected_pre_fingerprint: str | None = None,
+        expected_post_fingerprint: str | None = None,
+    ) -> dict[str, object]:
+        checkpoint = Path(checkpoint_path).resolve(strict=True)
+        workspace = Path(workspace_path).resolve(strict=True)
+        before = self._manifest(checkpoint)
+        after = self._manifest(workspace)
+        paths = sorted(set(before) | set(after))
+        # normalize executions to compact records
+        compact: list[dict[str, object]] = []
+        for entry in migration_executions:
+            if isinstance(entry, dict):
+                compact.append(
+                    {
+                        "package": entry.get("package"),
+                        "from_exact": entry.get("from_exact") or entry.get("from_version"),
+                        "to_exact": entry.get("to_exact") or entry.get("to_version"),
+                        "declares_migrations": entry.get("declares_migrations"),
+                        "migration_collection": entry.get("migration_collection"),
+                        "command_execution_id": entry.get("command_execution_id") or entry.get("execution_id"),
+                        "command_status": entry.get("command_status") or entry.get("status"),
+                        "output_artifact_refs": entry.get("output_artifact_refs") or entry.get("artifact_ids") or [],
+                    }
+                )
+            else:
+                # object with attributes
+                compact.append(
+                    {
+                        "package": getattr(entry, "package", None),
+                        "from_exact": getattr(entry, "from_exact", None) or getattr(entry, "from_version", None),
+                        "to_exact": getattr(entry, "to_exact", None) or getattr(entry, "to_version", None),
+                        "declares_migrations": getattr(entry, "declares_migrations", None),
+                        "migration_collection": getattr(entry, "migration_collection", None),
+                        "command_execution_id": getattr(entry, "command_execution_id", None) or getattr(entry, "execution_id", None),
+                        "command_status": getattr(entry, "command_status", None) or getattr(entry, "status", None),
+                        "output_artifact_refs": getattr(entry, "output_artifact_refs", None) or getattr(entry, "artifact_ids", None) or [],
+                    }
+                )
+        # attribute files to first execution if available
+        primary_id = compact[0].get("command_execution_id") if compact else None
+        changed = [
+            {
+                "path": path,
+                "change": "added" if path not in before else "deleted" if path not in after else "modified",
+                "before_checksum": before.get(path),
+                "after_checksum": after.get(path),
+                "attributed_execution_id": primary_id,
+            }
+            for path in paths
+            if before.get(path) != after.get(path)
+        ]
+        if (
+            not changed
+            and expected_pre_fingerprint
+            and expected_post_fingerprint
+            and expected_pre_fingerprint != expected_post_fingerprint
+        ):
+            raise AngularTransformationEvidenceError(
+                "MIGRATION_LEDGER_ZERO_CHANGE_CONTRADICTION",
+                "Pre/post workspace fingerprints differ but the migration ledger is empty.",
+            )
+        ledger = {
+            "status": "recorded",
+            "changed_file_count": len(changed),
+            "changed_files": changed,
+            "unattributed_files": [],
+            "before_fingerprint": self._manifest_fingerprint(before),
+            "after_fingerprint": self._manifest_fingerprint(after),
+            "migration_executions": compact,
+            "migration_execution_count": len(compact),
+        }
+        return ledger
+
+    def build_multi(
+        self,
+        workspace_path: str,
+        checkpoint_path: str,
+        *,
+        target_core: str,
+        target_cli: str,
+        ng_version_output: str,
+        migration_executions: tuple[dict[str, object], ...] | list[dict[str, object]] = (),
+        expected_pre_fingerprint: str | None = None,
+        expected_post_fingerprint: str | None = None,
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        # reuse four-source verification from build() without duplicating attribution logic
+        workspace = Path(workspace_path).resolve(strict=True)
+        checkpoint = Path(checkpoint_path).resolve(strict=True)
+        package = self._json(workspace / "package.json")
+        lock = self._json(workspace / "package-lock.json")
+        installed_core = self._json(workspace / "node_modules" / "@angular" / "core" / "package.json")
+        installed_cli = self._json(workspace / "node_modules" / "@angular" / "cli" / "package.json")
+        dependencies = {**(package.get("dependencies") or {}), **(package.get("devDependencies") or {})}
+        core_sources = {
+            "package_json": self._version(dependencies.get("@angular/core")),
+            "package_lock": self._version(LockfileCompatibilityService.resolve_root_package_version(lock, "@angular/core")),
+            "installed_metadata": self._version(installed_core.get("version")),
+            "ng_version": self._line_version(ng_version_output, "Angular:"),
+        }
+        cli_sources = {
+            "package_json": self._version(dependencies.get("@angular/cli")),
+            "package_lock": self._version(LockfileCompatibilityService.resolve_root_package_version(lock, "@angular/cli")),
+            "installed_metadata": self._version(installed_cli.get("version")),
+            "ng_version": self._line_version(ng_version_output, "Angular CLI:"),
+        }
+        mismatches = {}
+        for label, sources, target in (
+            ("core", core_sources, target_core),
+            ("cli", cli_sources, target_cli),
+        ):
+            target_major = self._major(target)
+            declared = sources["package_json"]
+            resolved = [sources[name] for name in ("package_lock", "installed_metadata", "ng_version")]
+            if not declared or self._major(declared) != target_major:
+                mismatches[f"{label}.package_json"] = declared
+            if not resolved or any(value is None or value != resolved[0] or self._major(value) != target_major for value in resolved):
+                for name in ("package_lock", "installed_metadata", "ng_version"):
+                    if sources[name] is None or sources[name] != resolved[0] or self._major(sources[name]) != target_major:
+                        mismatches[f"{label}.{name}"] = sources[name]
+        if mismatches:
+            raise AngularTransformationEvidenceError(
+                "TARGET_VERSION_MISMATCH",
+                "Four-source Angular version verification failed: "
+                + ", ".join(f"{name}={value or 'missing'}" for name, value in sorted(mismatches.items())),
+            )
+        version_evidence = {
+            "status": "verified",
+            "target_core": target_core,
+            "target_cli": target_cli,
+            "resolved_core": core_sources["package_lock"],
+            "resolved_cli": cli_sources["package_lock"],
+            "core_sources": core_sources,
+            "cli_sources": cli_sources,
+        }
+        ledger = self.migration_ledger_multi(
+            checkpoint,
+            workspace,
+            migration_executions=tuple(migration_executions) if isinstance(migration_executions, list) else migration_executions,
+            expected_pre_fingerprint=expected_pre_fingerprint,
+            expected_post_fingerprint=expected_post_fingerprint,
+        )
+        return version_evidence, ledger
+
     def write(
         self,
         *,
