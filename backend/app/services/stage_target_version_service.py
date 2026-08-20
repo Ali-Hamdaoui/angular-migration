@@ -23,6 +23,13 @@ class StageTargetVersionService:
 
     _VERSION = re.compile(r"(?P<version>\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)")
 
+    _CRITICAL_PACKAGES = (
+        "@angular/core",
+        "@angular/cli",
+        "@angular/compiler-cli",
+        "@angular-devkit/build-angular",
+    )
+
     def verify(self, workspace: Path, target_exact: str | None) -> str:
         if not target_exact:
             raise StageTargetVersionError(
@@ -38,44 +45,91 @@ class StageTargetVersionService:
                 "Sealed workspace package or lockfile cannot be read",
             ) from error
 
-        declared_value = (
-            (package.get("dependencies") or {}).get("@angular/core")
-            or (package.get("devDependencies") or {}).get("@angular/core")
-        )
-        declared = self._version(declared_value)
-        locked = self._version(
-            LockfileCompatibilityService.resolve_root_package_version(
-                lockfile, "@angular/core"
-            )
-        )
         expected = self._version(target_exact)
-        if not declared or not locked or not expected:
+        if not expected:
             raise StageTargetVersionError(
                 "STAGE_TARGET_VERSION_EVIDENCE_INVALID",
                 "Sealed package.json and package-lock.json lack Angular core version evidence",
             )
-        declared_text = str(declared_value)
-        declared_matches_lock = (
-            declared.split(".", 1)[0] == locked.split(".", 1)[0]
-            if declared_text.startswith(("^", "~"))
-            else declared == locked
-        )
-        if not declared_matches_lock:
-            raise StageTargetVersionError(
-                "STAGE_TARGET_VERSION_EVIDENCE_INVALID",
-                "Sealed package.json and package-lock.json disagree on @angular/core",
+        expected_major = expected.split(".", 1)[0]
+        locked_core: str | None = None
+        for pkg in self._CRITICAL_PACKAGES:
+            declared_value = (
+                (package.get("dependencies") or {}).get(pkg)
+                or (package.get("devDependencies") or {}).get(pkg)
             )
-        if declared.split(".", 1)[0] != expected.split(".", 1)[0]:
-            raise StageTargetVersionError(
-                "STAGE_TARGET_VERSION_MISMATCH",
-                "Sealed package.json does not match the completed stage target",
+            if declared_value is None:
+                continue
+            declared = self._version(declared_value)
+            locked = self._version(
+                LockfileCompatibilityService.resolve_root_package_version(lockfile, pkg)
             )
-        if locked.split(".", 1)[0] != expected.split(".", 1)[0]:
-            raise StageTargetVersionError(
-                "STAGE_TARGET_VERSION_MISMATCH",
-                "Sealed package-lock.json does not match the completed stage target",
+            if not declared or not locked:
+                raise StageTargetVersionError(
+                    "STAGE_TARGET_VERSION_EVIDENCE_INVALID",
+                    f"Sealed package.json and package-lock.json lack {pkg} version evidence",
+                )
+            declared_text = str(declared_value)
+            declared_matches_lock = (
+                declared.split(".", 1)[0] == locked.split(".", 1)[0]
+                if declared_text.startswith(("^", "~"))
+                else declared == locked
             )
-        return locked
+            if not declared_matches_lock:
+                raise StageTargetVersionError(
+                    "STAGE_TARGET_VERSION_EVIDENCE_INVALID",
+                    f"Sealed package.json and package-lock.json disagree on {pkg}",
+                )
+            if declared.split(".", 1)[0] != expected_major:
+                raise StageTargetVersionError(
+                    "STAGE_TARGET_VERSION_MISMATCH",
+                    f"Sealed package.json does not match the completed stage target for {pkg}",
+                )
+            if locked.split(".", 1)[0] != expected_major:
+                raise StageTargetVersionError(
+                    "STAGE_TARGET_VERSION_MISMATCH",
+                    f"Sealed package-lock.json does not match the completed stage target for {pkg}",
+                )
+            if pkg == "@angular/core":
+                locked_core = locked
+        # fallback: if core was not present (should not happen), verify core separately
+        if locked_core is None:
+            declared_value = (
+                (package.get("dependencies") or {}).get("@angular/core")
+                or (package.get("devDependencies") or {}).get("@angular/core")
+            )
+            declared = self._version(declared_value)
+            locked = self._version(
+                LockfileCompatibilityService.resolve_root_package_version(lockfile, "@angular/core")
+            )
+            if not declared or not locked:
+                raise StageTargetVersionError(
+                    "STAGE_TARGET_VERSION_EVIDENCE_INVALID",
+                    "Sealed package.json and package-lock.json lack Angular core version evidence",
+                )
+            declared_text = str(declared_value)
+            declared_matches_lock = (
+                declared.split(".", 1)[0] == locked.split(".", 1)[0]
+                if declared_text.startswith(("^", "~"))
+                else declared == locked
+            )
+            if not declared_matches_lock:
+                raise StageTargetVersionError(
+                    "STAGE_TARGET_VERSION_EVIDENCE_INVALID",
+                    "Sealed package.json and package-lock.json disagree on @angular/core",
+                )
+            if declared.split(".", 1)[0] != expected_major:
+                raise StageTargetVersionError(
+                    "STAGE_TARGET_VERSION_MISMATCH",
+                    "Sealed package.json does not match the completed stage target",
+                )
+            if locked.split(".", 1)[0] != expected_major:
+                raise StageTargetVersionError(
+                    "STAGE_TARGET_VERSION_MISMATCH",
+                    "Sealed package-lock.json does not match the completed stage target",
+                )
+            return locked
+        return locked_core
 
     def _version(self, value) -> str | None:
         match = self._VERSION.search(str(value or ""))

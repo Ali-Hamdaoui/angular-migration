@@ -111,6 +111,8 @@ _MUTATING_COMMAND_IDS = frozenset(
     {
         "npm-ci-bootstrap",
         "angular-update-exact",
+        "angular-migrate-installed",
+        "angular-migrate-range",
         "npm-ci-final",
         "npm-lockfile-generate",
         "npm-dependency-materialize",
@@ -333,7 +335,7 @@ def _command_environment_overrides(
     chrome_bin = os.environ.get("CHROME_BIN")
     if chrome_bin and Path(chrome_bin).is_file():
         overrides["CHROME_BIN"] = str(Path(chrome_bin).resolve())
-    if command_id == "angular-update-exact":
+    if command_id in ("angular-update-exact", "angular-migrate-range"):
         overrides["NG_DISABLE_VERSION_CHECK"] = "true"
     return overrides
 
