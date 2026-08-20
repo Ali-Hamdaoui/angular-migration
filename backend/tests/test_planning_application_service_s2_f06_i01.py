@@ -50,6 +50,59 @@ def test_generates_immutable_plan_and_exact_first_stage_contract():
     } == {"sha256:" + "4" * 64}
 
 
+def test_generates_real_angular_11_to_21_route_with_migrate_packages_group():
+    route = tuple(
+        (f"angular-{major}.x", f"angular-{major + 1}.x", f"angular-{major}-to-{major + 1}", f"{major + 1}.0.0", f"{major + 1}.0.0")
+        for major in range(11, 21)
+    )
+
+    result = PlanningApplicationService().generate(
+        request(
+            run_id="run-angular-11-real-facts",
+            idempotency_key="plan-angular-11-real-facts",
+            source_exact="11.0.4",
+            source_family="angular-11.x",
+            builder="@angular-devkit/build-angular:browser",
+            resolved_scripts={"build": "build", "test": "test", "lint": "lint"},
+            project_targets={
+                "build": "angular-crud-example:build",
+                "test": "angular-crud-example:test",
+                "lint": "angular-crud-example:lint",
+            },
+            target_cli_exact="12.0.0",
+            stage_route=route,
+            capability_facts=(
+                {"key": "package:codelyzer", "value": "present"},
+                {"key": "package:tslint", "value": "present"},
+                {"key": "package:karma", "value": "present"},
+                {"key": "package:karma-jasmine-html-reporter", "value": "present"},
+                {"key": "lockfile_format:v1", "value": "present"},
+            ),
+        )
+    )
+
+    assert len(result.plan.route) == 10
+    assert [stage.rsplit("--", 1)[0] for stage in result.plan.route] == [
+        f"angular-{major}-to-{major + 1}" for major in range(11, 21)
+    ]
+    assert result.first_stage_plan.source_family == "angular-11.x"
+    assert result.first_stage_plan.target_family == "angular-12.x"
+    assert result.first_stage_plan.target_exact == "12.0.0"
+    assert result.first_stage_plan.target_cli_exact == "12.0.0"
+    assert result.first_stage_plan.build_system_decision.builder == "@angular-devkit/build-angular:browser"
+    assert set(result.first_stage_plan.commands) >= {
+        "bootstrap_install",
+        "angular_update",
+        "target_version_check",
+        "lockfile_generation",
+        "final_install",
+        "migrate_packages",
+        "builds",
+        "tests",
+        "lint",
+    }
+
+
 def test_stage_knowledge_changes_only_capability_applicable_dispositions():
     legacy = PlanningApplicationService().generate(
         request(

@@ -207,7 +207,7 @@ def generate_plan_step(job_id: str, *, scope=session_scope) -> None:
             job.retryable = False
             job.updated_at = datetime.now(UTC)
     except Exception as error:
-        _mark_retry(job_id, disposition=classify_planning_failure(error), stage="generating_plan", diagnostic=getattr(error, "details", None), scope=scope)
+        _mark_retry(job_id, disposition=classify_planning_failure(error), stage="generating_plan", diagnostic=getattr(error, "details", error), scope=scope)
 
 
 def run_planning_review_step(job_id: str, *, scope=session_scope) -> None:

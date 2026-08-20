@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable
 
 from app.domain.command import ANGULAR_INSTALLED_MIGRATION_RENDERER, ANGULAR_UPDATE_V5_RENDERER, TRANSFORMATION_COMMAND_CATALOGUE
@@ -41,11 +42,28 @@ from app.services.stage_knowledge_service import StageKnowledgeRegistry
 
 
 class PlanningApplicationError(ValueError):
-    def __init__(self, code: str, message: str, status_code: int = 422) -> None:
+    def __init__(self, code: str, message: str, status_code: int = 422, *, details=None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.status_code = status_code
+        self.details = details
+
+
+def planning_failure_details(error: Exception, *, planning_component: str) -> dict[str, str]:
+    current = error
+    seen: set[int] = set()
+    while (current.__cause__ or current.__context__) and id(current) not in seen:
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    sanitize = lambda value: re.sub(r"(?:[A-Za-z]:\\|/|\\\\)[^\s,;]+", "<path>", " ".join(str(value).split()))[:500]
+    return {
+        "exception_type": type(error).__name__,
+        "sanitized_exception_message": sanitize(error),
+        "root_exception_type": type(current).__name__,
+        "root_exception_message": sanitize(current),
+        "planning_component": planning_component,
+    }
 
 
 def run_scoped_stage_id(run_id: str, catalogue_stage_id: str) -> str:
@@ -211,7 +229,12 @@ class PlanningApplicationService:
         except PlanningApplicationError:
             raise
         except Exception as error:
-            raise PlanningApplicationError("PLAN_GENERATION_FAILED", "Plan generation failed closed.", 503) from error
+            raise PlanningApplicationError(
+                "PLAN_GENERATION_FAILED",
+                "Plan generation failed closed.",
+                503,
+                details=planning_failure_details(error, planning_component="PlanningApplicationService.generate"),
+            ) from error
         result = PlanGenerationResult(run_id=request.run_id, status="generated", plan=plan, first_stage_plan=stage, artifact_inputs=request.prerequisite_artifacts, state_version=request.expected_state_version)
         self._results[key] = (request_checksum, result)
         return result

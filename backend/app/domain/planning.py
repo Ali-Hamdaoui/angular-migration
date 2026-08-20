@@ -180,7 +180,7 @@ class StageExecutionPlan(ContractModel):
 
     @model_validator(mode="after")
     def validate_commands(self) -> "StageExecutionPlan":
-        required = {"bootstrap_install", "angular_update", "target_version_check", "lockfile_generation", "final_install", "builds", "tests", "lint"}
+        required = {"bootstrap_install", "angular_update", "target_version_check", "lockfile_generation", "final_install", "migrate_packages", "builds", "tests", "lint"}
         optional = {"installed_migration_fallback"}
         if set(self.commands) - required - optional or not required.issubset(self.commands):
             raise ValueError("stage plan commands must contain the complete standard command set")
