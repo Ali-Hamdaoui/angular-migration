@@ -52,10 +52,11 @@ def _read_lock_json(root: Path) -> dict | None:
 
 
 def _resolve_from_lock(lock_data: dict | None, package: str) -> str | None:
-    """Resolve exact version from npm lock v1 (dependencies) or modern packages shape.
+    """Resolve exact version from npm lock v1 (dependencies root only) or modern packages shape.
 
-    Supports both shapes already supported by Factory. Fail-closed: returns None when
-    exact cannot be proven.
+    P0-4: For direct package under lockfile v1, ONLY lock["dependencies"][package]["version"]
+    is authoritative. Do NOT recursively search nested dependency trees for direct dependencies.
+    Modern lock: lock["packages"][f"node_modules/{package}"]["version"] remains correct.
     """
     if not isinstance(lock_data, dict) or not package:
         return None
@@ -65,23 +66,13 @@ def _resolve_from_lock(lock_data: dict | None, package: str) -> str | None:
         entry = packages.get(f"node_modules/{package}")
         if isinstance(entry, dict) and isinstance(entry.get("version"), str):
             return entry["version"].strip()
-    # legacy v1 shape: dependencies tree (recursive walk, same as LockfileCompatibilityService)
+    # legacy v1 shape: ONLY root dependencies[package].version, no nested search
     dependencies = lock_data.get("dependencies")
-
-    def walk(node: object) -> str | None:
-        if not isinstance(node, dict):
-            return None
-        entry = node.get(package)
+    if isinstance(dependencies, dict):
+        entry = dependencies.get(package)
         if isinstance(entry, dict) and isinstance(entry.get("version"), str):
             return entry["version"].strip()
-        for value in node.values():
-            if isinstance(value, dict):
-                found = walk(value.get("dependencies"))
-                if found:
-                    return found
-        return None
-
-    return walk(dependencies) if isinstance(dependencies, dict) else None
+    return None
 
 
 def _read_installed_version(workspace_path: Path, package: str) -> str | None:
@@ -160,32 +151,41 @@ class PackageMigrationService:
         results: list[PackageMigrationRequest] = []
         priority_packages = {"@angular/core", "@angular/cli"}
         for pkg in sorted(changed):
-            # resolve exact versions from locks — never infer from range
+            from_raw, to_raw = changed[pkg]
+            # P0-4 C: classify manifest transition
+            # ADD: source doesn't exist, target exists -> no migrate-only range
+            # REMOVE: source exists, target doesn't -> no migrate after removal
+            # REPLACED: old package removed + new added are separate entries, both skipped here
+            if from_raw is None and to_raw is not None:
+                # ADDED package — no from exact, generic migrate not valid
+                continue
+            if from_raw is not None and to_raw is None:
+                # REMOVED package — do not run generic migrate after removal
+                continue
+            # For remaining, both raw should be present; require exact resolved for both
             source_exact = _resolve_from_lock(ck_lock, pkg)
             target_exact = _resolve_from_lock(ws_lock, pkg)
             if source_exact is None or target_exact is None:
+                # For UPGRADED/DOWNGRADED with both manifest entries, missing lock exact is failure
+                # For unchanged spec but lock changed, still need both
                 raise PackageMigrationError(
                     "PACKAGE_MIGRATION_EXACT_VERSION_MISSING",
                     f"Exact resolved version missing for {pkg}: source={source_exact!r} target={target_exact!r}",
                 )
             if source_exact == target_exact:
                 continue
-            # cross-check target lock vs installed node_modules/<pkg>/package.json
+            # P0-4 B: after npm ci, target lock and installed must both exist and equal — no leniency
             installed_exact = _read_installed_version(ws_root, pkg)
-            if installed_exact is not None and installed_exact != target_exact:
+            if installed_exact is None:
+                raise PackageMigrationError(
+                    "PACKAGE_MIGRATION_TARGET_INSTALL_MISSING",
+                    f"Installed package.json missing for {pkg} after npm ci: target lock {target_exact}",
+                )
+            if installed_exact != target_exact:
                 raise PackageMigrationError(
                     "PACKAGE_MIGRATION_TARGET_VERSION_MISMATCH",
                     f"Target lock {target_exact} != installed {installed_exact} for {pkg}",
                 )
-            # if installed missing for critical packages, consider it missing exact — but allow
-            # third-party without installed to still be considered? Spec says cross-check after npm ci,
-            # so installed should exist for migrated packages. If missing for priority, fail.
-            if pkg in priority_packages and installed_exact is None:
-                # For Angular core/cli we require installed to exist after npm ci; if missing, treat as mismatch
-                # but be lenient if file truly absent before install — still fail closed if we cannot prove
-                # However to avoid blocking when node_modules not yet materialized in test worktrees, we allow None
-                # and rely on lock. The transformer will ensure npm ci succeeded before discovering.
-                pass
             if pkg in priority_packages:
                 declares, collection = _declares_migrations(ws_root, pkg)
                 results.append(

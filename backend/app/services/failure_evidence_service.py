@@ -504,6 +504,9 @@ class FailureEvidenceService:
         relative_path: str | None = None,
         lineage_from: str | None = None,
         human_revision: dict[str, object] | None = None,
+        dependency_bundle: dict[str, object] | None = None,
+        dependency_bundle_artifact_id: str | None = None,
+        dependency_bundle_checksum: str | None = None,
     ):
         """Write a deterministically bounded, preimage-bound repair context pack.
 
@@ -562,6 +565,31 @@ class FailureEvidenceService:
         }
         if human_revision is not None:
             payload["human_revision"] = human_revision
+        # P0-1: hydrate dependency bundle into context for DEPENDENCY_INCOMPATIBLE
+        if dependency_bundle is not None:
+            # Validate minimal bundle shape before embedding
+            if not isinstance(dependency_bundle, dict) or dependency_bundle.get("schema_version") != "dependency-failure-bundle-v1":
+                raise ValueError("dependency bundle schema_version must be dependency-failure-bundle-v1")
+            # Required fields must match evidence
+            if dependency_bundle.get("run_id") != evidence.get("run_id") or dependency_bundle.get("stage_id") != evidence.get("stage_id"):
+                raise ValueError("dependency bundle run/stage mismatch")
+            payload["dependency_normalization"] = {
+                "failure_bundle_schema_version": dependency_bundle.get("schema_version"),
+                "failure_bundle_artifact_id": dependency_bundle_artifact_id,
+                "failure_bundle_checksum": dependency_bundle_checksum,
+                "source_angular_exact": dependency_bundle.get("source_angular_exact"),
+                "target_angular_exact": dependency_bundle.get("target_angular_exact"),
+                "target_cli_exact": dependency_bundle.get("target_cli_exact"),
+                "runtime": {
+                    "node_exact": dependency_bundle.get("node_exact"),
+                    "npm_exact": dependency_bundle.get("npm_exact"),
+                },
+                "pre_update": dependency_bundle.get("pre_update"),
+                "post_failure": dependency_bundle.get("post_failure"),
+                "command": dependency_bundle.get("command"),
+                "effective_npm_settings": dependency_bundle.get("effective_npm_settings"),
+                "prior_normalization": dependency_bundle.get("prior_normalization"),
+            }
         root = Path(str(evidence["artifact_root"]))
         input_hashes = {"failure": failure_checksum}
         if lineage_from is not None:
