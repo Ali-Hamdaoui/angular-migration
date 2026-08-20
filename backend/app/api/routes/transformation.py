@@ -109,6 +109,7 @@ _NODE_ACTION_LABELS = {
     "seal_stage": "Sealing the stage",
     "materialize_next_stage": "Materializing the next stage",
     "complete_run": "Completing the migration run",
+    "migrate_packages": "Running remaining package migrations",
 }
 
 
@@ -157,6 +158,7 @@ _WORKFLOW_STEPS = {
     "materialize_next_stage": "stage_completed",
     "complete_run": "stage_completed",
     "terminal": "stage_completed",
+    "migrate_packages": "migrate_packages",
 }
 
 
@@ -222,6 +224,80 @@ def _dependency_operation(proposal: dict[str, object] | None) -> dict[str, objec
                 )
             }
     return None
+
+
+def _is_dependency_normalization(proposal: dict[str, object] | None) -> bool:
+    if not proposal:
+        return False
+    for op in (proposal.get("operations") or []):
+        if not isinstance(op, dict):
+            continue
+        if op.get("operation") == "dependency_manifest_normalization":
+            return True
+        if op.get("repair_kind") == "dependency_manifest_normalization":
+            return True
+        if op.get("schema_version") == "dependency-normalization-v1":
+            return True
+    return False
+
+
+def _dependency_normalization_payload(
+    proposal: dict[str, object] | None,
+    repair,
+    safe_diff: str | None,
+    review: dict[str, object] | None,
+    continuation,
+) -> dict[str, object] | None:
+    if repair is None or proposal is None:
+        return None
+    if not _is_dependency_normalization(proposal):
+        return None
+    ops = [o for o in (proposal.get("operations") or []) if isinstance(o, dict)]
+    dep_op = None
+    for o in ops:
+        if (
+            o.get("operation") == "dependency_manifest_normalization"
+            or o.get("repair_kind") == "dependency_manifest_normalization"
+            or o.get("schema_version") == "dependency-normalization-v1"
+        ):
+            dep_op = o
+            break
+    if dep_op is None:
+        return None
+    schema_version = str(dep_op.get("schema_version") or "dependency-normalization-v1")
+    analysis_summary = dep_op.get("analysis_summary") or proposal.get("analysis_summary") or ""
+    if not isinstance(analysis_summary, str) or not analysis_summary:
+        rat = proposal.get("rationale")
+        if isinstance(rat, list) and rat:
+            analysis_summary = str(rat[0])
+        else:
+            analysis_summary = str(analysis_summary) if analysis_summary else ""
+    actions = dep_op.get("approved_actions") or dep_op.get("packages") or []
+    if not isinstance(actions, list):
+        actions = []
+    package_json_diff = safe_diff
+    if not package_json_diff and isinstance(dep_op.get("diff"), str):
+        package_json_diff = dep_op.get("diff")
+    proposal_checksum = repair.proposal_checksum
+    review_status = None
+    if isinstance(review, dict):
+        review_status = review.get("decision") or review.get("status") or review.get("result")
+    if not review_status:
+        review_status = _repair_lifecycle(repair.status, continuation)
+    # reuse existing revision mechanism: request changes / approve when waiting for revision
+    can_request_changes = continuation.status == "waiting_repair_revision"
+    can_approve = continuation.status == "waiting_repair_revision" or repair.status == "waiting_g10"
+    return {
+        "schema_version": schema_version,
+        "plan_number": repair.attempt_number,
+        "analysis_summary": analysis_summary,
+        "actions": actions,
+        "package_json_diff": package_json_diff,
+        "proposal_checksum": proposal_checksum,
+        "review_status": review_status,
+        "can_request_changes": bool(can_request_changes),
+        "can_approve": bool(can_approve),
+    }
 
 
 def _next_backend_action(continuation, recovery=None) -> str | None:
@@ -563,6 +639,17 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
             }
         )
     dependency_operation = _dependency_operation(proposal)
+    dependency_normalization = _dependency_normalization_payload(proposal, repair, safe_diff, review, continuation)
+    _base_next = _next_backend_action(continuation, recovery)
+    if dependency_normalization is not None:
+        if continuation.current_node == "migrate_packages":
+            _base_next = "Running remaining package migrations"
+        elif continuation.status == "waiting_repair_revision":
+            _base_next = "Waiting for dependency plan revision"
+        elif repair is not None and _repair_lifecycle(repair.status, continuation) == "approved_pending_execution":
+            _base_next = "Resolving approved dependency manifest"
+        elif continuation.current_node in ("propose_repair", "review_repair", "classify_failure"):
+            _base_next = "Analyzing target dependency compatibility"
     human_decision = None
     if repair is not None and repair.g10_gate_package_id:
         decision = session.scalar(
@@ -644,7 +731,7 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
         "repair_rationale": proposal.get("rationale", []) if proposal else [],
         "repair_apply_checksum": repair.apply_ledger_checksum if repair else None,
         "repair_validation_checksum": repair.validation_summary_checksum if repair else None,
-        "next_backend_action": _next_backend_action(continuation, recovery),
+        "next_backend_action": _base_next,
         "recovery_state": (
             "BLOCKED_RECOVERY"
             if recovery is not None and recovery.status not in {"COMPLETED", "FAILED"}
@@ -734,6 +821,7 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
             if repair else None
         ),
         "dependency_closure": dependency_closure,
+        "dependency_normalization": dependency_normalization,
         "validation_results": validation_results,
         "active_error": active_error,
         "historical_diagnostics": historical_diagnostics,
