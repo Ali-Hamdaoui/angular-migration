@@ -161,6 +161,25 @@ class TransformerPointer(TypedDict):
     worker_id: str
 
 
+class _Plan2OuterTransactionFailure(Exception):
+    """Fatal Plan-2 transaction boundary failure.
+
+    Raised when an OUTER/pre-SAVEPOINT flush or the begin_nested() automatic
+    pre-SAVEPOINT flush fails: SQLAlchemy then leaves that Session inactive
+    (poisoned) until rollback, so a same-session ``_block()`` would raise
+    PendingRollbackError.  This exception is deliberately NOT a
+    TransformerStageError: it must bypass every same-session ``_block()``
+    handler and escape ``session_scope``, which rolls back and closes the
+    poisoned Session.  The caller then persists the durable block in a fresh
+    transaction.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
 class TransformerOrchestrator:
     def __init__(
         self,
@@ -3776,6 +3795,45 @@ class TransformerOrchestrator:
         )
 
     @staticmethod
+    def _verified_execution_artifact(session, execution, artifact_id) -> bool:
+        """Fail-closed read-back proof of one immutable command artifact.
+
+        Requires the ArtifactMetadata row AND the physical artifact file:
+        the store re-reads the bytes, recomputes their checksum against the
+        artifact sidecar, and the resulting ``stored.ref.checksum`` must equal
+        the persisted ArtifactMetadata checksum and the artifact id must match.
+        Any read failure, missing file, or checksum drift returns False.
+        """
+        if execution is None or not artifact_id:
+            return False
+        meta = session.get(ArtifactMetadataModel, "metadata-" + str(artifact_id))
+        if meta is None:
+            return False
+        if not meta.immutable:
+            return False
+        if meta.run_id != execution.run_id or meta.stage_id != execution.stage_id:
+            return False
+        if meta.execution_id != execution.id:
+            return False
+        if not meta.checksum or not meta.relative_path:
+            return False
+        run = session.get(MigrationRunModel, execution.run_id)
+        if run is None or not run.artifact_root:
+            return False
+        try:
+            store = LocalFilesystemArtifactStore(
+                Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+            )
+            stored = store.read_artifact(execution.run_id, meta.relative_path)
+            if stored.ref.checksum != meta.checksum:
+                return False
+            if stored.ref.artifact_id and str(stored.ref.artifact_id) != str(artifact_id):
+                return False
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
     def _dependency_normalization_resolution_failure(
         session,
         execution,
@@ -3826,20 +3884,15 @@ class TransformerOrchestrator:
         }
         if is_environment_failure(env_evidence):
             return False
-        # Immutable evidence contract: result + command-log artifacts must exist.
+        # Immutable evidence contract: result + command-log artifacts must exist
+        # AND be physically read back with checksums proven against the persisted
+        # ArtifactMetadata and the artifact sidecar.
         if not execution.result_artifact_id or not execution.command_log_artifact_id:
             return False
         if execution.result_artifact_id == execution.command_log_artifact_id:
             return False
         for artifact_id in (execution.result_artifact_id, execution.command_log_artifact_id):
-            meta = session.get(ArtifactMetadataModel, "metadata-" + str(artifact_id))
-            if meta is None:
-                return False
-            if meta.run_id != run_id or meta.stage_id != stage_id:
-                return False
-            if meta.execution_id != execution.id:
-                return False
-            if not meta.immutable:
+            if not TransformerOrchestrator._verified_execution_artifact(session, execution, artifact_id):
                 return False
         return True
 
@@ -3884,6 +3937,44 @@ class TransformerOrchestrator:
             return "sha256:" + hashlib.sha256(str(execution.failure_message or "").encode()).hexdigest()
 
     @staticmethod
+    def _validated_migrate_range_arguments(execution):
+        """ONE shared validator of the COMPLETE rendered migrate command.
+
+        Requires ``angular-migrate-range`` on the correct template with the full
+        argument vector EXACTLY equal to ``ANGULAR_MIGRATE_RANGE_RENDERER``
+        output for the values it carries.  No missing, extra, reordered, or
+        force/allow-dirty/legacy-peer-deps flags can pass merely by holding
+        plausible values at positional slots.  Returns
+        ``(package, from_exact, to_exact)`` or None on any anomaly.
+        """
+        if execution is None:
+            return None
+        if execution.command_id != "angular-migrate-range":
+            return None
+        if execution.template_id != "tpl-angular-migrate-range-v1":
+            return None
+        if not execution.arguments or len(execution.arguments) != 8:
+            return None
+        package = str(execution.arguments[2])
+        from_exact = str(execution.arguments[5])
+        to_exact = str(execution.arguments[7])
+        if not package or not from_exact or not to_exact:
+            return None
+        try:
+            from app.domain.command import ANGULAR_MIGRATE_RANGE_RENDERER
+
+            expected_args = list(
+                ANGULAR_MIGRATE_RANGE_RENDERER.render_arguments(
+                    {"package": package, "from_version": from_exact, "to_version": to_exact}
+                )
+            )
+        except Exception:
+            return None
+        if list(execution.arguments or []) != expected_args:
+            return None
+        return (package, from_exact, to_exact)
+
+    @staticmethod
     def _current_migration_execution_matches(
         session,
         *,
@@ -3909,36 +4000,13 @@ class TransformerOrchestrator:
             return False
         if execution.exit_code != 0:
             return False
-        # exact rendered arguments via renderer
-        try:
-            from app.domain.command import ANGULAR_MIGRATE_RANGE_RENDERER
-
-            expected_args = list(
-                ANGULAR_MIGRATE_RANGE_RENDERER.render_arguments(
-                    {"package": request.package, "from_version": request.from_version, "to_version": request.to_version}
-                )
-            )
-            if list(execution.arguments or []) != expected_args:
-                return False
-            # positional checks
-            if len(execution.arguments or []) != 8:
-                return False
-            if str(execution.arguments[2]) != request.package:
-                return False
-            if str(execution.arguments[5]) != request.from_version:
-                return False
-            if str(execution.arguments[7]) != request.to_version:
-                return False
-        except Exception:
-            # fallback length/index checks
-            if not execution.arguments or len(execution.arguments) != 8:
-                return False
-            if str(execution.arguments[2]) != request.package:
-                return False
-            if str(execution.arguments[5]) != request.from_version:
-                return False
-            if str(execution.arguments[7]) != request.to_version:
-                return False
+        # exact rendered arguments via shared full-vector validator
+        parsed = TransformerOrchestrator._validated_migrate_range_arguments(execution)
+        if parsed is None:
+            return False
+        package, from_exact, to_exact = parsed
+        if package != request.package or from_exact != request.from_version or to_exact != request.to_version:
+            return False
         # canonical migration identity from EXPECTED current lineage
         try:
             expected_identity = TransformerOrchestrator._migration_identity(
@@ -3971,9 +4039,9 @@ class TransformerOrchestrator:
             return False
         if not execution.result_artifact_id or not execution.command_log_artifact_id:
             return False
-        if session.get(ArtifactMetadataModel, "metadata-" + execution.result_artifact_id) is None:
+        if not TransformerOrchestrator._verified_execution_artifact(session, execution, execution.result_artifact_id):
             return False
-        if session.get(ArtifactMetadataModel, "metadata-" + execution.command_log_artifact_id) is None:
+        if not TransformerOrchestrator._verified_execution_artifact(session, execution, execution.command_log_artifact_id):
             return False
         # V2.2: current migrate commands REQUIRE real persisted authorization;
         # a missing authorization_id or an unverifiable one is fail-closed.
@@ -4046,21 +4114,20 @@ class TransformerOrchestrator:
             return None
         if execution.exit_code != 0:
             return None
-        if not execution.arguments or len(execution.arguments) != 8:
+        # COMPLETE renderer-validated migrate vector — never accept positional
+        # slots that merely hold plausible values.
+        parsed = TransformerOrchestrator._validated_migrate_range_arguments(execution)
+        if parsed is None:
             return None
-        package = str(execution.arguments[2])
-        from_exact = str(execution.arguments[5])
-        to_exact = str(execution.arguments[7])
-        if not package or not from_exact or not to_exact:
-            return None
+        package, from_exact, to_exact = parsed
         if not execution.result_artifact_id or not execution.command_log_artifact_id:
             return None
         if execution.result_artifact_id == execution.command_log_artifact_id:
             return None
-        for artifact_id in (execution.result_artifact_id, execution.command_log_artifact_id):
-            meta = session.get(ArtifactMetadataModel, "metadata-" + artifact_id)
-            if meta is None:
-                return None
+        if not TransformerOrchestrator._verified_execution_artifact(session, execution, execution.result_artifact_id):
+            return None
+        if not TransformerOrchestrator._verified_execution_artifact(session, execution, execution.command_log_artifact_id):
+            return None
         # current migrate commands require real persisted authorization
         if execution.authorization_id is None:
             return None
@@ -4698,170 +4765,205 @@ class TransformerOrchestrator:
             # Check metadata not already exists (idempotency)
             if session.get(ArtifactMetadataModel, metadata.id) is not None:
                 raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Context metadata already exists")
+            # ---- PHASE A: OUTER FLUSH ----
             # Seal already-known-safe outer session mutations (recovery-operation
             # rows, workspace-binding fingerprint updates) into the OUTER
-            # transaction BEFORE the child savepoint, so a child/metadata
-            # constraint failure can never carry unrelated pending mutations in
-            # the child savepoint's rollback scope.
+            # transaction BEFORE the child savepoint.  A failure here POISONS the
+            # Session: SQLAlchemy leaves it inactive until rollback, so it must
+            # escape session_scope via _Plan2OuterTransactionFailure — never be
+            # converted into a same-session blocker.
             try:
                 session.flush()
             except Exception as error:
-                raise TransformerStageError(
+                raise _Plan2OuterTransactionFailure(
                     "CHILD_ATTEMPT_CREATION_FAILED",
                     f"DB outer flush failed: {error}"[:500],
                 ) from error
-            # Child + metadata rows land in a SAVEPOINT.  If this flush fails the
-            # nested transaction rolls back to the savepoint and the OUTER session
-            # stays active, so the caller can durably _block(...) with
-            # CHILD_ATTEMPT_CREATION_FAILED — never a PendingRollbackError and
-            # never a partial authoritative child/metadata row.
+            # ---- PHASE B: CHILD SAVEPOINT ----
+            # Child + metadata rows land in a SAVEPOINT established via
+            # begin_nested().  begin_nested() automatically flushes pending state
+            # BEFORE creating the savepoint; after PHASE A there is none, so the
+            # savepoint is created cleanly.  The savepoint_active flag is set by
+            # control flow AFTER the with-body begins, distinguishing a failure
+            # establishing the SAVEPOINT (poisoned session -> fatal boundary
+            # failure) from a failure flushing child+metadata INSIDE an
+            # established SAVEPOINT (nested rollback -> outer Session stays
+            # usable -> same-session typed block allowed).
+            savepoint_active = False
             try:
                 with session.begin_nested():
+                    savepoint_active = True
                     session.add(metadata)
                     session.add(child)
                     session.flush()
+            except _Plan2OuterTransactionFailure:
+                raise
+            except TransformerStageError:
+                raise
             except Exception as error:
-                raise TransformerStageError(
+                if savepoint_active:
+                    raise TransformerStageError(
+                        "CHILD_ATTEMPT_CREATION_FAILED",
+                        f"DB binding failed: {error}"[:500],
+                    ) from error
+                raise _Plan2OuterTransactionFailure(
                     "CHILD_ATTEMPT_CREATION_FAILED",
-                    f"DB binding failed: {error}"[:500],
+                    f"DB savepoint establishment failed: {error}"[:500],
                 ) from error
             return child
+        except _Plan2OuterTransactionFailure:
+            raise
         except TransformerStageError:
             raise
         except Exception as error:
             raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", f"DB binding failed: {error}"[:500]) from error
 
     def _lockfile_generation(self, continuation_id: str, worker_id: str) -> None:
-        with self._scope() as session:
-            continuation = self._owned(session, continuation_id, worker_id)
-            try:
-                # P4 lock generation must run after package.json once (APPLY_REPAIR); next is final_install via repair_revalidate stub
-                # but _start_revalidation will handle final_install→migrate_packages→target_inspection flow
-                self._lockfiles.advance(
-                    session, continuation, next_node="repair_revalidate"
-                )
-            except LockfileGenerationError as error:
-                if error.code == DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED:
-                    # P0-3: real attempt 1/2 with lineage + materially new fingerprint (not workspace fingerprint)
-                    # Use RepairAttemptModel lineage, not MigrationPlanModel.version
-                    try:
-                        # Find latest dependency normalization attempt for this stage
-                        latest_norm = None
-                        for cand in session.query(RepairAttemptModel).filter(
-                            RepairAttemptModel.run_id == continuation.run_id,
-                            RepairAttemptModel.stage_id == continuation.current_stage_id,
-                        ).order_by(RepairAttemptModel.attempt_number.desc()).all():
-                            # Check if this attempt's proposal is dependency normalization
-                            if cand.proposal_artifact_id and cand.proposal_checksum:
-                                meta = session.get(ArtifactMetadataModel, "metadata-" + cand.proposal_artifact_id)
-                                if meta is not None:
-                                    try:
-                                        run_for_norm = session.get(MigrationRunModel, continuation.run_id)
-                                        if run_for_norm and run_for_norm.artifact_root:
-                                            store_norm = LocalFilesystemArtifactStore(Path(run_for_norm.artifact_root).parent, fixed_run_root=Path(run_for_norm.artifact_root))
-                                            stored_norm = store_norm.read_artifact(continuation.run_id, meta.relative_path)
-                                            prop = json.loads(stored_norm.content)
-                                            ops = prop.get("operations") if isinstance(prop, dict) else None
-                                            if isinstance(ops, list) and any(
-                                                str(op.get("operation") or op.get("repair_kind") or op.get("schema_version")) in (DEPENDENCY_NORMALIZATION_REPAIR_KIND, DEPENDENCY_NORMALIZATION_SCHEMA_VERSION)
-                                                for op in ops if isinstance(op, dict)
-                                            ):
-                                                latest_norm = cand
-                                                break
-                                    except Exception:
-                                        continue
-                        if latest_norm is None:
-                            self._block(session, continuation, error.code, error.message)
-                            return
-                        # Fix 1/2: use strict ordinal, not global attempt_number
-                        current_ordinal = self._dependency_normalization_ordinal(session, continuation, latest_norm)
-                        if current_ordinal == 0:
-                            # Fallback: if ordinal is 0 but latest_norm exists, treat as 1 (root)
-                            current_ordinal = 1
-                        # Compute fingerprint for current lock failure execution via ONE helper
-                        lock_exec = None
-                        lock_step_tmp = session.scalar(
-                            select(StageStepModel).where(
-                                StageStepModel.stage_id == continuation.current_stage_id,
-                                StageStepModel.name == "lockfile_generation-0",
+        try:
+            with self._scope() as session:
+                continuation = self._owned(session, continuation_id, worker_id)
+                try:
+                    # P4 lock generation must run after package.json once (APPLY_REPAIR); next is final_install via repair_revalidate stub
+                    # but _start_revalidation will handle final_install→migrate_packages→target_inspection flow
+                    self._lockfiles.advance(
+                        session, continuation, next_node="repair_revalidate"
+                    )
+                except LockfileGenerationError as error:
+                    if error.code == DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED:
+                        # P0-3: real attempt 1/2 with lineage + materially new fingerprint (not workspace fingerprint)
+                        # Use RepairAttemptModel lineage, not MigrationPlanModel.version
+                        try:
+                            # Find latest dependency normalization attempt for this stage
+                            latest_norm = None
+                            for cand in session.query(RepairAttemptModel).filter(
+                                RepairAttemptModel.run_id == continuation.run_id,
+                                RepairAttemptModel.stage_id == continuation.current_stage_id,
+                            ).order_by(RepairAttemptModel.attempt_number.desc()).all():
+                                # Check if this attempt's proposal is dependency normalization
+                                if cand.proposal_artifact_id and cand.proposal_checksum:
+                                    meta = session.get(ArtifactMetadataModel, "metadata-" + cand.proposal_artifact_id)
+                                    if meta is not None:
+                                        try:
+                                            run_for_norm = session.get(MigrationRunModel, continuation.run_id)
+                                            if run_for_norm and run_for_norm.artifact_root:
+                                                store_norm = LocalFilesystemArtifactStore(Path(run_for_norm.artifact_root).parent, fixed_run_root=Path(run_for_norm.artifact_root))
+                                                stored_norm = store_norm.read_artifact(continuation.run_id, meta.relative_path)
+                                                prop = json.loads(stored_norm.content)
+                                                ops = prop.get("operations") if isinstance(prop, dict) else None
+                                                if isinstance(ops, list) and any(
+                                                    str(op.get("operation") or op.get("repair_kind") or op.get("schema_version")) in (DEPENDENCY_NORMALIZATION_REPAIR_KIND, DEPENDENCY_NORMALIZATION_SCHEMA_VERSION)
+                                                    for op in ops if isinstance(op, dict)
+                                                ):
+                                                    latest_norm = cand
+                                                    break
+                                        except Exception:
+                                            continue
+                            if latest_norm is None:
+                                self._block(session, continuation, error.code, error.message)
+                                return
+                            # Fix 1/2: use strict ordinal, not global attempt_number
+                            current_ordinal = self._dependency_normalization_ordinal(session, continuation, latest_norm)
+                            if current_ordinal == 0:
+                                # Fallback: if ordinal is 0 but latest_norm exists, treat as 1 (root)
+                                current_ordinal = 1
+                            # Compute fingerprint for current lock failure execution via ONE helper
+                            lock_exec = None
+                            lock_step_tmp = session.scalar(
+                                select(StageStepModel).where(
+                                    StageStepModel.stage_id == continuation.current_stage_id,
+                                    StageStepModel.name == "lockfile_generation-0",
+                                )
                             )
-                        )
-                        if lock_step_tmp is not None and lock_step_tmp.execution_id:
-                            lock_exec = session.get(CommandExecutionModel, lock_step_tmp.execution_id)
-                        if lock_exec is None:
-                            lock_exec = session.scalar(
-                                select(CommandExecutionModel).where(
-                                    CommandExecutionModel.run_id == continuation.run_id,
-                                    CommandExecutionModel.stage_id == continuation.current_stage_id,
-                                    CommandExecutionModel.command_id == "npm-lockfile-generate",
-                                ).order_by(CommandExecutionModel.requested_at.desc()).limit(1)
-                            )
-                        current_fp = TransformerOrchestrator._dependency_resolution_failure_fingerprint(lock_exec)
-                        if current_ordinal == 1:
-                            # Lineage-scoped NO_PROGRESS: only fingerprints from CURRENT lineage
-                            lineage = TransformerOrchestrator._dependency_normalization_lineage(session, continuation)
-                            prev_fps = TransformerOrchestrator._dependency_normalization_resolver_fingerprints(session, lineage)
-                            if current_fp in prev_fps:
-                                self._block(session, continuation, "DEPENDENCY_NORMALIZATION_NO_PROGRESS", "Identical npm constraint failure — no progress")
+                            if lock_step_tmp is not None and lock_step_tmp.execution_id:
+                                lock_exec = session.get(CommandExecutionModel, lock_step_tmp.execution_id)
+                            if lock_exec is None:
+                                lock_exec = session.scalar(
+                                    select(CommandExecutionModel).where(
+                                        CommandExecutionModel.run_id == continuation.run_id,
+                                        CommandExecutionModel.stage_id == continuation.current_stage_id,
+                                        CommandExecutionModel.command_id == "npm-lockfile-generate",
+                                    ).order_by(CommandExecutionModel.requested_at.desc()).limit(1)
+                                )
+                            current_fp = TransformerOrchestrator._dependency_resolution_failure_fingerprint(lock_exec)
+                            if current_ordinal == 1:
+                                # Lineage-scoped NO_PROGRESS: only fingerprints from CURRENT lineage
+                                lineage = TransformerOrchestrator._dependency_normalization_lineage(session, continuation)
+                                prev_fps = TransformerOrchestrator._dependency_normalization_resolver_fingerprints(session, lineage)
+                                if current_fp in prev_fps:
+                                    self._block(session, continuation, "DEPENDENCY_NORMALIZATION_NO_PROGRESS", "Identical npm constraint failure — no progress")
+                                    return
+                                # Reconstruct checkpoint for plan 2
+                                try:
+                                    self._restore_angular_update_checkpoint(session, continuation)
+                                except TransformerStageError as e:
+                                    self._block(session, continuation, e.code, e.message)
+                                    return
+                                lineage2 = TransformerOrchestrator._dependency_normalization_lineage(session, continuation)
+                                next_ordinal = len(lineage2) + 1
+                                if next_ordinal > 2:
+                                    self._block(session, continuation, "DEPENDENCY_NORMALIZATION_ATTEMPTS_EXHAUSTED", "No third normalization attempt")
+                                    return
+                                try:
+                                    child = self._create_dependency_normalization_child_attempt(session, continuation, latest_norm, lock_exec)
+                                except _Plan2OuterTransactionFailure:
+                                    raise
+                                except TransformerStageError as e:
+                                    self._block(session, continuation, e.code, e.message)
+                                    return
+                                except Exception as e:
+                                    self._block(session, continuation, "CHILD_ATTEMPT_CREATION_FAILED", str(e))
+                                    return
+                                self._queue(continuation, "propose_repair")
                                 return
-                            # Reconstruct checkpoint for plan 2
-                            try:
-                                self._restore_angular_update_checkpoint(session, continuation)
-                            except TransformerStageError as e:
-                                self._block(session, continuation, e.code, e.message)
+                            elif current_ordinal >= 2:
+                                self._block(session, continuation, "DEPENDENCY_NORMALIZATION_ATTEMPTS_EXHAUSTED", "Dependency normalization attempts exhausted (max 2)")
                                 return
-                            lineage2 = TransformerOrchestrator._dependency_normalization_lineage(session, continuation)
-                            next_ordinal = len(lineage2) + 1
-                            if next_ordinal > 2:
-                                self._block(session, continuation, "DEPENDENCY_NORMALIZATION_ATTEMPTS_EXHAUSTED", "No third normalization attempt")
+                            else:
+                                self._block(session, continuation, error.code, error.message)
                                 return
-                            try:
-                                child = self._create_dependency_normalization_child_attempt(session, continuation, latest_norm, lock_exec)
-                            except TransformerStageError as e:
-                                self._block(session, continuation, e.code, e.message)
-                                return
-                            except Exception as e:
-                                self._block(session, continuation, "CHILD_ATTEMPT_CREATION_FAILED", str(e))
-                                return
-                            self._queue(continuation, "propose_repair")
+                        except _Plan2OuterTransactionFailure:
+                            raise
+                        except Exception as inner_e:
+                            # If helper fails, fallback to block
+                            if isinstance(inner_e, TransformerStageError):
+                                self._block(session, continuation, inner_e.code, inner_e.message)
+                            else:
+                                self._block(session, continuation, "DEPENDENCY_NORMALIZATION_RETRY_FAILED", str(inner_e))
                             return
-                        elif current_ordinal >= 2:
-                            self._block(session, continuation, "DEPENDENCY_NORMALIZATION_ATTEMPTS_EXHAUSTED", "Dependency normalization attempts exhausted (max 2)")
-                            return
-                        else:
-                            self._block(session, continuation, error.code, error.message)
-                            return
-                    except Exception as inner_e:
-                        # If helper fails, fallback to block
-                        if isinstance(inner_e, TransformerStageError):
-                            self._block(session, continuation, inner_e.code, inner_e.message)
-                        else:
-                            self._block(session, continuation, "DEPENDENCY_NORMALIZATION_RETRY_FAILED", str(inner_e))
+                        self._block(session, continuation, error.code, error.message)
                         return
-                    self._block(session, continuation, error.code, error.message)
-                    return
-                if error.code == LOCKFILE_GENERATION_ETARGET:
-                    self._validation_failure(
-                        session,
-                        continuation,
-                        error,
-                        event_reason=(
-                            "lockfile-generation command failed with ETARGET; "
-                            "failure classification queued"
-                        ),
-                    )
-                elif error.code == LOCKFILE_GENERATION_ERESOLVE:
-                    self._validation_failure(
-                        session,
-                        continuation,
-                        error,
-                        event_reason=(
-                            "lockfile-generation command failed with ERESOLVE; "
-                            "failure classification queued"
-                        ),
-                    )
-                else:
-                    self._block(session, continuation, error.code, error.message)
+                    if error.code == LOCKFILE_GENERATION_ETARGET:
+                        self._validation_failure(
+                            session,
+                            continuation,
+                            error,
+                            event_reason=(
+                                "lockfile-generation command failed with ETARGET; "
+                                "failure classification queued"
+                            ),
+                        )
+                    elif error.code == LOCKFILE_GENERATION_ERESOLVE:
+                        self._validation_failure(
+                            session,
+                            continuation,
+                            error,
+                            event_reason=(
+                                "lockfile-generation command failed with ERESOLVE; "
+                                "failure classification queued"
+                            ),
+                        )
+                    else:
+                        self._block(session, continuation, error.code, error.message)
+
+        except _Plan2OuterTransactionFailure as failure:
+            # The old session_scope has already rolled back and closed the
+            # poisoned Session.  Persist the durable block in a FRESH healthy
+            # transaction: reload the continuation under the same ownership and
+            # write CHILD_ATTEMPT_CREATION_FAILED after the old transaction is gone.
+            with self._scope() as fresh_session:
+                fresh_continuation = self._owned(fresh_session, continuation_id, worker_id)
+                self._block(fresh_session, fresh_continuation, failure.code, failure.message)
+            return
 
     @staticmethod
     def _npm_evidence_materially_changed(session, continuation) -> bool:
