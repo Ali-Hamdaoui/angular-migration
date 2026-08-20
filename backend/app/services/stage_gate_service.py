@@ -61,7 +61,7 @@ _NEXT_NODE = {
     StageGateId.G08.value: TransformationNode.FINAL_INSTALL.value,
     StageGateId.G09.value: TransformationNode.CREATE_G12.value,
     StageGateId.G10.value: TransformationNode.APPLY_REPAIR.value,
-    StageGateId.G11.value: TransformationNode.SEAL_STAGE.value,
+    StageGateId.G11.value: TransformationNode.CREATE_G09.value,
     StageGateId.G12.value: TransformationNode.SEAL_STAGE.value,
 }
 

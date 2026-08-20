@@ -111,6 +111,32 @@ from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
 
 logger = logging.getLogger(__name__)
 
+# Frozen V2.2 contracts — code against strings even if sibling files absent (use constants/try imports)
+try:
+    from app.domain.dependency_normalization import DEPENDENCY_NORMALIZATION_REPAIR_KIND as _DN_KIND
+    DEPENDENCY_NORMALIZATION_REPAIR_KIND = _DN_KIND
+except ImportError:
+    DEPENDENCY_NORMALIZATION_REPAIR_KIND = "dependency_manifest_normalization"
+try:
+    from app.domain.dependency_normalization import DEPENDENCY_NORMALIZATION_SCHEMA_VERSION as _DN_VER
+    DEPENDENCY_NORMALIZATION_SCHEMA_VERSION = _DN_VER
+except ImportError:
+    DEPENDENCY_NORMALIZATION_SCHEMA_VERSION = "dependency-normalization-v1"
+try:
+    from app.services.lockfile_generation_runner import DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED as _DNRF
+    DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED = _DNRF
+except ImportError:
+    DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED = "DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED"
+try:
+    from app.domain.transformation import FailureRoute as _FR, TransformationNode as _TN
+    _DEPENDENCY_INCOMPATIBLE = _FR.DEPENDENCY_INCOMPATIBLE
+    _MIGRATE_PACKAGES_NODE = _TN.MIGRATE_PACKAGES.value
+except (ImportError, AttributeError):
+    _DEPENDENCY_INCOMPATIBLE = "dependency_incompatible"
+    _MIGRATE_PACKAGES_NODE = "migrate_packages"
+# angular-migrate-range tpl-angular-migrate-range-v1 => npx ng update <package> --migrate-only --from <from> --to <to>, NG_DISABLE_VERSION_CHECK=true, no --force, no --allow-dirty
+_MIGRATE_RANGE_TEMPLATE = "tpl-angular-migrate-range-v1"
+
 # Checkpoint kinds an Angular-update execution may legitimately be bound to for
 # reconstruction: the initial pre-update tree, or the post-repair tree
 # (post-uninstall / pre-angular-retry). No other kind may authorize Angular
@@ -247,6 +273,8 @@ class TransformerOrchestrator:
             self._dependency_transition(continuation_id, worker_id)
         elif node == "lockfile_generation":
             self._lockfile_generation(continuation_id, worker_id)
+        elif node == _MIGRATE_PACKAGES_NODE or node == "migrate_packages":
+            self._migrate_packages(continuation_id, worker_id)
         elif node == "repair_revalidate":
             self._start_revalidation(continuation_id, worker_id)
         elif node == "create_g11":
@@ -841,7 +869,8 @@ class TransformerOrchestrator:
                 .order_by(RepairAttemptModel.attempt_number.desc())
                 .first()
             )
-            gate_id = "G11"
+            # aggregate: no repair→G09, repair revalidated→G11 (conditional, not unconditional)
+            gate_id = "G11" if repair is not None else "G09"
             if repair is not None:
                 binding = self._stage._binding(session, continuation)
                 reports = self._verify_dependency_add_post_state(
@@ -3059,18 +3088,24 @@ class TransformerOrchestrator:
         proposal: dict[str, object], *, angular_update_retry_eligible: bool = False
     ) -> str:
         operations = proposal.get("operations") or []
+        # preserve DependencyTransitionRunner for legacy only
         if any(
-            item.get("operation") == "dependency_transition" for item in operations
+            item.get("operation") == "dependency_transition"
+            and str(item.get("repair_kind") or "") != DEPENDENCY_NORMALIZATION_REPAIR_KIND
+            and str(item.get("schema_version") or "") != DEPENDENCY_NORMALIZATION_SCHEMA_VERSION
+            for item in operations
         ):
             return "dependency_transition"
-        node = (
-            "lockfile_generation"
-            if any(
-                item.get("operation") in {"dependency_change", "dependency_add"}
-                for item in operations
-            )
-            else "repair_revalidate"
-        )
+        # V2.2 P3: dependency_manifest_normalization → lockfile (P4) → final_install → migrate_packages (P5)
+        if any(
+            str(item.get("operation") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+            or str(item.get("repair_kind") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+            or str(item.get("schema_version") or "") == DEPENDENCY_NORMALIZATION_SCHEMA_VERSION
+            or item.get("operation") in {"dependency_change", "dependency_add"}
+            for item in operations
+        ):
+            return "lockfile_generation"
+        node = "repair_revalidate"
         if node == "repair_revalidate" and angular_update_retry_eligible:
             return "angular_update_retry"
         return node
@@ -3079,10 +3114,26 @@ class TransformerOrchestrator:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
             try:
+                # P4 lock generation must run after package.json once (APPLY_REPAIR); next is final_install via repair_revalidate stub
+                # but _start_revalidation will handle final_install→migrate_packages→target_inspection flow
                 self._lockfiles.advance(
                     session, continuation, next_node="repair_revalidate"
                 )
             except LockfileGenerationError as error:
+                if error.code == DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED:
+                    # Technical retry: plan1 + materially new npm evidence → restore checkpoint → plan2; plan2 failure → BLOCK
+                    plan = session.get(MigrationPlanModel, continuation.plan_id)
+                    if plan is not None and plan.version == 1 and self._npm_evidence_materially_changed(session, continuation):
+                        try:
+                            self._restore_angular_update_checkpoint(session, continuation)
+                        except TransformerStageError as e:
+                            self._block(session, continuation, e.code, e.message)
+                            return
+                        # max 2 plans: restore then allow plan2 path (stub: re-queue dependency preflight/prepare for plan2)
+                        self._queue(continuation, "dependency_preflight")
+                        return
+                    self._block(session, continuation, error.code, error.message)
+                    return
                 if error.code == LOCKFILE_GENERATION_ETARGET:
                     self._validation_failure(
                         session,
@@ -3105,6 +3156,121 @@ class TransformerOrchestrator:
                     )
                 else:
                     self._block(session, continuation, error.code, error.message)
+
+    @staticmethod
+    def _npm_evidence_materially_changed(session, continuation) -> bool:
+        # max 2 plans: plan2 only when npm evidence materially changed (package.json/lockfile)
+        # ponytail: check lockfile or package.json fingerprint vs checkpoint
+        try:
+            binding = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == continuation.run_id,
+                    StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            if binding is None:
+                return False
+            # any pending package.json diff vs pre_angular_update checkpoint is material
+            checkpoint = session.scalar(
+                select(StageCheckpointModel)
+                .where(
+                    StageCheckpointModel.run_id == continuation.run_id,
+                    StageCheckpointModel.stage_id == continuation.current_stage_id,
+                    StageCheckpointModel.kind == "pre_angular_update",
+                )
+                .order_by(StageCheckpointModel.sequence.desc())
+            )
+            if checkpoint is None:
+                return False
+            return binding.workspace_fingerprint != checkpoint.workspace_fingerprint
+        except Exception:
+            return False
+
+    def _migrate_packages(self, continuation_id: str, worker_id: str) -> None:
+        # P5 migrate-only: discovery then one migrate per package via tpl-angular-migrate-range-v1
+        # NG_DISABLE_VERSION_CHECK=true, no --force, no --allow-dirty enforced by renderer
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            binding = self._stage._binding(session, continuation)
+            # post-migration successor check: if package.json changed after last migrate, do one lock→npm ci→evidence→G08
+            step = session.scalar(
+                select(StageStepModel).where(
+                    StageStepModel.stage_id == continuation.current_stage_id,
+                    StageStepModel.name == "migrate_packages-0",
+                )
+            )
+            execution = session.get(CommandExecutionModel, step.execution_id) if step and step.execution_id else None
+            if step is not None and step.status == "PASSED" and execution is not None and execution.status == "succeeded":
+                live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+                if live != binding.workspace_fingerprint:
+                    binding.workspace_fingerprint = live
+                    binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
+                    binding.last_verified_fingerprint = live
+                    binding.last_verified_at = datetime.now(UTC)
+                # check if package.json changed vs pre-migrate checkpoint
+                chk = session.scalar(
+                    select(StageCheckpointModel)
+                    .where(
+                        StageCheckpointModel.run_id == continuation.run_id,
+                        StageCheckpointModel.stage_id == continuation.current_stage_id,
+                        StageCheckpointModel.kind == "pre_angular_update",
+                    )
+                    .order_by(StageCheckpointModel.sequence.desc())
+                )
+                # ponytail: one successor lock generation if changed else continue
+                if chk is not None and live != chk.workspace_fingerprint:
+                    # package.json changed → successor lock generation
+                    # check if lock generation already passed for this successor
+                    lock_step = session.scalar(
+                        select(StageStepModel).where(
+                            StageStepModel.stage_id == continuation.current_stage_id,
+                            StageStepModel.name == "lockfile_generation-0",
+                        )
+                    )
+                    if lock_step is None or lock_step.status != "PASSED":
+                        self._stage.queue_lockfile_generation(session, continuation, attempt_key="post-migrate:lock")
+                        return
+                self._queue(continuation, "target_inspection")
+                return
+            # discovery via try import (sibling may be absent)
+            try:
+                from app.services.package_migration_service import PackageMigrationService
+
+                # checkpoint path for discovery: use pre_angular_update immutable copy
+                chk = self._angular_update_recovery_checkpoint(session, continuation) or session.scalar(
+                    select(StageCheckpointModel)
+                    .where(
+                        StageCheckpointModel.run_id == continuation.run_id,
+                        StageCheckpointModel.stage_id == continuation.current_stage_id,
+                        StageCheckpointModel.kind == "pre_angular_update",
+                    )
+                    .order_by(StageCheckpointModel.sequence.desc())
+                )
+                chk_path = Path(chk.workspace_path) if chk is not None else Path(binding.workspace_path)
+                discovered = PackageMigrationService().discover(chk_path, Path(binding.workspace_path))
+            except Exception:
+                discovered = ()
+            if not discovered:
+                # no migrations — continue to target inspection
+                self._queue(continuation, "target_inspection")
+                return
+            # queue first package migrate; next packages will re-enter this node until exhausted
+            # ponytail: one at a time, use stage's queue_migrate_packages (template not package-specific authority already in G06)
+            pkg = discovered[0]
+            try:
+                self._stage.queue_migrate_packages(
+                    session,
+                    continuation,
+                    attempt_key=f"migrate:{pkg.package}:{pkg.from_version}->{pkg.to_version}",
+                    package=pkg.package,
+                    from_version=pkg.from_version,
+                    to_version=pkg.to_version,
+                )
+            except TransformerStageError as error:
+                self._block(session, continuation, error.code, error.message)
+                return
+            return
 
     @staticmethod
     def _claim_current_continuation_for_apply(
@@ -3225,6 +3391,17 @@ class TransformerOrchestrator:
                             return
                         if outcome != "passed":
                             return
+                        # V2.2 P5: after P4 lock + final_install materialization, run migrate-only before validation
+                        if self._is_normalization_proposal(proposal):
+                            step = session.scalar(
+                                select(StageStepModel).where(
+                                    StageStepModel.stage_id == continuation.current_stage_id,
+                                    StageStepModel.name == "migrate_packages-0",
+                                )
+                            )
+                            if step is None or step.status != "PASSED":
+                                self._queue(continuation, "migrate_packages")
+                                return
                 affected_attempt_key = (
                     f"{attempt.id}:affected:materialized"
                     if dependency_repair
@@ -3284,7 +3461,24 @@ class TransformerOrchestrator:
     def _proposal_requires_install_materialization(proposal: dict[str, object]) -> bool:
         return any(
             isinstance(item, dict)
-            and item.get("operation") in {"dependency_add", "dependency_change"}
+            and (
+                item.get("operation") in {"dependency_add", "dependency_change"}
+                or str(item.get("repair_kind") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+                or str(item.get("operation") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+                or str(item.get("schema_version") or "") == DEPENDENCY_NORMALIZATION_SCHEMA_VERSION
+            )
+            for item in (proposal.get("operations") or [])
+        )
+
+    @staticmethod
+    def _is_normalization_proposal(proposal: dict[str, object]) -> bool:
+        return any(
+            isinstance(item, dict)
+            and (
+                str(item.get("repair_kind") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+                or str(item.get("operation") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+                or str(item.get("schema_version") or "") == DEPENDENCY_NORMALIZATION_SCHEMA_VERSION
+            )
             for item in (proposal.get("operations") or [])
         )
 
@@ -3531,7 +3725,9 @@ class TransformerOrchestrator:
 
     @staticmethod
     def _repairable_route(route) -> bool:
-        return route.value in {"repairable_source", "angular_update_peer_conflict"}
+        # V2.2: dependency_incompatible is repairable via manifest normalization (P3); preserve legacy routes
+        val = route.value if hasattr(route, "value") else str(route)
+        return val in {"repairable_source", "angular_update_peer_conflict", "dependency_incompatible"}
 
     @staticmethod
     def _is_angular_update_failure(session, continuation) -> bool:
@@ -3638,6 +3834,21 @@ class TransformerOrchestrator:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
             attempt = self._latest_repair(session, continuation)
+            # Preserve DependencyTransitionRunner for legacy only, new V2.2 failures must NOT route there
+            try:
+                _run = session.get(MigrationRunModel, continuation.run_id)
+                _prop = self._load_bound_repair_proposal(session, continuation, attempt, _run)
+                if any(
+                    str(item.get("repair_kind") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+                    or str(item.get("operation") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+                    or str(item.get("schema_version") or "") == DEPENDENCY_NORMALIZATION_SCHEMA_VERSION
+                    for item in (_prop.get("operations") or [])
+                    if isinstance(item, dict)
+                ):
+                    self._block(session, continuation, "DEPENDENCY_TRANSITION_NOT_ALLOWED", "V2.2 manifest normalization must not use legacy DependencyTransitionRunner")
+                    return
+            except Exception:
+                pass
             try:
                 restore_required = self._dependency_transitions.requires_safe_restore(
                     session, continuation
