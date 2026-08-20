@@ -82,6 +82,32 @@ def validation_execution_key(
     return bounded_idempotency_key(raw)
 
 
+def migration_attempt_key(migration_identity: str) -> str:
+    """Canonical migration attempt key: migrate:<canonical_migration_identity>."""
+    return f"migrate:{migration_identity}"
+
+
+def expected_migrate_execution_idempotency_key(
+    continuation_id: str,
+    stage_id: str,
+    migration_identity: str,
+    package: str,
+    from_version: str,
+    to_version: str,
+) -> str:
+    """Derive the exact persisted CommandExecution.idempotency_key for a migrate-only command.
+
+    Must use the SAME bounded helper and grammar as the governed queue path:
+      continuation.id + stage_id + command + attempt_key  → bounded_idempotency_key
+    where attempt_key = migrate:<identity>:<package>:<from>-><to>
+    and final raw = <continuation>:<stage>:command:<dynamic_key>:migrate_packages
+    """
+    attempt_key = migration_attempt_key(migration_identity)
+    dynamic_key = f"{attempt_key}:{package}:{from_version}->{to_version}"
+    raw = f"{continuation_id}:{stage_id}:command:{dynamic_key}:migrate_packages"
+    return bounded_idempotency_key(raw)
+
+
 @dataclass(frozen=True)
 class _ValidatedStageStart:
     run_id: str

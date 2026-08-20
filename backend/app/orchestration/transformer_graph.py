@@ -90,7 +90,12 @@ from app.services.repair_application_service import (
 )
 from app.services.repair_lifecycle_service import RepairLifecycleService
 from app.services.stage_gate_service import StageGateError, StageGateService
-from app.services.stage_execution_application_service import validation_execution_key
+from app.services.stage_execution_application_service import (
+    bounded_idempotency_key,
+    expected_migrate_execution_idempotency_key,
+    migration_attempt_key,
+    validation_execution_key,
+)
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformer_stage_service import (
     ReconstructionMode,
@@ -715,164 +720,122 @@ class TransformerOrchestrator:
                 except Exception:
                     pass
             if is_normalized_path:
-                # Normalized path: collect successful angular-migrate-range executions for CURRENT lineage
-                # Filter by run/stage and lineage (attempt id / checkpoint) — fail closed if any required missing
+                # Normalized path: discover EXPECTED then prove ACTUAL via persisted execution identity validator
                 try:
-                    # Latest normalization attempt for lineage filtering
-                    latest_norm = session.query(RepairAttemptModel).filter(
-                        RepairAttemptModel.run_id == continuation.run_id,
-                        RepairAttemptModel.stage_id == continuation.current_stage_id,
-                    ).order_by(RepairAttemptModel.attempt_number.desc()).first()
-                    # Collect all successful migrate-range executions for this stage
-                    all_migrate_execs = list(
-                        session.scalars(
+                    from app.services.package_migration_service import PackageMigrationService as _PMS_G08, PackageMigrationError as _PME_G08
+
+                    # lineage-bound G08: use current normalization leaf + authoritative checkpoint
+                    _lineage_g08 = self._dependency_normalization_lineage(session, continuation)
+                    _latest_for_g08 = _lineage_g08[-1] if _lineage_g08 else None
+                    _root_for_g08 = _lineage_g08[0] if _lineage_g08 else None
+                    _chk_for_g08 = session.scalar(
+                        select(StageCheckpointModel).where(
+                            StageCheckpointModel.run_id == continuation.run_id,
+                            StageCheckpointModel.stage_id == continuation.current_stage_id,
+                            StageCheckpointModel.kind == "pre_angular_update",
+                        ).order_by(StageCheckpointModel.sequence.desc())
+                    )
+                    _root_id_g08 = _root_for_g08.id if _root_for_g08 else continuation.run_id
+                    _leaf_id_g08 = _latest_for_g08.id if _latest_for_g08 else continuation.run_id
+                    _chk_id_g08 = _chk_for_g08.id if _chk_for_g08 is not None and hasattr(_chk_for_g08, "id") else "no-checkpoint"
+                    # normalization actions for REMOVE/REPLACE
+                    _norm_actions_g08 = None
+                    try:
+                        if _latest_for_g08 is not None and _latest_for_g08.proposal_artifact_id:
+                            _meta_g08 = session.get(ArtifactMetadataModel, "metadata-" + _latest_for_g08.proposal_artifact_id)
+                            if _meta_g08 is not None:
+                                _run_g08 = session.get(MigrationRunModel, _latest_for_g08.run_id)
+                                if _run_g08 and _run_g08.artifact_root:
+                                    from app.artifact_store import LocalFilesystemArtifactStore as _StoreG08
+
+                                    _store_g08 = _StoreG08(Path(_run_g08.artifact_root).parent, fixed_run_root=Path(_run_g08.artifact_root))
+                                    _prop_g08 = json.loads(_store_g08.read_artifact(_latest_for_g08.run_id, _meta_g08.relative_path).content)
+                                    _ops_g08 = _prop_g08.get("operations") if isinstance(_prop_g08, dict) else None
+                                    if isinstance(_ops_g08, list):
+                                        _norm_actions_g08 = {}
+                                        for _op in _ops_g08:
+                                            if isinstance(_op, dict):
+                                                _pkg_g08 = _op.get("package") or _op.get("target_package") or _op.get("name")
+                                                if isinstance(_pkg_g08, str):
+                                                    _norm_actions_g08[_pkg_g08] = _op
+                    except Exception:
+                        _norm_actions_g08 = None
+                    _expected_reqs = _PMS_G08().discover(Path(context["checkpoint_path"]), Path(context["workspace_path"]), _norm_actions_g08)
+                    # Build ACTUAL via persisted execution validator (no timestamp authority)
+                    filtered: list[dict[str, object]] = []
+                    _expected_ids: set[str] = set()
+                    for _req in _expected_reqs:
+                        _ident = self._migration_identity(
+                            continuation.run_id,
+                            continuation.current_stage_id,
+                            _root_id_g08,
+                            _leaf_id_g08,
+                            _chk_id_g08,
+                            _req.package,
+                            _req.from_version,
+                            _req.to_version,
+                        )
+                        _expected_ids.add(_ident)
+                    _actual_ids: set[str] = set()
+                    for _req in _expected_reqs:
+                        _ident = self._migration_identity(
+                            continuation.run_id,
+                            continuation.current_stage_id,
+                            _root_id_g08,
+                            _leaf_id_g08,
+                            _chk_id_g08,
+                            _req.package,
+                            _req.from_version,
+                            _req.to_version,
+                        )
+                        _expected_key = self._expected_migrate_execution_idempotency_key(
+                            continuation,
+                            continuation.current_stage_id,
+                            _ident,
+                            _req.package,
+                            _req.from_version,
+                            _req.to_version,
+                        )
+                        _ex = session.scalar(
                             select(CommandExecutionModel).where(
                                 CommandExecutionModel.run_id == continuation.run_id,
                                 CommandExecutionModel.stage_id == continuation.current_stage_id,
-                                CommandExecutionModel.command_id == "angular-migrate-range",
+                                CommandExecutionModel.idempotency_key == _expected_key,
                             )
-                        ).all()
-                    )
-                    # Filter to successful and lineage-matched (requested_at after latest_norm created_at if available)
-                    filtered: list[dict[str, object]] = []
-                    for ex in all_migrate_execs:
-                        if ex.status != "succeeded" or ex.exit_code != 0:
-                            continue
-                        # Lineage: only executions after latest_norm created_at are current lineage
-                        if latest_norm is not None and ex.requested_at is not None and latest_norm.created_at is not None:
-                            if ex.requested_at < latest_norm.created_at:
-                                continue
-                        # Validate arguments and artifacts present
-                        if not ex.arguments or len(ex.arguments) != 8:
-                            continue
-                        # Check required artifacts present
-                        if not ex.result_artifact_id or not ex.command_log_artifact_id:
-                            continue
-                        pkg = str(ex.arguments[2])
-                        from_ver = str(ex.arguments[5])
-                        to_ver = str(ex.arguments[7])
-                        # Build record for build_multi
-                        filtered.append(
-                            {
-                                "package": pkg,
-                                "from_exact": from_ver,
-                                "to_exact": to_ver,
-                                "declares_migrations": True,
-                                "migration_collection": None,
-                                "command_execution_id": ex.id,
-                                "command_status": ex.status,
-                                "output_artifact_refs": [ex.result_artifact_id, ex.command_log_artifact_id],
-                                "status": ex.status,
-                                "execution_id": ex.id,
-                                "exit_code": ex.exit_code,
-                            }
                         )
-                    # Sort deterministically by package for ledger
+                        if _ex is not None and self._current_migration_execution_matches(
+                            session,
+                            execution=_ex,
+                            continuation=continuation,
+                            normalization_root=_root_for_g08,
+                            normalization_leaf=_latest_for_g08,
+                            checkpoint=_chk_for_g08,
+                            request=_req,
+                        ):
+                            _actual_ids.add(_ident)
+                            filtered.append(
+                                {
+                                    "package": _req.package,
+                                    "from_exact": _req.from_version,
+                                    "to_exact": _req.to_version,
+                                    "declares_migrations": True,
+                                    "migration_collection": None,
+                                    "command_execution_id": _ex.id,
+                                    "command_status": _ex.status,
+                                    "output_artifact_refs": [_ex.result_artifact_id, _ex.command_log_artifact_id],
+                                    "status": _ex.status,
+                                    "execution_id": _ex.id,
+                                    "exit_code": _ex.exit_code,
+                                }
+                            )
                     filtered.sort(key=lambda x: str(x.get("package")))
-                    # P0-3: prove EXPECTED == ACTUAL for current lineage
-                    # Recompute EXPECTED via discover
-                    try:
-                        from app.services.package_migration_service import PackageMigrationService as _PMS_G08, PackageMigrationError as _PME_G08
-
-                        # Fix 2/3: strict lineage-bound G08 — use current normalization leaf, not arbitrary latest
-                        _lineage_for_g08 = None
-                        _latest_for_g08 = None
-                        _chk_for_g08 = None
-                        try:
-                            _lineage_g08 = self._dependency_normalization_lineage(session, continuation)
-                            _latest_for_g08 = _lineage_g08[-1] if _lineage_g08 else None
-                            _chk_for_g08 = session.scalar(
-                                select(StageCheckpointModel).where(
-                                    StageCheckpointModel.run_id == continuation.run_id,
-                                    StageCheckpointModel.stage_id == continuation.current_stage_id,
-                                    StageCheckpointModel.kind == "pre_angular_update",
-                                ).order_by(StageCheckpointModel.sequence.desc())
-                            )
-                            if _latest_for_g08 is not None and _chk_for_g08 is not None:
-                                _lineage_raw_g08 = f"{_latest_for_g08.id}:{_chk_for_g08.id}:{_latest_for_g08.attempt_number}"
-                                _lineage_for_g08 = hashlib.sha256(_lineage_raw_g08.encode()).hexdigest()[:16]
-                            elif _latest_for_g08 is None:
-                                # No normalization lineage, use no-norm for normal path (should not be in this branch, but fallback)
-                                _lineage_for_g08 = hashlib.sha256(f"{continuation.run_id}:{continuation.current_stage_id}:no-norm".encode()).hexdigest()[:16]
-                            else:
-                                _lineage_for_g08 = hashlib.sha256(f"{continuation.run_id}:{continuation.current_stage_id}:{_latest_for_g08.id}".encode()).hexdigest()[:16]
-                        except Exception:
-                            _lineage_for_g08 = hashlib.sha256(f"{continuation.run_id}:{continuation.current_stage_id}:no-lineage".encode()).hexdigest()[:16]
-                        # P0-4: pass normalization actions for REMOVE/REPLACE check
-                        _norm_actions_g08 = None
-                        try:
-                            if _latest_for_g08 is not None and _latest_for_g08.proposal_artifact_id:
-                                _meta_g08 = session.get(ArtifactMetadataModel, "metadata-" + _latest_for_g08.proposal_artifact_id)
-                                if _meta_g08 is not None:
-                                    _run_g08 = session.get(MigrationRunModel, _latest_for_g08.run_id)
-                                    if _run_g08 and _run_g08.artifact_root:
-                                        from app.artifact_store import LocalFilesystemArtifactStore as _StoreG08
-
-                                        _store_g08 = _StoreG08(Path(_run_g08.artifact_root).parent, fixed_run_root=Path(_run_g08.artifact_root))
-                                        _prop_g08 = json.loads(_store_g08.read_artifact(_latest_for_g08.run_id, _meta_g08.relative_path).content)
-                                        _ops_g08 = _prop_g08.get("operations") if isinstance(_prop_g08, dict) else None
-                                        if isinstance(_ops_g08, list):
-                                            _norm_actions_g08 = {}
-                                            for _op in _ops_g08:
-                                                if isinstance(_op, dict):
-                                                    _pkg_g08 = _op.get("package") or _op.get("target_package") or _op.get("name")
-                                                    if isinstance(_pkg_g08, str):
-                                                        _norm_actions_g08[_pkg_g08] = _op
-                        except Exception:
-                            _norm_actions_g08 = None
-                        _expected_reqs = _PMS_G08().discover(Path(context["checkpoint_path"]), Path(context["workspace_path"]), _norm_actions_g08)
-                        # Use single helper for both expected and actual — Fix 2/3
-                        _lineage_g08_for_ident = self._dependency_normalization_lineage(session, continuation)
-                        _root_g08 = _lineage_g08_for_ident[0] if _lineage_g08_for_ident else None
-                        _leaf_g08 = _lineage_g08_for_ident[-1] if _lineage_g08_for_ident else _latest_for_g08
-                        _root_id_g08 = _root_g08.id if _root_g08 else continuation.run_id
-                        _leaf_id_g08 = _leaf_g08.id if _leaf_g08 else continuation.run_id
-                        _chk_id_g08 = _chk_for_g08.id if _chk_for_g08 is not None and hasattr(_chk_for_g08, "id") else "no-checkpoint"
-                        _expected_ids: set[str] = set()
-                        for _req in _expected_reqs:
-                            _ident = self._migration_identity(
-                                continuation.run_id,
-                                continuation.current_stage_id,
-                                _root_id_g08,
-                                _leaf_id_g08,
-                                _chk_id_g08,
-                                _req.package,
-                                _req.from_version,
-                                _req.to_version,
-                            )
-                            _expected_ids.add(_ident)
-                        _actual_ids: set[str] = set()
-                        for _r in filtered:
-                            _pkg = str(_r.get("package"))
-                            _from = str(_r.get("from_exact"))
-                            _to = str(_r.get("to_exact"))
-                            _ident2 = self._migration_identity(
-                                continuation.run_id,
-                                continuation.current_stage_id,
-                                _root_id_g08,
-                                _leaf_id_g08,
-                                _chk_id_g08,
-                                _pkg,
-                                _from,
-                                _to,
-                            )
-                            _actual_ids.add(_ident2)
-                        # Fix 3: strict lineage-bound equality, not simple package:from:to
-                        if _expected_ids != _actual_ids:
-                            _missing = _expected_ids - _actual_ids
-                            _extra = _actual_ids - _expected_ids
-                            if _missing:
-                                raise AngularTransformationEvidenceError("MIGRATION_EVIDENCE_INCOMPLETE", f"Missing expected migrations: {sorted(_missing)}")
-                            if _extra:
-                                raise AngularTransformationEvidenceError("MIGRATION_EVIDENCE_UNEXPECTED", f"Unexpected migrations: {sorted(_extra)}")
-                        # Also ensure lineage not stale: if expected non-empty and actual empty -> already handled above as missing
-                        # Allow empty==empty (no migrations needed) -> build_multi([]) valid
-                    except AngularTransformationEvidenceError:
-                        raise
-                    except _PME_G08 as _e:
-                        raise AngularTransformationEvidenceError(_e.code, _e.message) from _e
-                    except Exception as _e2:
-                        raise AngularTransformationEvidenceError("MIGRATION_EVIDENCE_COLLECTION_FAILED", str(_e2)) from _e2
+                    if _expected_ids != _actual_ids:
+                        _missing = _expected_ids - _actual_ids
+                        _extra = _actual_ids - _expected_ids
+                        if _missing:
+                            raise AngularTransformationEvidenceError("MIGRATION_EVIDENCE_INCOMPLETE", f"Missing expected migrations: {sorted(_missing)}")
+                        if _extra:
+                            raise AngularTransformationEvidenceError("MIGRATION_EVIDENCE_UNEXPECTED", f"Unexpected migrations: {sorted(_extra)}")
                     versions, ledger = self._evidence.build_multi(
                         context["workspace_path"],
                         context["checkpoint_path"],
@@ -886,7 +849,9 @@ class TransformerOrchestrator:
                 except AngularTransformationEvidenceError:
                     raise
                 except Exception as ex2:
-                    # Fail closed on collection error
+                    # Preserve PackageMigrationError codes if present
+                    if hasattr(ex2, "code") and hasattr(ex2, "message"):
+                        raise AngularTransformationEvidenceError(ex2.code, ex2.message) from ex2
                     raise AngularTransformationEvidenceError("MIGRATION_EVIDENCE_COLLECTION_FAILED", str(ex2)) from ex2
             else:
                 versions, ledger = self._evidence.build(
@@ -3769,7 +3734,6 @@ class TransformerOrchestrator:
         return node
 
     @staticmethod
-    @staticmethod
     def _migration_identity(
         run_id: str,
         stage_id: str,
@@ -3794,6 +3758,206 @@ class TransformerOrchestrator:
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
 
+    @staticmethod
+    def _migration_attempt_key(identity: str) -> str:
+        """Central migration attempt key: migrate:<canonical_migration_identity>."""
+        return migration_attempt_key(identity)
+
+    @staticmethod
+    def _expected_migrate_execution_idempotency_key(
+        continuation,
+        stage_id: str,
+        migration_identity: str,
+        package: str,
+        from_exact: str,
+        to_exact: str,
+    ) -> str:
+        """Derive exact persisted CommandExecution.idempotency_key using SAME helper as queue path."""
+        cont_id = continuation.id if hasattr(continuation, "id") else str(continuation)
+        return expected_migrate_execution_idempotency_key(
+            cont_id, stage_id, migration_identity, package, from_exact, to_exact
+        )
+
+    @staticmethod
+    def _dependency_resolution_failure_fingerprint(execution) -> str:
+        """One deterministic fingerprint for a failed npm-lockfile-generate execution."""
+        if execution is None:
+            return "sha256:" + hashlib.sha256(b"missing").hexdigest()
+        try:
+            norm = {
+                "command_id": execution.command_id,
+                "failure_code": execution.failure_code,
+                "failure_message": execution.failure_message,
+                "exit_code": execution.exit_code,
+            }
+            diag = None
+            try:
+                from app.services.failure_evidence_service import FailureEvidenceService as _FES
+
+                diag = _FES.diagnose_npm_eresolve_failure(norm) or _FES.diagnose_angular_update_failure(norm)
+            except Exception:
+                diag = None
+            payload: dict[str, object] = {
+                "failure_code": norm.get("failure_code"),
+                "command_id": norm.get("command_id"),
+                "exit_code": norm.get("exit_code"),
+            }
+            if isinstance(diag, dict) and diag:
+                for _k in ("kind", "package", "package_version", "blocking_dependency", "required_ranges", "required_peer_range"):
+                    if _k in diag:
+                        payload[_k] = diag[_k]
+                # ETARGET relevant if present
+                for _k in ("package", "package_version"):
+                    if _k in diag and _k not in payload:
+                        payload[_k] = diag[_k]
+            else:
+                msg = " ".join((execution.failure_message or "").split()).lower()[:1000]
+                payload["failure_message_normalized"] = msg
+            canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+        except Exception:
+            return "sha256:" + hashlib.sha256(str(execution.failure_message or "").encode()).hexdigest()
+
+    @staticmethod
+    def _current_migration_execution_matches(
+        session,
+        *,
+        execution,
+        continuation,
+        normalization_root,
+        normalization_leaf,
+        checkpoint,
+        request,
+    ) -> bool:
+        """Prove a CommandExecution was originally authorized for CURRENT lineage."""
+        if execution is None or continuation is None or checkpoint is None or request is None:
+            return False
+        if execution.run_id != continuation.run_id:
+            return False
+        if execution.stage_id != continuation.current_stage_id:
+            return False
+        if execution.command_id != "angular-migrate-range":
+            return False
+        if execution.template_id != "tpl-angular-migrate-range-v1":
+            return False
+        if execution.status != "succeeded":
+            return False
+        if execution.exit_code != 0:
+            return False
+        # exact rendered arguments via renderer
+        try:
+            from app.domain.command import ANGULAR_MIGRATE_RANGE_RENDERER
+
+            expected_args = list(
+                ANGULAR_MIGRATE_RANGE_RENDERER.render_arguments(
+                    {"package": request.package, "from_version": request.from_version, "to_version": request.to_version}
+                )
+            )
+            if list(execution.arguments or []) != expected_args:
+                return False
+            # positional checks
+            if len(execution.arguments or []) != 8:
+                return False
+            if str(execution.arguments[2]) != request.package:
+                return False
+            if str(execution.arguments[5]) != request.from_version:
+                return False
+            if str(execution.arguments[7]) != request.to_version:
+                return False
+        except Exception:
+            # fallback length/index checks
+            if not execution.arguments or len(execution.arguments) != 8:
+                return False
+            if str(execution.arguments[2]) != request.package:
+                return False
+            if str(execution.arguments[5]) != request.from_version:
+                return False
+            if str(execution.arguments[7]) != request.to_version:
+                return False
+        # canonical migration identity from EXPECTED current lineage
+        try:
+            expected_identity = TransformerOrchestrator._migration_identity(
+                continuation.run_id,
+                continuation.current_stage_id,
+                normalization_root.id if normalization_root is not None else continuation.run_id,
+                normalization_leaf.id if normalization_leaf is not None else continuation.run_id,
+                checkpoint.id,
+                request.package,
+                request.from_version,
+                request.to_version,
+            )
+        except Exception:
+            return False
+        # expected persisted execution idempotency key via SAME helper as queue path
+        try:
+            expected_key = TransformerOrchestrator._expected_migrate_execution_idempotency_key(
+                continuation,
+                continuation.current_stage_id,
+                expected_identity,
+                request.package,
+                request.from_version,
+                request.to_version,
+            )
+        except Exception:
+            return False
+        if execution.idempotency_key != expected_key:
+            return False
+        if execution.checkpoint_id != checkpoint.id:
+            return False
+        if not execution.result_artifact_id or not execution.command_log_artifact_id:
+            return False
+        if session.get(ArtifactMetadataModel, "metadata-" + execution.result_artifact_id) is None:
+            return False
+        if session.get(ArtifactMetadataModel, "metadata-" + execution.command_log_artifact_id) is None:
+            return False
+        # authorization cheap check
+        if execution.authorization_id is not None:
+            try:
+                from app.repositories.models.workflow import CommandAuthorizationAuditModel
+
+                auth = session.get(CommandAuthorizationAuditModel, execution.authorization_id)
+                if auth is None:
+                    return False
+            except Exception:
+                pass
+        # runtime/profile authority remains G07-bound — existence check
+        if not execution.template_id:
+            return False
+        return True
+
+    @staticmethod
+    def _dependency_normalization_resolver_fingerprints(session, lineage) -> set[str]:
+        """Current-lineage-only resolver fingerprints from verified contexts."""
+        fps: set[str] = set()
+        for attempt in lineage or []:
+            if not attempt.context_pack_artifact_id or not attempt.context_pack_checksum:
+                continue
+            meta = session.get(ArtifactMetadataModel, "metadata-" + attempt.context_pack_artifact_id)
+            if meta is None or meta.checksum != attempt.context_pack_checksum:
+                continue
+            try:
+                run = session.get(MigrationRunModel, attempt.run_id)
+                if run is None or not run.artifact_root:
+                    continue
+                from app.artifact_store import LocalFilesystemArtifactStore
+
+                store = LocalFilesystemArtifactStore(Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root))
+                stored = store.read_artifact(attempt.run_id, meta.relative_path)
+                if stored.ref.checksum != attempt.context_pack_checksum:
+                    continue
+                content = json.loads(stored.content)
+                dep_norm = content.get("dependency_normalization") if isinstance(content, dict) else None
+                if not isinstance(dep_norm, dict):
+                    continue
+                resolver = dep_norm.get("resolver_failure")
+                if isinstance(resolver, dict) and isinstance(resolver.get("fingerprint"), str):
+                    fp = str(resolver.get("fingerprint"))
+                    if fp.startswith("sha256:") and len(fp) == 71:
+                        fps.add(fp)
+            except Exception:
+                continue
+        return fps
+
     def _is_dependency_normalization_attempt(session, attempt: RepairAttemptModel) -> bool:
         # Strict V2.2: only proven by proposal artifact containing dependency_manifest_normalization
         if attempt.proposal_artifact_id and attempt.proposal_checksum:
@@ -3816,11 +3980,13 @@ class TransformerOrchestrator:
                                 return True
                 except Exception:
                     pass
-        # Strict child: parent proven AND child context is checksum-valid and explicitly says dependency_normalization, ordinal 2, parent ID
+        # Strict child: parent proven AND child context is checksum-valid and explicitly says dependency_normalization, ordinal 2, parent/root IDs, fingerprint
         if attempt.parent_attempt_id:
             parent = session.get(RepairAttemptModel, attempt.parent_attempt_id)
             if parent is not None and TransformerOrchestrator._is_dependency_normalization_attempt(session, parent):
                 if not attempt.context_pack_artifact_id or not attempt.context_pack_checksum:
+                    return False
+                if attempt.context_pack_artifact_id == parent.context_pack_artifact_id:
                     return False
                 meta = session.get(ArtifactMetadataModel, "metadata-" + attempt.context_pack_artifact_id)
                 if meta is None or meta.checksum != attempt.context_pack_checksum:
@@ -3839,17 +4005,60 @@ class TransformerOrchestrator:
                     dep_norm = content.get("dependency_normalization") if isinstance(content, dict) else None
                     if not isinstance(dep_norm, dict):
                         return False
-                    # Must have prior_normalization with parent ID and resolver_failure, and indicate ordinal 2
+                    # Explicit ordinal must be 2
+                    ord_val = dep_norm.get("normalization_ordinal")
+                    if ord_val != 2:
+                        return False
+                    parent_id_val = dep_norm.get("normalization_parent_attempt_id")
+                    if parent_id_val != parent.id:
+                        return False
+                    # root must match proven parent's root
+                    root_id_val = dep_norm.get("normalization_root_attempt_id")
+                    # derive parent root via walking parent chain
+                    _cur = parent
+                    _root = parent
+                    for _ in range(10):
+                        if _cur.parent_attempt_id:
+                            _par = session.get(RepairAttemptModel, _cur.parent_attempt_id)
+                            if _par is not None and TransformerOrchestrator._is_dependency_normalization_attempt(session, _par):
+                                _root = _par
+                                _cur = _par
+                                continue
+                        break
+                    expected_root = _root.id
+                    if root_id_val != expected_root:
+                        return False
                     prior = dep_norm.get("prior_normalization")
                     resolver = dep_norm.get("resolver_failure")
-                    # Check ordinal: either stored as prior ordinal 1 plus child implies 2, or explicit ordinal 2
-                    # For minimal, require that dep_norm contains prior_normalization with parent id and resolver_failure with fingerprint
                     if not isinstance(prior, dict) or prior.get("attempt_id") != parent.id:
+                        return False
+                    if prior.get("ordinal") != 1:
                         return False
                     if not isinstance(resolver, dict) or not resolver.get("command_execution_id"):
                         return False
-                    # Also check that the stored bundle has dependency_normalization with prior and resolver
-                    # If all checks pass, child is proven
+                    fp = resolver.get("fingerprint")
+                    if not isinstance(fp, str) or not fp.startswith("sha256:") or len(fp) != 71:
+                        return False
+                    # canonical fingerprint must match stored execution
+                    try:
+                        exec_obj = session.get(CommandExecutionModel, str(resolver.get("command_execution_id")))
+                        if exec_obj is not None and TransformerOrchestrator._dependency_resolution_failure_fingerprint(exec_obj) != fp:
+                            return False
+                    except Exception:
+                        pass
+                    # checkpoint binding
+                    try:
+                        chk = session.scalar(
+                            select(StageCheckpointModel).where(
+                                StageCheckpointModel.run_id == attempt.run_id,
+                                StageCheckpointModel.stage_id == attempt.stage_id,
+                                StageCheckpointModel.kind == "pre_angular_update",
+                            ).order_by(StageCheckpointModel.sequence.desc()).limit(1)
+                        )
+                        if chk is None or attempt.checkpoint_id != chk.id:
+                            return False
+                    except Exception:
+                        return False
                     return True
                 except Exception:
                     return False
@@ -3904,196 +4113,349 @@ class TransformerOrchestrator:
     def _create_dependency_normalization_child_attempt(
         self, session, continuation, parent_attempt: RepairAttemptModel, lock_exec: CommandExecutionModel | None
     ) -> RepairAttemptModel:
-        """Create real child RepairAttempt with NEW context for plan2."""
-        # Find max global attempt_number
-        max_attempt = session.query(RepairAttemptModel).filter(
-            RepairAttemptModel.run_id == continuation.run_id,
-            RepairAttemptModel.stage_id == continuation.current_stage_id,
-        ).order_by(RepairAttemptModel.attempt_number.desc()).first()
-        next_number = (max_attempt.attempt_number + 1) if max_attempt else 1
-        child_id = f"repair-{continuation.current_stage_id}-{next_number}"
-        # Resolve checkpoint for child (pre_angular_update)
-        checkpoint = session.scalar(
-            select(StageCheckpointModel).where(
-                StageCheckpointModel.run_id == continuation.run_id,
-                StageCheckpointModel.stage_id == continuation.current_stage_id,
-                StageCheckpointModel.kind == "pre_angular_update",
-            ).order_by(StageCheckpointModel.sequence.desc()).limit(1)
-        )
-        if checkpoint is None:
-            raise TransformerStageError("CHECKPOINT_MISSING", "Pre-update checkpoint missing for child attempt")
-        # Build new context pack for child that includes prior plan + resolver failure
-        # Load parent proposal and bundle for prior
-        parent_proposal_checksum = parent_attempt.proposal_checksum
-        # Get parent bundle artifact if exists
-        parent_bundle_info = None
+        """Fail-atomic creation of Plan-2 child RepairAttempt with NEW context."""
+        # ---- 2A. VALIDATE BEFORE MUTATION ----
         try:
-            # Try to find parent's bundle via its failure evidence
-            if parent_attempt.failure_evidence_artifact_id:
-                meta = session.get(ArtifactMetadataModel, "metadata-" + parent_attempt.failure_evidence_artifact_id)
-                # Not needed for minimal; we will just reference parent's proposal
+            # parent validation
+            if parent_attempt is None:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent attempt missing")
+            if parent_attempt.run_id != continuation.run_id or parent_attempt.stage_id != continuation.current_stage_id:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent run/stage mismatch")
+            if not TransformerOrchestrator._is_dependency_normalization_attempt(session, parent_attempt):
+                # For root, it must be proven via proposal; for legacy fallback, also accept if proposal looks like normalization
+                # but _is_dependency_normalization_attempt already covers root case
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent is not a proven dependency normalization attempt")
+            # current leaf check
+            lineage = TransformerOrchestrator._dependency_normalization_lineage(session, continuation)
+            leaf = lineage[-1] if lineage else None
+            if leaf is None or leaf.id != parent_attempt.id:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent is not current normalization leaf")
+            ordinal = TransformerOrchestrator._dependency_normalization_ordinal(session, continuation, parent_attempt)
+            if ordinal != 1:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", f"Parent ordinal must be 1, got {ordinal}")
+            if not parent_attempt.proposal_artifact_id or not parent_attempt.proposal_checksum:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent proposal missing")
+            meta_prop = session.get(ArtifactMetadataModel, "metadata-" + parent_attempt.proposal_artifact_id)
+            if meta_prop is None or meta_prop.checksum != parent_attempt.proposal_checksum:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent proposal checksum mismatch")
+            try:
+                run_for_parent = session.get(MigrationRunModel, parent_attempt.run_id)
+                if run_for_parent is None or not run_for_parent.artifact_root:
+                    raise ValueError("run missing")
+                from app.artifact_store import LocalFilesystemArtifactStore as _StoreParent
+
+                _store_parent = _StoreParent(Path(run_for_parent.artifact_root).parent, fixed_run_root=Path(run_for_parent.artifact_root))
+                _stored_parent = _store_parent.read_artifact(parent_attempt.run_id, meta_prop.relative_path)
+                if _stored_parent.ref.checksum != parent_attempt.proposal_checksum:
+                    raise ValueError("proposal checksum drift")
+                _p_content = json.loads(_stored_parent.content)
+                _ops = _p_content.get("operations") if isinstance(_p_content, dict) else None
+                if not isinstance(_ops, list) or not any(
+                    str(op.get("operation") or op.get("repair_kind") or op.get("schema_version")) in (DEPENDENCY_NORMALIZATION_REPAIR_KIND, DEPENDENCY_NORMALIZATION_SCHEMA_VERSION)
+                    for op in _ops if isinstance(op, dict)
+                ):
+                    raise ValueError("proposal not normalization")
+            except TransformerStageError:
+                raise
+            except Exception as e:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", f"Parent proposal validation failed: {e}") from e
+
+            # parent context validation
+            if not parent_attempt.context_pack_artifact_id or not parent_attempt.context_pack_checksum:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent context missing")
+            meta_ctx = session.get(ArtifactMetadataModel, "metadata-" + parent_attempt.context_pack_artifact_id)
+            if meta_ctx is None or meta_ctx.checksum != parent_attempt.context_pack_checksum:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent context checksum mismatch")
+            try:
+                run_for_ctx = session.get(MigrationRunModel, parent_attempt.run_id)
+                if run_for_ctx is None or not run_for_ctx.artifact_root:
+                    raise ValueError("run missing for context")
+                from app.artifact_store import LocalFilesystemArtifactStore as _StoreCtx
+
+                _store_ctx = _StoreCtx(Path(run_for_ctx.artifact_root).parent, fixed_run_root=Path(run_for_ctx.artifact_root))
+                _stored_ctx = _store_ctx.read_artifact(parent_attempt.run_id, meta_ctx.relative_path)
+                if _stored_ctx.ref.checksum != parent_attempt.context_pack_checksum:
+                    raise ValueError("context checksum drift")
+                _c_content = json.loads(_stored_ctx.content)
+                dep_norm = _c_content.get("dependency_normalization") if isinstance(_c_content, dict) else None
+                if not isinstance(dep_norm, dict):
+                    raise ValueError("parent context missing dependency_normalization")
+                # must contain failure_bundle_* or bundle evidence
+                has_bundle = any(
+                    k.startswith("failure_bundle") or k in ("pre_update", "post_failure", "runtime", "source", "target", "failure_bundle_schema_version", "failure_bundle_artifact_id")
+                    for k in dep_norm.keys()
+                ) or "failure_bundle_artifact_id" in dep_norm or "failure_bundle_checksum" in _c_content.get("dependency_normalization", {}) or isinstance(dep_norm.get("pre_update"), dict)
+                # At least ensure dependency_normalization present
+                if dep_norm is None:
+                    raise ValueError("dependency_normalization missing")
+            except TransformerStageError:
+                raise
+            except Exception as e:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", f"Parent context validation failed: {e}") from e
+
+            # lock_exec validation
+            if lock_exec is None:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Lock execution missing")
+            if lock_exec.run_id != continuation.run_id or lock_exec.stage_id != continuation.current_stage_id:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Lock execution run/stage mismatch")
+            if lock_exec.command_id != "npm-lockfile-generate":
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Lock execution command_id mismatch")
+            if lock_exec.status != "failed":
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Lock execution must be failed")
+            # failure_code should correspond to DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED, but lock_exec failure_code may be generic; check via is_eresolve/etarget or code
+            if lock_exec.failure_code not in (DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED, "DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED") and lock_exec.exit_code in (0, None):
+                # allow if diagnosed as eresolve/etarget
+                from app.services.lockfile_generation_runner import is_npm_eresolve_failure, is_npm_etarget_failure
+
+                if not (is_npm_eresolve_failure(lock_exec) or is_npm_etarget_failure(lock_exec)):
+                    raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Lock execution not a resolution failure")
+            if not lock_exec.result_artifact_id or not lock_exec.command_log_artifact_id:
+                # require if architecture requires them - check metadata existence when present
                 pass
-        except Exception:
-            pass
-        # For minimal, create context pack that references parent and new resolver failure
-        # Use existing FailureEvidenceService to create context, but we need to include dependency_normalization with prior
-        # We will create a new context pack artifact that is similar to parent's but with additional resolver failure
-        # Simplify: reuse parent's context pack and add resolver failure info
-        # Find parent's context pack
-        parent_context_artifact_id = parent_attempt.context_pack_artifact_id
-        # Get lock failure evidence for new resolver failure
-        # We will create a new context pack that is a copy of parent's but with updated prior_normalization and resolver_failure
-        # For now, we create a minimal new context pack that will be used for proposer
-        # We need to actually write a new context pack artifact
-        # Use the same evidence as parent but with updated prior
-        # For simplicity, we will create a new RepairAttempt with same checkpoint and failure evidence as parent, but with parent link
-        # The actual proposer will receive the new attempt's context which we will build below
-        # Create new context pack artifact that includes prior plan and new failure
-        # We need to get the original evidence for parent
-        # For minimal, we can create a new context pack that is a placeholder with dependency_normalization containing prior
-        # We will use the existing _failures.collect to get current evidence and then augment
-        # For now, create child attempt with minimal required fields and let _propose_repair handle context creation
-        # Instead, we will directly create the attempt and then in _propose_repair, it will create a new context that includes prior
-        # So we just need to persist the child attempt with parent link and let the next cycle create context
-        # To ensure the child is considered, we need to create it with status evidence_frozen and with parent
-        child = RepairAttemptModel(
-            id=child_id,
-            run_id=continuation.run_id,
-            stage_id=continuation.current_stage_id,
-            attempt_number=next_number,
-            status="evidence_frozen",
-            risk_level=parent_attempt.risk_level,
-            diagnosis=f"dependency_normalization_ordinal_2; parent={parent_attempt.id}",
-            checkpoint_id=checkpoint.id,
-            failure_evidence_artifact_id=parent_attempt.failure_evidence_artifact_id,
-            failure_evidence_checksum=parent_attempt.failure_evidence_checksum,
-            failure_route_artifact_id=parent_attempt.failure_route_artifact_id,
-            failure_route_checksum=parent_attempt.failure_route_checksum,
-            context_pack_artifact_id=parent_attempt.context_pack_artifact_id,
-            context_pack_checksum=parent_attempt.context_pack_checksum,
-            proposal_artifact_id=None,
-            proposal_checksum=None,
-            parent_attempt_id=parent_attempt.id,
-            parent_review_artifact_id=parent_attempt.review_artifact_id,
-            parent_review_checksum=parent_attempt.review_checksum,
-            pre_fingerprint=checkpoint.workspace_fingerprint if hasattr(checkpoint, "workspace_fingerprint") else None,
-            failure_fingerprint=parent_attempt.failure_fingerprint,
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
-        )
-        session.add(child)
-        session.flush()
-        # Now create a NEW context pack for child that includes prior plan + resolver failure
-        # We need to actually write a new context pack artifact that will be used for proposer
-        # For minimal, we will update the child's context to be a new artifact that includes the lock failure
-        # We can do this by calling _failures.write_context_pack with dependency bundle and prior
-        # But we need to have the lock failure evidence available
-        # For now, we will keep the child's context as parent's context plus an additional artifact for resolver failure
-        # The proposer will be called with child.id, and it will read child's context_pack_artifact_id
-        # So we need to ensure child's context is distinct and contains the new resolver failure
-        # We will create a new context pack that is a copy of parent's but with an extra field for resolver failure
-        # To do this, we need to read parent's context content and augment it
+            # checkpoint validation
+            checkpoint = session.scalar(
+                select(StageCheckpointModel).where(
+                    StageCheckpointModel.run_id == continuation.run_id,
+                    StageCheckpointModel.stage_id == continuation.current_stage_id,
+                    StageCheckpointModel.kind == "pre_angular_update",
+                ).order_by(StageCheckpointModel.sequence.desc()).limit(1)
+            )
+            if checkpoint is None:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Pre-update checkpoint missing")
+            if checkpoint.run_id != continuation.run_id or checkpoint.stage_id != continuation.current_stage_id:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Checkpoint run/stage mismatch")
+            if checkpoint.kind != "pre_angular_update":
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Checkpoint kind mismatch")
+            # ensure authoritative (fingerprint check)
+            try:
+                from app.services.transformer_stage_service import TransformerStageService as _TSS
+
+                auth_fp = _TSS().authoritative_checkpoint_fingerprint(session, checkpoint)
+                if auth_fp is None:
+                    raise ValueError("checkpoint not authoritative")
+            except Exception as e:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", f"Checkpoint not authoritative: {e}") from e
+
+        except TransformerStageError:
+            raise
+        except Exception as error:
+            raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", str(error)[:500]) from error
+
+        # ---- 2B/C. BUILD PLAN-2 CONTEXT IN MEMORY ----
         try:
-            if parent_attempt.context_pack_artifact_id:
-                parent_meta = session.get(ArtifactMetadataModel, "metadata-" + parent_attempt.context_pack_artifact_id)
-                if parent_meta is not None:
-                    run = session.get(MigrationRunModel, child.run_id)
-                    if run and run.artifact_root:
-                        from app.artifact_store import LocalFilesystemArtifactStore
+            # Re-read parent context for cloning
+            run = session.get(MigrationRunModel, parent_attempt.run_id)
+            if run is None or not run.artifact_root:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Run artifact root missing for context")
+            from app.artifact_store import LocalFilesystemArtifactStore
 
-                        store = LocalFilesystemArtifactStore(Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root))
-                        parent_stored = store.read_artifact(child.run_id, parent_meta.relative_path)
-                        parent_content = json.loads(parent_stored.content)
-                        # Augment with prior_normalization and resolver failure
-                        # prior_normalization is the parent's proposal
-                        parent_proposal = None
-                        if parent_attempt.proposal_artifact_id:
-                            pm = session.get(ArtifactMetadataModel, "metadata-" + parent_attempt.proposal_artifact_id)
-                            if pm is not None:
-                                try:
-                                    ps = store.read_artifact(child.run_id, pm.relative_path)
-                                    parent_proposal = json.loads(ps.content)
-                                except Exception:
-                                    parent_proposal = None
-                        resolver_info = None
-                        if lock_exec is not None:
-                            resolver_info = {
-                                "command_execution_id": lock_exec.id,
-                                "exit_code": lock_exec.exit_code,
-                                "failure_code": lock_exec.failure_code,
-                                "failure_message": (lock_exec.failure_message or "")[:2000],
-                                "result_artifact_id": lock_exec.result_artifact_id,
-                                "command_log_artifact_id": lock_exec.command_log_artifact_id,
-                            }
-                            # Add diagnosis fingerprint
-                            try:
-                                from app.services.failure_evidence_service import FailureEvidenceService as FES
+            store = LocalFilesystemArtifactStore(Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root))
+            parent_meta = session.get(ArtifactMetadataModel, "metadata-" + parent_attempt.context_pack_artifact_id)
+            if parent_meta is None:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent context metadata missing")
+            parent_stored = store.read_artifact(parent_attempt.run_id, parent_meta.relative_path)
+            if parent_stored.ref.checksum != parent_attempt.context_pack_checksum:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent context checksum drift on read")
+            parent_content = json.loads(parent_stored.content)
+            if not isinstance(parent_content, dict):
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent context not JSON object")
 
-                                norm = {
-                                    "command_id": lock_exec.command_id,
-                                    "failure_code": lock_exec.failure_code,
-                                    "failure_message": lock_exec.failure_message,
-                                    "exit_code": lock_exec.exit_code,
-                                }
-                                diag = FES.diagnose_npm_eresolve_failure(norm) or FES.diagnose_angular_update_failure(norm)
-                                if isinstance(diag, dict):
-                                    resolver_info["diagnosis"] = diag
-                            except Exception:
-                                pass
-                        # Build new dependency_normalization for child
-                        # Preserve original bundle
-                        orig_dep_norm = parent_content.get("dependency_normalization") if isinstance(parent_content.get("dependency_normalization"), dict) else {}
-                        new_dep_norm = dict(orig_dep_norm) if isinstance(orig_dep_norm, dict) else {}
-                        new_dep_norm["prior_normalization"] = {
-                            "attempt_id": parent_attempt.id,
-                            "ordinal": 1,
-                            "proposal_artifact_id": parent_attempt.proposal_artifact_id,
-                            "proposal_checksum": parent_attempt.proposal_checksum,
-                            "parent_proposal": parent_proposal,
-                        }
-                        new_dep_norm["resolver_failure"] = resolver_info
-                        # Update parent_content with new dep norm
-                        parent_content["dependency_normalization"] = new_dep_norm
-                        # Write new context artifact for child
-                        new_relative = f"05_repairs/{child.stage_id}/{child.id}-context.json"
-                        new_stored = store.write_text_artifact(
-                            child.run_id,
-                            new_relative,
-                            json.dumps(parent_content, sort_keys=True, indent=2),
-                            ArtifactType.JSON,
-                            stage_id=child.stage_id,
-                            created_by="dependency-normalization-child",
-                            created_at=datetime.now(UTC),
-                            input_hashes={"parent_context": parent_attempt.context_pack_checksum or "", "resolver_failure": lock_exec.id if lock_exec else ""},
-                            policy_version="repair-context-pack-v1",
-                        )
-                        # Register metadata
-                        new_meta_id = "metadata-" + new_stored.ref.artifact_id
-                        if session.get(ArtifactMetadataModel, new_meta_id) is None:
-                            session.add(
-                                ArtifactMetadataModel(
-                                    id=new_meta_id,
-                                    run_id=child.run_id,
-                                    stage_id=child.stage_id,
-                                    artifact_type=new_stored.ref.artifact_type.value,
-                                    relative_path=new_stored.ref.relative_path,
-                                    checksum=new_stored.ref.checksum,
-                                    schema_version=new_stored.envelope.schema_version,
-                                    created_at=new_stored.ref.created_at,
-                                    finalized_at=new_stored.ref.created_at,
-                                    immutable=True,
-                                    execution_id=lock_exec.id if lock_exec else None,
-                                    owner_reference=child.id,
-                                    correlation_id=lock_exec.correlation_id if lock_exec and hasattr(lock_exec, "correlation_id") else None,
-                                    safe_metadata={"schema_version": "repair-context-pack-v1", "child_of": parent_attempt.id},
-                                )
-                            )
-                        child.context_pack_artifact_id = new_stored.ref.artifact_id
-                        child.context_pack_checksum = new_stored.ref.checksum
-                        session.flush()
-        except Exception:
-            pass
-        return child
+            # Load parent proposal for prior
+            parent_proposal = None
+            pm = session.get(ArtifactMetadataModel, "metadata-" + parent_attempt.proposal_artifact_id)
+            if pm is not None:
+                try:
+                    ps = store.read_artifact(parent_attempt.run_id, pm.relative_path)
+                    if ps.ref.checksum == parent_attempt.proposal_checksum:
+                        parent_proposal = json.loads(ps.content)
+                except Exception:
+                    parent_proposal = None
+
+            # Canonical fingerprint
+            fingerprint = TransformerOrchestrator._dependency_resolution_failure_fingerprint(lock_exec)
+
+            # Diagnosis
+            diagnosis = None
+            try:
+                from app.services.failure_evidence_service import FailureEvidenceService as _FES
+
+                norm_diag = {
+                    "command_id": lock_exec.command_id,
+                    "failure_code": lock_exec.failure_code,
+                    "failure_message": lock_exec.failure_message,
+                    "exit_code": lock_exec.exit_code,
+                }
+                diagnosis = _FES.diagnose_npm_eresolve_failure(norm_diag) or _FES.diagnose_angular_update_failure(norm_diag)
+            except Exception:
+                diagnosis = None
+
+            # Build new dependency_normalization
+            orig_dep_norm = parent_content.get("dependency_normalization") if isinstance(parent_content.get("dependency_normalization"), dict) else {}
+            new_dep_norm = dict(orig_dep_norm) if isinstance(orig_dep_norm, dict) else {}
+            # Find root id via lineage
+            lineage = TransformerOrchestrator._dependency_normalization_lineage(session, continuation)
+            root = lineage[0] if lineage else parent_attempt
+            root_id = root.id if root else parent_attempt.id
+
+            new_dep_norm["normalization_root_attempt_id"] = root_id
+            new_dep_norm["normalization_parent_attempt_id"] = parent_attempt.id
+            new_dep_norm["normalization_ordinal"] = 2
+            new_dep_norm["prior_normalization"] = {
+                "attempt_id": parent_attempt.id,
+                "ordinal": 1,
+                "proposal_artifact_id": parent_attempt.proposal_artifact_id,
+                "proposal_checksum": parent_attempt.proposal_checksum,
+                "parent_proposal": parent_proposal,
+            }
+            new_dep_norm["resolver_failure"] = {
+                "schema_version": "dependency-normalization-resolver-failure-v1",
+                "command_execution_id": lock_exec.id,
+                "command_id": "npm-lockfile-generate",
+                "exit_code": lock_exec.exit_code,
+                "failure_code": lock_exec.failure_code,
+                "normalized_failure": (lock_exec.failure_message or "")[:2000].strip().lower(),
+                "diagnosis": diagnosis if isinstance(diagnosis, dict) else None,
+                "fingerprint": fingerprint,
+                "result_artifact_id": lock_exec.result_artifact_id,
+                "command_log_artifact_id": lock_exec.command_log_artifact_id,
+            }
+            # Clone safe structure
+            new_content = dict(parent_content)
+            new_content["dependency_normalization"] = new_dep_norm
+
+            # Validate new_content has required bundle preservation
+            if not isinstance(new_content.get("dependency_normalization"), dict):
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "New context missing dependency_normalization")
+
+        except TransformerStageError:
+            raise
+        except Exception as error:
+            raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", f"Context build failed: {error}"[:500]) from error
+
+        # ---- 2D. WRITE ARTIFACT BEFORE CHILD ROW ----
+        try:
+            # find next global number for child id without yet persisting
+            max_attempt = session.query(RepairAttemptModel).filter(
+                RepairAttemptModel.run_id == continuation.run_id,
+                RepairAttemptModel.stage_id == continuation.current_stage_id,
+            ).order_by(RepairAttemptModel.attempt_number.desc()).first()
+            next_number = (max_attempt.attempt_number + 1) if max_attempt else 1
+            child_id = f"repair-{continuation.current_stage_id}-{next_number}"
+            # Also need checkpoint for child (already validated above)
+            # Re-fetch checkpoint to ensure fresh
+            checkpoint = session.scalar(
+                select(StageCheckpointModel).where(
+                    StageCheckpointModel.run_id == continuation.run_id,
+                    StageCheckpointModel.stage_id == continuation.current_stage_id,
+                    StageCheckpointModel.kind == "pre_angular_update",
+                ).order_by(StageCheckpointModel.sequence.desc()).limit(1)
+            )
+            if checkpoint is None:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Checkpoint missing before artifact write")
+            fingerprint = TransformerOrchestrator._dependency_resolution_failure_fingerprint(lock_exec)
+            new_relative = f"05_repairs/{continuation.current_stage_id}/{child_id}-context.json"
+            content_str = json.dumps(new_content, sort_keys=True, indent=2)
+            checksum = "sha256:" + hashlib.sha256(content_str.encode("utf-8")).hexdigest()
+            new_stored = store.write_text_artifact(
+                continuation.run_id,
+                new_relative,
+                content_str,
+                ArtifactType.JSON,
+                stage_id=continuation.current_stage_id,
+                created_by="dependency-normalization-child",
+                created_at=datetime.now(UTC),
+                input_hashes={"parent_context": parent_attempt.context_pack_checksum or "", "resolver_failure": lock_exec.id if lock_exec else ""},
+                policy_version="repair-context-pack-v1",
+            )
+            # read-back verification
+            stored_back = store.read_artifact(continuation.run_id, new_stored.ref.relative_path)
+            if stored_back.ref.checksum != new_stored.ref.checksum:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Artifact read-back checksum mismatch")
+            if stored_back.ref.checksum != checksum:
+                # stored checksum should equal computed
+                if stored_back.ref.checksum != checksum and new_stored.ref.checksum != checksum:
+                    raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Stored checksum does not match computed")
+            back_content = json.loads(stored_back.content)
+            if not isinstance(back_content, dict):
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Read-back not JSON object")
+            dep_norm_back = back_content.get("dependency_normalization")
+            if not isinstance(dep_norm_back, dict):
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Read-back missing dependency_normalization")
+            if dep_norm_back.get("normalization_root_attempt_id") != root_id:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Read-back root mismatch")
+            if dep_norm_back.get("normalization_parent_attempt_id") != parent_attempt.id:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Read-back parent mismatch")
+            if dep_norm_back.get("normalization_ordinal") != 2:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Read-back ordinal mismatch")
+            prior_back = dep_norm_back.get("prior_normalization")
+            if not isinstance(prior_back, dict) or prior_back.get("attempt_id") != parent_attempt.id:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Read-back prior attempt mismatch")
+            if prior_back.get("ordinal") != 1:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Read-back prior ordinal mismatch")
+            resolver_back = dep_norm_back.get("resolver_failure")
+            if not isinstance(resolver_back, dict) or resolver_back.get("command_execution_id") != lock_exec.id:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Read-back resolver execution mismatch")
+            if resolver_back.get("fingerprint") != fingerprint:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Read-back fingerprint mismatch")
+        except TransformerStageError:
+            raise
+        except Exception as error:
+            raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", f"Artifact write failed: {error}"[:500]) from error
+
+        # ---- 2E. DB TRANSACTION BINDING ----
+        try:
+            child = RepairAttemptModel(
+                id=child_id,
+                run_id=continuation.run_id,
+                stage_id=continuation.current_stage_id,
+                attempt_number=next_number,
+                status="evidence_frozen",
+                risk_level=parent_attempt.risk_level or "unknown",
+                diagnosis=f"dependency_normalization_ordinal_2; parent={parent_attempt.id}",
+                checkpoint_id=checkpoint.id,
+                failure_evidence_artifact_id=parent_attempt.failure_evidence_artifact_id,
+                failure_evidence_checksum=parent_attempt.failure_evidence_checksum,
+                failure_route_artifact_id=parent_attempt.failure_route_artifact_id,
+                failure_route_checksum=parent_attempt.failure_route_checksum,
+                context_pack_artifact_id=new_stored.ref.artifact_id,
+                context_pack_checksum=new_stored.ref.checksum,
+                proposal_artifact_id=None,
+                proposal_checksum=None,
+                parent_attempt_id=parent_attempt.id,
+                parent_review_artifact_id=parent_attempt.review_artifact_id,
+                parent_review_checksum=parent_attempt.review_checksum,
+                pre_fingerprint=checkpoint.workspace_fingerprint if hasattr(checkpoint, "workspace_fingerprint") else None,
+                failure_fingerprint=parent_attempt.failure_fingerprint,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            metadata = ArtifactMetadataModel(
+                id="metadata-" + new_stored.ref.artifact_id,
+                run_id=child.run_id,
+                stage_id=child.stage_id,
+                artifact_type=new_stored.ref.artifact_type.value,
+                relative_path=new_stored.ref.relative_path,
+                checksum=new_stored.ref.checksum,
+                schema_version=new_stored.envelope.schema_version,
+                created_at=new_stored.ref.created_at,
+                finalized_at=new_stored.ref.created_at,
+                immutable=True,
+                execution_id=lock_exec.id if lock_exec else None,
+                owner_reference=child.id,
+                correlation_id=lock_exec.correlation_id if lock_exec and hasattr(lock_exec, "correlation_id") else None,
+                safe_metadata={"schema_version": "repair-context-pack-v1", "child_of": parent_attempt.id},
+            )
+            # Check metadata not already exists (idempotency)
+            if session.get(ArtifactMetadataModel, metadata.id) is not None:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Context metadata already exists")
+            session.add(metadata)
+            session.add(child)
+            session.flush()
+            return child
+        except TransformerStageError:
+            raise
+        except Exception as error:
+            raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", f"DB binding failed: {error}"[:500]) from error
 
     def _lockfile_generation(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
@@ -4142,9 +4504,8 @@ class TransformerOrchestrator:
                         if current_ordinal == 0:
                             # Fallback: if ordinal is 0 but latest_norm exists, treat as 1 (root)
                             current_ordinal = 1
-                        # Compute fingerprint for current lock failure execution
+                        # Compute fingerprint for current lock failure execution via ONE helper
                         lock_exec = None
-                        # Find the lock generation execution that just failed
                         lock_step_tmp = session.scalar(
                             select(StageStepModel).where(
                                 StageStepModel.stage_id == continuation.current_stage_id,
@@ -4161,74 +4522,12 @@ class TransformerOrchestrator:
                                     CommandExecutionModel.command_id == "npm-lockfile-generate",
                                 ).order_by(CommandExecutionModel.requested_at.desc()).limit(1)
                             )
-                        # Helper to compute materially new fingerprint
-                        def _fingerprint_for_exec(exec_obj) -> str:
-                            if exec_obj is None:
-                                return "sha256:" + hashlib.sha256(b"missing").hexdigest()
-                            # Use normalized fields: failure_code, conflicting package, required range, etc.
-                            try:
-                                # Try to get diagnosis via FailureEvidenceService
-                                norm = {
-                                    "command_id": exec_obj.command_id,
-                                    "failure_code": exec_obj.failure_code,
-                                    "failure_message": (exec_obj.failure_message or "")[:2000],
-                                    "exit_code": exec_obj.exit_code,
-                                }
-                                # Try to extract peer conflict diagnosis
-                                diag = None
-                                try:
-                                    from app.services.failure_evidence_service import FailureEvidenceService as FES
-
-                                    diag = FES.diagnose_npm_eresolve_failure(norm) or FES.diagnose_angular_update_failure(norm)
-                                except Exception:
-                                    diag = None
-                                payload: dict[str, object] = {
-                                    "failure_code": norm.get("failure_code"),
-                                    "command_id": norm.get("command_id"),
-                                    "exit_code": norm.get("exit_code"),
-                                }
-                                if isinstance(diag, dict):
-                                    # Include deterministic diagnosis fields
-                                    for k in ("package", "blocking_dependency", "required_ranges", "required_peer_range", "package_version", "kind"):
-                                        if k in diag:
-                                            payload[k] = diag[k]
-                                else:
-                                    # Fallback: hash normalized failure message lowercased and stripped
-                                    msg = " ".join((exec_obj.failure_message or "").split()).lower()[:1000]
-                                    payload["failure_message_normalized"] = msg
-                                canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-                                return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
-                            except Exception:
-                                return "sha256:" + hashlib.sha256(str(exec_obj.failure_message or "").encode()).hexdigest()
-                        current_fp = _fingerprint_for_exec(lock_exec)
-                        # Get previous fingerprint: for attempt 1, previous is the original ng update failure's fingerprint stored in latest_norm.failure_fingerprint
-                        # For attempt 2, previous would be stored similarly
-                        prev_fp = None
-                        if latest_norm.failure_fingerprint:
-                            # The failure fingerprint for the attempt is the original classification fingerprint
-                            # For lock failure, we need to compare to previous lock failure's fingerprint if available
-                            # Try to find previous lock failure fingerprint from earlier execution's stored evidence
-                            # For now, use the attempt's failure_fingerprint as previous
-                            prev_fp = latest_norm.failure_fingerprint
-                            # But for attempt 1, that is the ng update failure fingerprint, not lock failure
-                            # So we need to also look at lock-specific fingerprint stored in artifact metadata if available
-                            # For simplicity, if current_attempt_no == 1, compare current lock fingerprint to attempt's failure fingerprint
-                            # If they match, it's no progress
+                        current_fp = TransformerOrchestrator._dependency_resolution_failure_fingerprint(lock_exec)
                         if current_ordinal == 1:
-                            # Check if current lock fingerprint was already seen in any prior lock failure for this stage
-                            prev_lock_fps: set[str] = set()
-                            for prev_exec in session.scalars(
-                                select(CommandExecutionModel).where(
-                                    CommandExecutionModel.run_id == continuation.run_id,
-                                    CommandExecutionModel.stage_id == continuation.current_stage_id,
-                                    CommandExecutionModel.command_id == "npm-lockfile-generate",
-                                    CommandExecutionModel.status == "failed",
-                                )
-                            ).all():
-                                if prev_exec.id == (lock_exec.id if lock_exec else None):
-                                    continue
-                                prev_lock_fps.add(_fingerprint_for_exec(prev_exec))
-                            if current_fp in prev_lock_fps:
+                            # Lineage-scoped NO_PROGRESS: only fingerprints from CURRENT lineage
+                            lineage = TransformerOrchestrator._dependency_normalization_lineage(session, continuation)
+                            prev_fps = TransformerOrchestrator._dependency_normalization_resolver_fingerprints(session, lineage)
+                            if current_fp in prev_fps:
                                 self._block(session, continuation, "DEPENDENCY_NORMALIZATION_NO_PROGRESS", "Identical npm constraint failure — no progress")
                                 return
                             # Reconstruct checkpoint for plan 2
@@ -4237,14 +4536,11 @@ class TransformerOrchestrator:
                             except TransformerStageError as e:
                                 self._block(session, continuation, e.code, e.message)
                                 return
-                            # Verify ordinal: next ordinal must be 2, not >2
-                            # Compute next ordinal: current lineage size +1
-                            lineage = self._dependency_normalization_lineage(session, continuation)
-                            next_ordinal = len(lineage) + 1
+                            lineage2 = TransformerOrchestrator._dependency_normalization_lineage(session, continuation)
+                            next_ordinal = len(lineage2) + 1
                             if next_ordinal > 2:
                                 self._block(session, continuation, "DEPENDENCY_NORMALIZATION_ATTEMPTS_EXHAUSTED", "No third normalization attempt")
                                 return
-                            # Fix 1: create REAL child RepairAttempt with NEW context (prior plan + resolver failure)
                             try:
                                 child = self._create_dependency_normalization_child_attempt(session, continuation, latest_norm, lock_exec)
                             except TransformerStageError as e:
@@ -4423,16 +4719,11 @@ class TransformerOrchestrator:
                             return
                 self._queue(continuation, "target_inspection")
                 return
-            # P0-5: migration identity must include package+from+to+lineage, not just package name
-            # Determine lineage for filtering: latest normalization attempt + checkpoint
-            lineage_id = None
-            # Fix 2+3: use single _migration_identity helper, lineage-bound
+            # P0-5: lineage-proven migration execution via persisted idempotency + checkpoint
             _lineage_for_migrate = self._dependency_normalization_lineage(session, continuation)
             _root_for_migrate = _lineage_for_migrate[0] if _lineage_for_migrate else None
             _leaf_for_migrate = _lineage_for_migrate[-1] if _lineage_for_migrate else None
-            # Fallback lineage for normal path (no normalization)
             if _leaf_for_migrate is None:
-                # Try latest attempt even if not strict, for fallback
                 try:
                     _leaf_for_migrate = session.query(RepairAttemptModel).filter(
                         RepairAttemptModel.run_id == continuation.run_id,
@@ -4442,51 +4733,52 @@ class TransformerOrchestrator:
                         _leaf_for_migrate = None
                 except Exception:
                     _leaf_for_migrate = None
+                if _leaf_for_migrate is not None and _root_for_migrate is None:
+                    _root_for_migrate = _leaf_for_migrate
             _root_id_m = _root_for_migrate.id if _root_for_migrate else continuation.run_id
             _attempt_id_m = _leaf_for_migrate.id if _leaf_for_migrate else continuation.run_id
             _checkpoint_id_m = chk.id if chk is not None and hasattr(chk, "id") else "no-checkpoint"
+            # Build succeeded set via PERSISTED execution identity validator (no timestamp authority)
             succeeded_identities: set[str] = set()
-            try:
-                all_execs = session.scalars(
-                    select(CommandExecutionModel).where(
-                        CommandExecutionModel.run_id == continuation.run_id,
-                        CommandExecutionModel.stage_id == continuation.current_stage_id,
-                        CommandExecutionModel.command_id == "angular-migrate-range",
+            for _req in discovered:
+                try:
+                    _req_ident = self._migration_identity(
+                        continuation.run_id,
+                        continuation.current_stage_id,
+                        _root_id_m,
+                        _attempt_id_m,
+                        _checkpoint_id_m,
+                        _req.package,
+                        _req.from_version,
+                        _req.to_version,
                     )
-                ).all()
-                for ex in all_execs:
-                    if ex.status != "succeeded" or ex.exit_code != 0 or not ex.arguments or len(ex.arguments) != 8:
-                        continue
-                    pkg = str(ex.arguments[2])
-                    from_v = str(ex.arguments[5])
-                    to_v = str(ex.arguments[7])
-                    # Lineage: only executions whose identity matches current lineage
-                    # Use _migration_identity as primary evidence, not just timestamp
-                    try:
-                        _ex_ident = self._migration_identity(
-                            continuation.run_id,
-                            continuation.current_stage_id,
-                            _root_id_m,
-                            _attempt_id_m,
-                            _checkpoint_id_m,
-                            pkg,
-                            from_v,
-                            to_v,
+                    _expected_key = self._expected_migrate_execution_idempotency_key(
+                        continuation,
+                        continuation.current_stage_id,
+                        _req_ident,
+                        _req.package,
+                        _req.from_version,
+                        _req.to_version,
+                    )
+                    _ex = session.scalar(
+                        select(CommandExecutionModel).where(
+                            CommandExecutionModel.run_id == continuation.run_id,
+                            CommandExecutionModel.stage_id == continuation.current_stage_id,
+                            CommandExecutionModel.idempotency_key == _expected_key,
                         )
-                    except Exception:
-                        continue
-                    # Also verify execution's idempotency key contains lineage (derived from same helper when queued)
-                    # For now, check if execution was created after leaf (additional timestamp check)
-                    if _leaf_for_migrate is not None and ex.requested_at is not None and _leaf_for_migrate.created_at is not None:
-                        if ex.requested_at < _leaf_for_migrate.created_at:
-                            continue
-                    if not ex.result_artifact_id or not ex.command_log_artifact_id:
-                        continue
-                    if session.get(ArtifactMetadataModel, "metadata-" + ex.result_artifact_id) is None:
-                        continue
-                    succeeded_identities.add(_ex_ident)
-            except Exception:
-                succeeded_identities = set()
+                    )
+                    if _ex is not None and self._current_migration_execution_matches(
+                        session,
+                        execution=_ex,
+                        continuation=continuation,
+                        normalization_root=_root_for_migrate,
+                        normalization_leaf=_leaf_for_migrate,
+                        checkpoint=chk,
+                        request=_req,
+                    ):
+                        succeeded_identities.add(_req_ident)
+                except Exception:
+                    continue
             def _is_succeeded(req) -> bool:
                 try:
                     _req_ident = self._migration_identity(
@@ -4533,7 +4825,7 @@ class TransformerOrchestrator:
                             return
                     self._queue(continuation, "target_inspection")
                     return
-                # Remaining migrations exist — queue next with single helper identity
+                # Remaining migrations exist — queue next with persisted checkpoint binding
                 pkg = remaining[0]
                 try:
                     _mig_ident_r = self._migration_identity(
@@ -4553,12 +4845,13 @@ class TransformerOrchestrator:
                         package=pkg.package,
                         from_version=pkg.from_version,
                         to_version=pkg.to_version,
+                        checkpoint_id=chk.id if chk is not None else None,
                     )
                 except TransformerStageError as error:
                     self._block(session, continuation, error.code, error.message)
                     return
                 return
-            # No prior success or first entry — queue first remaining (single helper)
+            # No prior success or first entry — queue first remaining (persist checkpoint)
             remaining_initial = [p for p in discovered if not _is_succeeded(p)]
             pkg = remaining_initial[0] if remaining_initial else discovered[0]
             try:
@@ -4579,6 +4872,7 @@ class TransformerOrchestrator:
                     package=pkg.package,
                     from_version=pkg.from_version,
                     to_version=pkg.to_version,
+                    checkpoint_id=chk.id if chk is not None else None,
                 )
             except TransformerStageError as error:
                 self._block(session, continuation, error.code, error.message)

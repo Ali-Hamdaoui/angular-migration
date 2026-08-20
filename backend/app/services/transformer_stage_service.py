@@ -688,11 +688,13 @@ class TransformerStageService:
         package: str = "@angular/core",
         from_version: str = "0.0.0",
         to_version: str = "0.0.0",
+        checkpoint_id: str | None = None,
     ):
         # P5 migrate-only: npx ng update <package> --migrate-only --from <from> --to <to>, NG_DISABLE_VERSION_CHECK=true
         # P0-2: dynamic bindings — stage plan authorizes the COMMAND TEMPLATE (tpl-angular-migrate-range-v1)
         # but execution binds exact package/from/to per request. Preserve template authority, validate
         # bindings via renderer, and ensure unique deterministic idempotency.
+        # checkpoint_id is the authoritative pre_angular_update checkpoint that anchors the migration lineage.
         from app.domain.command import ANGULAR_MIGRATE_RANGE_RENDERER
 
         # Validate bindings via renderer (exact semver, npm package name) — fail closed on bad input
@@ -710,6 +712,7 @@ class TransformerStageService:
             next_node="target_inspection",
             attempt_key=dynamic_key,
             parameter_bindings=bindings,
+            checkpoint_id=checkpoint_id,
         )
 
     def snapshot_workspace(self, workspace_path: str, stage_root: str, stage_id: str) -> StagePreparationResult:
