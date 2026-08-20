@@ -679,6 +679,26 @@ class TransformerStageService:
             attempt_key=attempt_key,
         )
 
+    def queue_migrate_packages(
+        self,
+        session,
+        continuation: TransformationContinuationModel,
+        *,
+        attempt_key: str,
+        package: str = "@angular/core",
+        from_version: str = "0.0.0",
+        to_version: str = "0.0.0",
+    ):
+        # P5 migrate-only: npx ng update <package> --migrate-only --from <from> --to <to>, NG_DISABLE_VERSION_CHECK=true
+        # ponytail: post-migration if package.json changed → one successor lock generation→npm ci→evidence→G08 else continue
+        return self._queue_group(
+            session,
+            continuation,
+            group="migrate_packages",
+            next_node="target_inspection",
+            attempt_key=attempt_key,
+        )
+
     def snapshot_workspace(self, workspace_path: str, stage_root: str, stage_id: str) -> StagePreparationResult:
         """Record a lightweight checkpoint of the one mutable stage workspace.
 

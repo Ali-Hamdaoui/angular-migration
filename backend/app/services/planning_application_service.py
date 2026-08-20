@@ -7,6 +7,23 @@ import json
 from collections.abc import Callable
 
 from app.domain.command import ANGULAR_INSTALLED_MIGRATION_RENDERER, ANGULAR_UPDATE_V5_RENDERER, TRANSFORMATION_COMMAND_CATALOGUE
+
+try:
+    from app.domain.command import ANGULAR_MIGRATE_RANGE_RENDERER
+except ImportError:  # frozen contract even if sibling absent
+    from app.domain.command import TransformationCommandDefinition
+
+    ANGULAR_MIGRATE_RANGE_RENDERER = TransformationCommandDefinition(
+        command_id="angular-migrate-range",
+        template_id="tpl-angular-migrate-range-v1",
+        executable="npx",
+        argument_patterns=("ng", "update", "{package}", "--migrate-only", "--from", "{from_version}", "--to", "{to_version}"),
+        executable_aliases=("npx.cmd",),
+        timeout_seconds=1800,
+        allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE", "NG_DISABLE_VERSION_CHECK"),
+        max_output_bytes=5_000_000,
+        description="Execute a governed migrate-only update for one package range",
+    )
 from app.domain.planning import (
     BuildSystemDecision,
     CommandTemplateReference,
@@ -84,6 +101,7 @@ class StageExecutionPlanService:
             "target_version_check": (self._command("angular-version-verify", request),),
             "lockfile_generation": (self._command("npm-lockfile-generate", request),),
             "final_install": (self._command("npm-ci-final", request),),
+            "migrate_packages": (self._command("angular-migrate-range", request, {"package": "@angular/core", "from_version": request.source_exact, "to_version": target_exact}),),
             "builds": (self._command("npm-script-build-production", request, {"build_script": request.resolved_scripts["build"], "build_configuration": "production"}),),
             "tests": (self._command("npm-script-test-ci", request, {"test_script": request.resolved_scripts["test"], "test_watch_flag": "--watch=false"}),),
             "lint": (self._command("npm-script-lint", request, {"lint_script": request.resolved_scripts["lint"]}),) if "lint" in request.resolved_scripts else (),
@@ -121,6 +139,9 @@ class StageExecutionPlanService:
             template_version = 5
         elif command_id == "angular-migrate-installed":
             definition = ANGULAR_INSTALLED_MIGRATION_RENDERER
+            template_version = 1
+        elif command_id == "angular-migrate-range":
+            definition = ANGULAR_MIGRATE_RANGE_RENDERER
             template_version = 1
         else:
             definition = TRANSFORMATION_COMMAND_CATALOGUE[command_id]
