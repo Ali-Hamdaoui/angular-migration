@@ -159,9 +159,10 @@ class LockfileCompatibilityService:
 
         The compatibility catalogue is the authority for Angular/CLI pins and for
         typescript/rxjs/zone.js when it declares exact versions.  When the
-        catalogue does not pin those, conservative per-major minimums are used as
-        documented fallbacks (``_DEFAULT_TYPESCRIPT_MINIMUMS`` plus rxjs>=6.5.3
-        and zone.js>=0.14.0), mirroring the Angular support envelope.
+        catalogue does not pin those, the catalogue's minimum, exclusive
+        maximum, and allowed-range alternatives are enforced.  No global
+        ``zone.js`` fallback is invented when the catalogue provides no
+        authoritative constraint.
         """
         entry = self._catalogue_entry(source_family, target_family, catalogue_version)
         target_major = _target_major(target_family)
@@ -184,18 +185,29 @@ class LockfileCompatibilityService:
         if entry.zone_js_exact:
             expected["zone.js"] = entry.zone_js_exact
         minimums: dict[str, str] = {}
+        exclusive_maximums: dict[str, str] = {}
+        allowed_ranges: dict[str, tuple[str, ...]] = {}
         if not entry.typescript_exact:
-            minimums["typescript"] = entry.typescript_minimum or _DEFAULT_TYPESCRIPT_MINIMUMS.get(target_major, "5.0.0")
+            if entry.typescript_minimum:
+                minimums["typescript"] = entry.typescript_minimum
+            elif _DEFAULT_TYPESCRIPT_MINIMUMS.get(target_major):
+                minimums["typescript"] = _DEFAULT_TYPESCRIPT_MINIMUMS[target_major]
+            if entry.typescript_exclusive_maximum:
+                exclusive_maximums["typescript"] = entry.typescript_exclusive_maximum
         if not entry.rxjs_exact:
-            minimums["rxjs"] = entry.rxjs_minimum or "6.5.3"
-        if not entry.zone_js_exact:
-            minimums["zone.js"] = "0.14.0"
+            if entry.rxjs_ranges:
+                allowed_ranges["rxjs"] = entry.rxjs_ranges
+            elif entry.rxjs_minimum:
+                minimums["rxjs"] = entry.rxjs_minimum
+        # Do not invent a Zone constraint when the catalogue provides none.
         return evaluate_lockfile_compatibility(
             dependency_set,
             source_family=source_family,
             target_family=target_family,
             catalogue_expected=expected,
             catalogue_minimums=minimums,
+            catalogue_exclusive_maximums=exclusive_maximums,
+            catalogue_allowed_ranges=allowed_ranges,
         )
 
     def _catalogue_entry(self, source_family: str, target_family: str, catalogue_version: str | None) -> CompatibilityCatalogueEntry:
