@@ -698,15 +698,42 @@ class CommandPolicyEngineService:
             return reject("WORKSPACE_NOT_APPROVED", "cwd alias does not match the approved workspace alias")
         if planned is not None and planned.get("network_profile") != request.network_profile:
             return reject("NETWORK_PROFILE_NOT_ALLOWED", "network profile is not explicitly permitted by the plan")
-        command_matches_plan = (
-            planned is not None
-            and (
-                planned.get("executable") != request.executable
-                or list(planned.get("arguments") or []) != list(request.arguments)
-                or planned.get("shell", False) is not False
-                or request.template_id is None
-            )
-        ) is False
+        # P0-2: dynamic migrate-only — plan authorizes the template, execution binds exact package/from/to
+        is_dynamic_migrate = (
+            request.command_id == "angular-migrate-range"
+            and request.template_id == "tpl-angular-migrate-range-v1"
+            and planned is not None
+            and planned.get("command_id") == "angular-migrate-range"
+            and planned.get("template_id") == "tpl-angular-migrate-range-v1"
+        )
+        if is_dynamic_migrate:
+            try:
+                from app.domain.command import ANGULAR_MIGRATE_RANGE_RENDERER
+
+                if len(request.arguments) != 8:
+                    return reject("MIGRATE_RANGE_ARGUMENTS_INVALID", "migrate-range arguments length must be 8")
+                # arguments: ng, update, {package}, --migrate-only, --from, {from_version}, --to, {to_version} = 8
+                pkg = request.arguments[2]
+                from_ver = request.arguments[5]
+                to_ver = request.arguments[7]
+                ANGULAR_MIGRATE_RANGE_RENDERER.render_arguments({"package": pkg, "from_version": from_ver, "to_version": to_ver})
+                if planned.get("executable") != request.executable or planned.get("shell", False) is not False or request.template_id is None:
+                    return reject("COMMAND_NOT_IN_APPROVED_PLAN", "migrate-range template identity mismatch")
+                command_matches_plan = True
+            except ValueError as ve:
+                return reject("MIGRATE_RANGE_BINDING_INVALID", str(ve))
+            except IndexError:
+                return reject("MIGRATE_RANGE_ARGUMENTS_INVALID", "migrate-range arguments malformed")
+        else:
+            command_matches_plan = (
+                planned is not None
+                and (
+                    planned.get("executable") != request.executable
+                    or list(planned.get("arguments") or []) != list(request.arguments)
+                    or planned.get("shell", False) is not False
+                    or request.template_id is None
+                )
+            ) is False
         if not command_matches_plan and supersedes_authorization_id and self._valid_angular_update_supersession(
             session,
             request,

@@ -381,6 +381,7 @@ class StageExecutionApplicationService:
         group="bootstrap_install",
         command_index=0,
         persisted_idempotency_key=None,
+        parameter_bindings_override=None,
     ):
         stage_plan = stage.stage_plan or {}
         references = (stage_plan.get("commands") or {}).get(group) or []
@@ -392,6 +393,23 @@ class StageExecutionApplicationService:
         if command_index >= len(references):
             raise StageExecutionError("STAGE_COMMAND_NOT_FOUND", f"{group} command index is invalid.")
         reference = references[command_index]
+        # P0-2: dynamic migrate-only bindings — keep template authority but bind exact package/from/to
+        if group == "migrate_packages" and isinstance(parameter_bindings_override, dict) and parameter_bindings_override:
+            # Validate that plan authorizes the migrate-range template at all
+            if reference.get("command_id") != "angular-migrate-range" or reference.get("template_id") != "tpl-angular-migrate-range-v1":
+                raise StageExecutionError("MIGRATE_RANGE_TEMPLATE_NOT_AUTHORIZED", "Stage plan does not authorize angular-migrate-range template")
+            from app.domain.command import ANGULAR_MIGRATE_RANGE_RENDERER
+
+            try:
+                rendered = list(ANGULAR_MIGRATE_RANGE_RENDERER.render_arguments(parameter_bindings_override))
+            except ValueError as error:
+                raise StageExecutionError("MIGRATE_RANGE_BINDING_INVALID", str(error)) from error
+            # Build dynamic reference preserving template identity but with exact bindings
+            reference = {
+                **reference,
+                "parameter_bindings": dict(parameter_bindings_override),
+                "arguments": rendered,
+            }
         profile_id = stage_plan.get("execution_profile_id")
         if not isinstance(profile_id, str) or not profile_id:
             raise StageExecutionError("EXECUTION_PROFILE_NOT_APPROVED", "The approved stage plan has no execution profile.")

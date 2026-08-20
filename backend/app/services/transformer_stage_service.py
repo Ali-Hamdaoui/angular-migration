@@ -690,13 +690,26 @@ class TransformerStageService:
         to_version: str = "0.0.0",
     ):
         # P5 migrate-only: npx ng update <package> --migrate-only --from <from> --to <to>, NG_DISABLE_VERSION_CHECK=true
-        # ponytail: post-migration if package.json changed → one successor lock generation→npm ci→evidence→G08 else continue
+        # P0-2: dynamic bindings — stage plan authorizes the COMMAND TEMPLATE (tpl-angular-migrate-range-v1)
+        # but execution binds exact package/from/to per request. Preserve template authority, validate
+        # bindings via renderer, and ensure unique deterministic idempotency.
+        from app.domain.command import ANGULAR_MIGRATE_RANGE_RENDERER
+
+        # Validate bindings via renderer (exact semver, npm package name) — fail closed on bad input
+        bindings = {"package": package, "from_version": from_version, "to_version": to_version}
+        try:
+            ANGULAR_MIGRATE_RANGE_RENDERER.render_arguments(bindings)
+        except ValueError as error:
+            raise TransformerStageError("MIGRATE_RANGE_BINDING_INVALID", str(error)) from error
+        # Use deterministic attempt key that encodes package/from/to so each request is unique
+        dynamic_key = f"{attempt_key}:{package}:{from_version}->{to_version}"
         return self._queue_group(
             session,
             continuation,
             group="migrate_packages",
             next_node="target_inspection",
-            attempt_key=attempt_key,
+            attempt_key=dynamic_key,
+            parameter_bindings=bindings,
         )
 
     def snapshot_workspace(self, workspace_path: str, stage_root: str, stage_id: str) -> StagePreparationResult:
@@ -1486,6 +1499,7 @@ class TransformerStageService:
         checkpoint_id=None,
         prompt_id=None,
         recovery_of=None,
+        parameter_bindings=None,
     ):
         run = session.get(MigrationRunModel, continuation.run_id)
         plan = session.get(MigrationPlanModel, continuation.plan_id)
@@ -1513,6 +1527,7 @@ class TransformerStageService:
                 request,
                 run.actor or "transformer",
                 group,
+                parameter_bindings_override=parameter_bindings,
             )
         except StageExecutionError as error:
             raise TransformerStageError(error.code, error.message) from error
