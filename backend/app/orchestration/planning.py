@@ -226,6 +226,7 @@ def run_planning_review_step(job_id: str, *, scope=session_scope) -> None:
             stage_plan=stage.stage_plan,
             artifact_set_checksum=gate.artifact_set_checksum,
             prerequisite_artifacts=list(prerequisites),
+            workspace_fingerprint=stage.input_workspace_fingerprint,
             plan_version=int(plan.plan["version"]),
             correlation_id=f"planning:{run_id}",
         ), actor)
