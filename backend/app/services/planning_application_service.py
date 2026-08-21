@@ -7,7 +7,7 @@ import json
 import re
 from collections.abc import Callable
 
-from app.domain.command import ANGULAR_INSTALLED_MIGRATION_RENDERER, ANGULAR_UPDATE_V5_RENDERER, TRANSFORMATION_COMMAND_CATALOGUE
+from app.domain.command import ANGULAR_INSTALLED_MIGRATION_RENDERER, ANGULAR_UPDATE_V5_RENDERER, ANGULAR_UPDATE_V6_RENDERER, TRANSFORMATION_COMMAND_CATALOGUE
 
 try:
     from app.domain.command import ANGULAR_MIGRATE_RANGE_RENDERER
@@ -123,9 +123,26 @@ class StageExecutionPlanService:
         recovery = RecoveryPolicy(policy_id=request.recovery_policy_id)
         repair = RepairPolicy(policy_id=request.repair_policy_id)
         forbidden = ForbiddenChangePolicy(policy_id="forbidden-modernization-v1")
+        angular_bindings = {"target_cli_exact": target_cli_exact, "target_exact": target_exact}
+        if all(
+            package in target_cohort
+            for package in ("typescript", "rxjs", "zone.js", "@angular-devkit/build-angular")
+        ):
+            angular_definition = ANGULAR_UPDATE_V6_RENDERER
+            angular_template_version = 6
+            angular_bindings.update(
+                {
+                    "target_typescript_exact": target_cohort["typescript"],
+                    "target_rxjs_exact": target_cohort["rxjs"],
+                    "target_zone_js_exact": target_cohort["zone.js"],
+                }
+            )
+        else:
+            angular_definition = ANGULAR_UPDATE_V5_RENDERER
+            angular_template_version = 5
         commands = {
             "bootstrap_install": (self._command("npm-ci-bootstrap", request),),
-            "angular_update": (self._command("angular-update-exact", request, {"target_cli_exact": target_cli_exact, "target_exact": target_exact}),),
+            "angular_update": (self._command("angular-update-exact", request, angular_bindings, definition=angular_definition, template_version=angular_template_version),),
             "target_version_check": (self._command("angular-version-verify", request),),
             "lockfile_generation": (self._command("npm-lockfile-generate", request),),
             "final_install": (self._command("npm-ci-final", request),),
@@ -161,10 +178,10 @@ class StageExecutionPlanService:
         return draft.model_copy(update={"checksum": checksum_model(draft)})
 
     @staticmethod
-    def _command(command_id, request, parameter_bindings=None):
+    def _command(command_id, request, parameter_bindings=None, *, definition=None, template_version=None):
         if command_id == "angular-update-exact":
-            definition = ANGULAR_UPDATE_V5_RENDERER
-            template_version = 5
+            definition = definition or ANGULAR_UPDATE_V5_RENDERER
+            template_version = template_version or 5
         elif command_id == "angular-migrate-installed":
             definition = ANGULAR_INSTALLED_MIGRATION_RENDERER
             template_version = 1

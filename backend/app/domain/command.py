@@ -403,6 +403,38 @@ ANGULAR_UPDATE_V5_RENDERER: Final[TransformationCommandDefinition] = Transformat
     description="Execute an exact Angular update through the workspace-local CLI (v5)",
 )
 
+# v6 binds every package in a proven target cohort to the same governed
+# `ng update` invocation.  The planner uses this only when the catalogue
+# supplies the complete cohort; older catalogue entries retain v5 behavior.
+ANGULAR_UPDATE_V6_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
+    command_id="angular-update-exact",
+    template_id="tpl-angular-update-exact-v6",
+    executable="npx",
+    argument_patterns=(
+        "ng",
+        "update",
+        "@angular/cli@{target_cli_exact}",
+        "@angular/core@{target_exact}",
+        "@angular/common@{target_exact}",
+        "@angular/compiler@{target_exact}",
+        "@angular/compiler-cli@{target_exact}",
+        "@angular/forms@{target_exact}",
+        "@angular/animations@{target_exact}",
+        "@angular/platform-browser@{target_exact}",
+        "@angular/platform-browser-dynamic@{target_exact}",
+        "@angular/router@{target_exact}",
+        "@angular-devkit/build-angular@{target_cli_exact}",
+        "typescript@{target_typescript_exact}",
+        "rxjs@{target_rxjs_exact}",
+        "zone.js@{target_zone_js_exact}",
+    ),
+    executable_aliases=("npx.cmd",),
+    timeout_seconds=1800,
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE", "NG_DISABLE_VERSION_CHECK"),
+    max_output_bytes=5_000_000,
+    description="Execute an exact Angular update bound to the approved target cohort (v6)",
+)
+
 ANGULAR_INSTALLED_MIGRATION_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
     command_id="angular-migrate-installed",
     template_id="tpl-angular-migrate-installed-v1",
@@ -620,6 +652,17 @@ _TRANSFORMATION_COMMAND_TEMPLATES: tuple[CommandTemplate, ...] = tuple(
         version=5,
         allowed_env_vars=ANGULAR_UPDATE_V5_RENDERER.allowed_env_vars,
         max_output_bytes=ANGULAR_UPDATE_V5_RENDERER.max_output_bytes,
+    ),
+    CommandTemplate(
+        template_id=ANGULAR_UPDATE_V6_RENDERER.template_id,
+        command_id=ANGULAR_UPDATE_V6_RENDERER.command_id,
+        executable=ANGULAR_UPDATE_V6_RENDERER.executable,
+        arguments=ANGULAR_UPDATE_V6_RENDERER.argument_patterns,
+        executable_aliases=ANGULAR_UPDATE_V6_RENDERER.executable_aliases,
+        description=ANGULAR_UPDATE_V6_RENDERER.description,
+        version=6,
+        allowed_env_vars=ANGULAR_UPDATE_V6_RENDERER.allowed_env_vars,
+        max_output_bytes=ANGULAR_UPDATE_V6_RENDERER.max_output_bytes,
     ),
 )
 
