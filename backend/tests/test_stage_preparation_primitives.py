@@ -69,6 +69,25 @@ def test_copy_rejects_a_symlink_in_the_source_tree(tmp_path: Path):
     assert not target.exists()
 
 
+def test_copy_excludes_symlinks_under_volatile_paths(tmp_path: Path):
+    source = tmp_path / "baseline"
+    target = tmp_path / "stage"
+    source.mkdir()
+    external = tmp_path / "external.txt"
+    external.write_text("outside", encoding="utf-8")
+    try:
+        dependency_link = source / "node_modules" / "dependency-link"
+        dependency_link.parent.mkdir(parents=True)
+        dependency_link.symlink_to(external)
+    except OSError:
+        pytest.skip("symlink creation is unavailable in this environment")
+
+    report = StageSandboxCopier().copy(source, target)
+
+    assert not (target / "node_modules").exists()
+    assert "node_modules" in report.excluded_paths
+
+
 def test_copy_rejects_a_target_that_contains_the_source(tmp_path: Path):
     source = tmp_path / "baseline"
     source.mkdir()

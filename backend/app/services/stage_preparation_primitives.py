@@ -39,6 +39,8 @@ class StageSandboxCopier:
         if target.exists():
             raise ValueError("stage sandbox target already exists")
         for item in source.rglob("*"):
+            if self.is_excluded_path(item.relative_to(source)):
+                continue
             if item.is_symlink():
                 raise ValueError("unsupported symlink in source workspace")
         excluded: list[str] = []
