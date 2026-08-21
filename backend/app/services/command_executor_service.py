@@ -955,6 +955,7 @@ class CommandExecutorService:
             ANGULAR_UPDATE_V3_RENDERER,
             ANGULAR_UPDATE_V4_RENDERER,
             ANGULAR_UPDATE_V5_RENDERER,
+            ANGULAR_UPDATE_V6_RENDERER,
             NPM_DEPENDENCY_MATERIALIZE_RENDERER,
             NPM_DEPENDENCY_INSTALL_RENDERER,
             NPM_DEPENDENCY_UNINSTALL_RENDERER,
@@ -984,6 +985,7 @@ class CommandExecutorService:
                 (ANGULAR_UPDATE_V3_RENDERER, 3),
                 (ANGULAR_UPDATE_V4_RENDERER, 4),
                 (ANGULAR_UPDATE_V5_RENDERER, 5),
+                (ANGULAR_UPDATE_V6_RENDERER, 6),
             )
         }
         renderer = (
