@@ -157,6 +157,8 @@ class StageSealingService:
         forbidden = []
         for item in workspace.rglob("*"):
             relative = item.relative_to(workspace)
+            if StageSandboxCopier.is_excluded_path(relative):
+                continue
             if item.is_symlink():
                 forbidden.append(relative.as_posix() + ":symlink")
             if item.is_file() and any(

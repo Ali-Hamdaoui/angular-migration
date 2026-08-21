@@ -1,10 +1,29 @@
+import json
 from pathlib import Path
 
 import pytest
 
 from app.services.stage_preparation_application_service import StagePreparationApplicationService
 from app.services.stage_preparation_primitives import StageSandboxCopier
-from app.services.stage_sealing_service import StageSealingService
+from app.services.stage_sealing_service import StageSealingError, StageSealingService
+
+
+def _cleanliness_context(workspace: Path, tmp_path: Path) -> dict[str, object]:
+    fingerprint = StageSandboxCopier.fingerprint(workspace)
+    return {
+        "run_id": "run-1",
+        "stage_id": "stage-1",
+        "stage_plan_checksum": "sha256:plan",
+        "workspace_path": str(workspace),
+        "workspace_fingerprint": fingerprint,
+        "g09_workspace_fingerprint": fingerprint,
+        "artifact_root": str(tmp_path / "artifacts" / "run-1"),
+        "stage_root": str(tmp_path / "stages"),
+        "g09_package_checksum": "sha256:g09",
+        "previous_chain_hash": "genesis",
+        "validation_summary_checksum": "sha256:validation",
+        "evidence_index": [],
+    }
 
 
 def test_stage_seal_is_atomic_chain_bound_and_excludes_generated_dependencies(tmp_path: Path):
@@ -15,6 +34,14 @@ def test_stage_seal_is_atomic_chain_bound_and_excludes_generated_dependencies(tm
     (workspace / "package.json").write_text('{"dependencies":{}}', encoding="utf-8")
     (workspace / "node_modules").mkdir()
     (workspace / "node_modules" / "generated.js").write_text("generated", encoding="utf-8")
+    for relative in (
+        "node_modules/node-gyp/test/fixtures/server.key",
+        "node_modules/agent-base/test/ssl-cert-snakeoil.key",
+        "node_modules/agent-base/test/ssl-cert-snakeoil.pem",
+    ):
+        path = workspace / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("dependency fixture", encoding="utf-8")
     service = StageSealingService()
     context = {
         "run_id": "run-1",
@@ -38,6 +65,9 @@ def test_stage_seal_is_atomic_chain_bound_and_excludes_generated_dependencies(tm
     assert fingerprint == replay[1] == StageSandboxCopier.fingerprint(target)
     assert chain == replay[2]
     assert not (target / "node_modules").exists()
+    manifest = json.loads(output.content)
+    assert (target / "package.json").exists()
+    assert all(not item["path"].startswith("node_modules/") for item in manifest["files"])
     assert output.ref.checksum and seal.ref.checksum
     next_stage = StagePreparationApplicationService().prepare(
         {
@@ -47,6 +77,57 @@ def test_stage_seal_is_atomic_chain_bound_and_excludes_generated_dependencies(tm
         "stage-2",
     )
     assert next_stage.fingerprint == fingerprint
+
+
+def test_cleanliness_ignores_dependency_owned_secret_fixtures(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    (workspace / "src").mkdir(parents=True)
+    (workspace / "src" / "app.ts").write_text("export const app = true", encoding="utf-8")
+    for relative in (
+        "node_modules/node-gyp/test/fixtures/server.key",
+        "node_modules/agent-base/test/ssl-cert-snakeoil.key",
+        "node_modules/agent-base/test/ssl-cert-snakeoil.pem",
+    ):
+        path = workspace / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("dependency fixture", encoding="utf-8")
+
+    result = StageSealingService().verify_cleanliness(_cleanliness_context(workspace, tmp_path))
+
+    assert result["status"] == "clean"
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "src/server.key",
+        "certs/private.pem",
+        ".env",
+        "certificates/client.pfx",
+    ),
+)
+def test_cleanliness_rejects_project_owned_secret_paths(tmp_path: Path, relative: str):
+    workspace = tmp_path / "workspace"
+    path = workspace / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("project secret", encoding="utf-8")
+
+    with pytest.raises(StageSealingError) as error:
+        StageSealingService().verify_cleanliness(_cleanliness_context(workspace, tmp_path))
+
+    assert error.value.code == "STAGE_CLEANLINESS_FAILED"
+
+
+def test_stage_fingerprint_changes_for_included_project_file(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    (workspace / "src" / "app").mkdir(parents=True)
+    file = workspace / "src" / "app" / "app.component.ts"
+    file.write_text("before", encoding="utf-8")
+    before = StageSandboxCopier.fingerprint(workspace)
+
+    file.write_text("after", encoding="utf-8")
+
+    assert StageSandboxCopier.fingerprint(workspace) != before
 
 
 def test_successor_reconstruction_uses_sealed_output_and_is_idempotent(tmp_path: Path):

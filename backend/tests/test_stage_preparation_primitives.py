@@ -6,6 +6,11 @@ import pytest
 from app.services.stage_preparation_primitives import StageSandboxCopier
 
 
+def test_exclusion_policy_is_shared_with_stage_cleanliness(tmp_path: Path):
+    assert StageSandboxCopier.is_excluded_path(Path("node_modules/pkg/server.key"))
+    assert not StageSandboxCopier.is_excluded_path(Path("src/server.key"))
+
+
 def test_copy_excludes_dependencies_caches_outputs_and_reports_fingerprint(tmp_path: Path):
     source = tmp_path / "baseline"
     target = tmp_path / "stage"
