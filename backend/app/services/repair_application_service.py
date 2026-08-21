@@ -78,6 +78,7 @@ from app.services.dependency_closure_service import (
 from app.domain.dependency_normalization import (
     DEPENDENCY_NORMALIZATION_REPAIR_KIND,
     DEPENDENCY_NORMALIZATION_SCHEMA_VERSION,
+    DependencyNormalizationAction,
     DependencyNormalizationPlan,
 )
 from app.services.dependency_normalization_service import DependencyNormalizationService
@@ -684,10 +685,10 @@ class RepairOperationCandidate(BaseModel):
     blocking_dependency: BlockingDependencyCandidateInput | None = None
     target_state: TargetStateCandidateInput | None = None
     # P3 normalization — full-manifest plan
-    packages: list[dict] | None = Field(default=None, max_length=128)
+    packages: list[DependencyNormalizationAction] | None = Field(default=None, max_length=128)
     analysis_summary: str | None = Field(default=None, min_length=1, max_length=4000)
-    normalization_plan: dict | None = None
-    plan: dict | None = None
+    normalization_plan: DependencyNormalizationPlan | None = None
+    plan: DependencyNormalizationPlan | None = None
     post_text: str | None = None
     pre_checksum: str | None = None
     post_checksum: str | None = None
