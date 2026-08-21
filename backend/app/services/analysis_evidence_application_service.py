@@ -509,7 +509,7 @@ class AnalysisEvidenceApplicationService:
 
     def _canonical_inputs(self, session, run_id: str, client_items):
         discovery = session.scalar(select(DiscoveryEvidenceModel).where(DiscoveryEvidenceModel.run_id == run_id, DiscoveryEvidenceModel.status == "completed").order_by(DiscoveryEvidenceModel.created_at.desc()))
-        parity = session.scalar(select(ParityBaselineEvidenceModel).where(ParityBaselineEvidenceModel.run_id == run_id, ParityBaselineEvidenceModel.status == "completed").order_by(ParityBaselineEvidenceModel.created_at.desc()))
+        parity = session.scalar(select(ParityBaselineEvidenceModel).where(ParityBaselineEvidenceModel.run_id == run_id, ParityBaselineEvidenceModel.status.in_(("captured", "completed"))).order_by(ParityBaselineEvidenceModel.created_at.desc()))
         if discovery is None:
             raise AnalysisEvidenceError("DISCOVERY_NOT_COMPLETED", "Discovery evidence is not complete.", 409)
         if parity is None:
