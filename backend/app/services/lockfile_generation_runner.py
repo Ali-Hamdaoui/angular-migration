@@ -1185,8 +1185,13 @@ class LockfileGenerationRunner:
             else None
         )
         planned = planned_commands[0] if planned_commands and len(planned_commands) == 1 else {}
+        try:
+            stage_runtime = TransformerStageService._stage_runtime_rows(session, continuation)
+        except TransformerStageError as error:
+            raise LockfileGenerationError(error.code, error.message) from error
         if (
-            execution.runtime_checksum != planned.get("runtime_profile_checksum")
+            stage_runtime is None
+            or execution.runtime_checksum != stage_runtime.get("checksum")
             or execution.command_id != "npm-lockfile-generate"
             or execution.executable != planned.get("executable")
             or list(execution.arguments or []) != list(planned.get("arguments") or [])
