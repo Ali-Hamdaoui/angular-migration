@@ -1675,6 +1675,8 @@ class RepairApplicationService:
             "artifact_root": context["artifact_root"],
             "failure_fingerprint": context["failure_fingerprint"],
             "normalized_failure": normalized_failure,
+            "causal_repair": context_pack.get("causal_repair"),
+            "target_cohort": context_pack.get("target_cohort") or {},
             "forbidden_change_policy": forbidden_change_policy,
         }
         with self._scope() as session:
@@ -4843,23 +4845,20 @@ class RepairApplicationService:
 
     @staticmethod
     def _stage_target_requirements(context: dict[str, object], manifest: dict) -> dict[str, str]:
-        # Backend-fixed Angular target requirements override LLM suggestions.
-        # Derive from stage plan target_exact; pin every direct Angular package
-        # present in the authoritative manifest to the approved exact.
-        target_exact = context.get("target_exact")
-        if not isinstance(target_exact, str) or not is_exact_version(target_exact):
+        cohort = context.get("target_cohort")
+        if not isinstance(cohort, dict):
             return {}
-        major = _version_major(target_exact)
-        if major is None:
-            return {}
-        req: dict[str, str] = {}
-        # catalogue-derived for typescript/rxjs could be added here; minimal pins angular
-        for pkg in list(manifest.get("dependencies", {}).keys()) + list(manifest.get("devDependencies", {}).keys()):
-            if pkg.startswith("@angular/") or pkg in ("@angular-devkit/build-angular", "@angular/build", "typescript", "rxjs", "zone.js"):
-                # only pin angular platform packages to exact; toolchain pinned via catalogue would be stricter
-                if pkg.startswith("@angular/") or pkg in ("@angular-devkit/build-angular", "@angular/build"):
-                    req[pkg] = target_exact
-        return req
+        present = {
+            package
+            for section in ("dependencies", "devDependencies")
+            for package in (manifest.get(section) or {})
+            if isinstance(package, str)
+        }
+        return {
+            package: exact
+            for package, exact in cohort.items()
+            if package in present and isinstance(package, str) and is_exact_version(exact)
+        }
 
     def _bind_dependency_normalization(
         self, value: dict[str, object], context: dict[str, object]
@@ -5640,7 +5639,12 @@ class RepairApplicationService:
             result = proposal.model_dump(mode="json")
         rejection = self._causal_gate_rejection(context, result)
         if rejection is not None:
-            raise RepairApplicationError("REPAIR_CAUSAL_REJECTION", rejection.reason)
+            raise RepairApplicationError(
+                rejection.code
+                if rejection.code == "REPAIR_CAUSAL_KIND_MISMATCH"
+                else "REPAIR_CAUSAL_REJECTION",
+                rejection.reason,
+            )
         return result
 
     @staticmethod
@@ -5752,6 +5756,7 @@ class RepairApplicationService:
                 "stage_plan_commands": dict((stage_plan.stage_plan or {}).get("commands") or {}),
                 "target_exact": angular_bindings.get("target_exact") or stage_value.get("target_exact"),
                 "target_cli_exact": angular_bindings.get("target_cli_exact") or stage_value.get("target_cli_exact"),
+                "target_cohort": dict(stage_value.get("target_cohort") or {}),
                 "workspace_binding_id": binding.id,
                 "workspace_binding_alias": binding.alias,
                 "workspace_stored_fingerprint": binding.workspace_fingerprint,
@@ -6535,6 +6540,8 @@ class RepairApplicationService:
             "artifact_root": context["artifact_root"],
             "failure_fingerprint": failure["failure_fingerprint"],
             "normalized_failure": failure["normalized_failure"],
+            "causal_repair": failure.get("causal_repair"),
+            "target_cohort": failure.get("target_cohort") or {},
             "forbidden_change_policy": failure["forbidden_change_policy"],
         }
         try:

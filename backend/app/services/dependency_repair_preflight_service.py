@@ -49,6 +49,17 @@ class DependencyRepairPreflightService:
         knowledge = StageKnowledgeRegistry().entry(source_major, target_major)
         findings: list[dict[str, object]] = []
         dependencies = self._dependencies(proposed)
+        for package, expected_exact in entry.target_requirements(dependencies).items():
+            proposed_spec = dependencies[package]
+            if not self._range_contains_exact(proposed_spec, expected_exact):
+                findings.append({
+                    "code": "TARGET_COHORT_MISMATCH",
+                    "package": package,
+                    "proposed_spec": proposed_spec,
+                    "expected_exact": expected_exact,
+                    "target_family": target_family,
+                    "catalogue_version": catalogue.version,
+                })
         for package, spec in dependencies.items():
             if self._angular_package(package):
                 major = self._spec_major(spec)
@@ -401,6 +412,17 @@ class DependencyRepairPreflightService:
                     right_upper is None or left_lower < right_upper
                 ):
                     return True
+        return False
+
+    @classmethod
+    def _range_contains_exact(cls, spec: str, exact: str) -> bool:
+        expected = cls._version_tuple(exact)
+        if expected is None:
+            return False
+        for branch in spec.split("||"):
+            lower, upper = cls._range_interval(branch)
+            if lower is not None and lower <= expected and (upper is None or expected < upper):
+                return True
         return False
 
     @staticmethod

@@ -69,7 +69,11 @@ from app.services.dependency_transition_runner import (
     DependencyTransitionError,
     DependencyTransitionRunner,
 )
-from app.services.failure_evidence_service import FailureEvidenceService
+from app.services.failure_evidence_service import (
+    CausalExecutionError,
+    FailureEvidenceService,
+    resolve_causal_failed_execution,
+)
 from app.services.failure_intelligence_service import FailureIntelligenceService
 try:
     from app.services.dependency_failure_bundle_service import build_dependency_normalization_bundle
@@ -1602,15 +1606,13 @@ class TransformerOrchestrator:
                 return
             if self._resume_known_baseline_validation(session, continuation):
                 return
-            execution = session.scalar(
-                select(CommandExecutionModel)
-                .where(
-                    CommandExecutionModel.run_id == continuation.run_id,
-                    CommandExecutionModel.stage_id == continuation.current_stage_id,
+            try:
+                execution, causal_step_name = resolve_causal_failed_execution(
+                    session, continuation
                 )
-                .order_by(CommandExecutionModel.requested_at.desc())
-                .limit(1)
-            )
+            except CausalExecutionError as error:
+                self._block(session, continuation, error.code, error.message)
+                return
             binding = self._stage._binding(session, continuation)
             artifacts = (
                 execution.stdout_artifact_id if execution else None,
@@ -1653,9 +1655,17 @@ class TransformerOrchestrator:
                 .all()
                 if item.failure_fingerprint
             ]
-            evidence = self._failures.collect(
-                session, continuation, prior_fingerprints=prior
-            )
+            try:
+                evidence = self._failures.collect(
+                    session,
+                    continuation,
+                    causal_execution=execution,
+                    causal_step_name=causal_step_name,
+                    prior_fingerprints=prior,
+                )
+            except CausalExecutionError as error:
+                self._block(session, continuation, error.code, error.message)
+                return
             fingerprint = str(evidence["failure_fingerprint"])
             replayed = self._committed_evidence(session, continuation, fingerprint)
             reuse_checkpoint = None
@@ -1704,15 +1714,8 @@ class TransformerOrchestrator:
                     # Re-fetch execution in this session to ensure attached instance
                     exec_for_bundle = session.get(CommandExecutionModel, execution.id) if execution is not None and getattr(execution, "id", None) else None
                     if exec_for_bundle is None:
-                        exec_for_bundle = session.scalar(
-                            select(CommandExecutionModel)
-                            .where(
-                                CommandExecutionModel.run_id == continuation.run_id,
-                                CommandExecutionModel.stage_id == continuation.current_stage_id,
-                            )
-                            .order_by(CommandExecutionModel.requested_at.desc())
-                            .limit(1)
-                        )
+                        self._block(session, continuation, "CAUSAL_EXECUTION_MISSING", "Dependency bundle causal execution is missing")
+                        return
                     stored_bundle = self._persist_dependency_failure_bundle_before_reconstruction(
                         session, continuation, exec_for_bundle, evidence
                     )
@@ -1778,6 +1781,15 @@ class TransformerOrchestrator:
         evidence["workspace_fingerprint"] = StageSandboxCopier.fingerprint(
             Path(str(evidence["workspace_path"]))
         )
+        causal_repair = evidence["causal_repair"]
+        if causal_repair["workspace_fingerprint"] != evidence["workspace_fingerprint"]:
+            causal_repair["workspace_fingerprint"] = evidence["workspace_fingerprint"]
+            causal_repair.pop("causal_state_identity", None)
+            causal_repair["causal_state_identity"] = "sha256:" + hashlib.sha256(
+                json.dumps(causal_repair, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            evidence["failure_fingerprint"] = causal_repair["causal_state_identity"]
+            replayed = reuse_checkpoint = None
         attempt_artifacts: list[StoredArtifact] = []
         if replayed is None:
             failure, route_artifact = self._failures.write(evidence, route)
@@ -1794,14 +1806,8 @@ class TransformerOrchestrator:
                 bundle_checksum = None
                 try:
                     with self._scope() as _tmp_sess2:
-                        _exec_for_ctx = _tmp_sess2.scalar(
-                            select(CommandExecutionModel)
-                            .where(
-                                CommandExecutionModel.run_id == evidence["run_id"],
-                                CommandExecutionModel.stage_id == evidence["stage_id"],
-                            )
-                            .order_by(CommandExecutionModel.requested_at.desc())
-                            .limit(1)
+                        _exec_for_ctx = _tmp_sess2.get(
+                            CommandExecutionModel, evidence["execution_id"]
                         )
                         if _exec_for_ctx is not None:
                             _row = _tmp_sess2.scalar(
@@ -1901,14 +1907,9 @@ class TransformerOrchestrator:
                     if _cont is not None:
                         _exec = _sess.get(CommandExecutionModel, execution.id) if getattr(execution, "id", None) else None
                         if _exec is None:
-                            _exec = _sess.scalar(
-                                select(CommandExecutionModel)
-                                .where(
-                                    CommandExecutionModel.run_id == _cont.run_id,
-                                    CommandExecutionModel.stage_id == _cont.current_stage_id,
-                                )
-                                .order_by(CommandExecutionModel.requested_at.desc())
-                                .limit(1)
+                            raise CausalExecutionError(
+                                "CAUSAL_EXECUTION_MISSING",
+                                "Dependency failure bundle lost its causal execution binding",
                             )
                         if _exec is not None:
                             _bundle = self._load_dependency_failure_bundle(_sess, _cont, _exec)
@@ -2114,86 +2115,15 @@ class TransformerOrchestrator:
                     continuation.run_id,
                     continuation.current_stage_id,
                     repair_policy,
-                )
-                # A failed post-apply command gets its own bounded correction
-                # window.  Do not charge corrections from superseded ancestor
-                # branches against the newly applied repair: those attempts
-                # are historical lineage, not retries of this post-state.
-                correction_depth = 0
-                if not (
-                    attempt is not None
-                    and attempt.apply_ledger_artifact_id is not None
-                ):
-                    lineage_cursor = attempt
-                    while lineage_cursor is not None:
-                        if str(lineage_cursor.diagnosis or "").startswith(
-                            "validation correction;"
-                        ):
-                            correction_depth += 1
-                        lineage_cursor = (
-                            session.get(
-                                RepairAttemptModel, lineage_cursor.parent_attempt_id
-                            )
-                            if lineage_cursor.parent_attempt_id
-                            else None
-                        )
-                lockfile_step = session.scalar(
-                    select(StageStepModel).where(
-                        StageStepModel.run_id == continuation.run_id,
-                        StageStepModel.stage_id == continuation.current_stage_id,
-                        StageStepModel.name == "lockfile_generation-0",
-                    )
-                )
-                lockfile_execution = (
-                    session.get(CommandExecutionModel, lockfile_step.execution_id)
-                    if lockfile_step is not None and lockfile_step.execution_id
-                    else None
-                )
-                lockfile_failed = (
-                    lockfile_step is not None
-                    and (
-                        lockfile_step.status == "FAILED"
-                        or (
-                            lockfile_execution is not None
-                            and lockfile_execution.status
-                            in {"failed", "timed_out", "cancelled", "interrupted"}
-                        )
-                    )
-                )
-                post_apply_command_failed = bool(
-                    attempt is not None
-                    and attempt.apply_ledger_artifact_id is not None
-                    and attempt.created_at is not None
-                    and session.scalar(
-                        select(CommandExecutionModel.id).where(
-                            CommandExecutionModel.run_id == continuation.run_id,
-                            CommandExecutionModel.stage_id == continuation.current_stage_id,
-                            CommandExecutionModel.requested_at >= attempt.created_at,
-                            CommandExecutionModel.status.in_(
-                                {"failed", "timed_out", "cancelled", "interrupted"}
-                            ),
-                        )
-                    )
-                    is not None
-                )
-                validation_correction = (
-                    attempt is not None
-                    and attempt.apply_ledger_artifact_id is not None
-                    and correction_depth < 2
-                    and (
-                        attempt.status
-                        in {"revalidating", "revalidating_affected", "validation_failed"}
-                        or attempt.status == "executing" and post_apply_command_failed
-                        or (
-                            attempt.status in {"applied", "applied_verified", "blocked"}
-                            and (lockfile_failed or post_apply_command_failed)
-                        )
-                    )
+                    lineage_root_attempt_id=str(
+                        evidence["causal_repair"]["lineage_root_attempt_id"]
+                    ),
                 )
                 if (
                     budget["consumed_attempts"] >= budget["max_attempts"]
                     or budget["consumed_applied"] >= budget["max_applied"]
-                ) and not validation_correction:
+                    or budget["total_applied"] >= budget["max_total_applied"]
+                ):
                     self._block(
                         session,
                         continuation,
@@ -2204,6 +2134,16 @@ class TransformerOrchestrator:
                 attempts = session.query(RepairAttemptModel).filter_by(
                     run_id=continuation.run_id, stage_id=continuation.current_stage_id
                 ).count()
+                parent_attempt_id = evidence["causal_repair"].get("parent_attempt_id")
+                parent_attempt = (
+                    session.get(RepairAttemptModel, parent_attempt_id)
+                    if parent_attempt_id
+                    else None
+                )
+                validation_correction = bool(
+                    parent_attempt is not None
+                    and parent_attempt.apply_ledger_artifact_id is not None
+                )
                 if reuse_checkpoint is None and snapshot is None:
                     self._block(
                         session,
@@ -2240,7 +2180,7 @@ class TransformerOrchestrator:
                     context_pack_checksum=context.ref.checksum,
                     pre_fingerprint=str(evidence["workspace_fingerprint"]),
                     failure_fingerprint=str(evidence["failure_fingerprint"]),
-                    parent_attempt_id=attempt.id if validation_correction else None,
+                    parent_attempt_id=parent_attempt_id,
                     created_at=datetime.now(UTC),
                     updated_at=datetime.now(UTC),
                 )
@@ -2330,16 +2270,10 @@ class TransformerOrchestrator:
             stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
             plan = session.get(MigrationPlanModel, continuation.plan_id)
             binding = self._stage._binding(session, continuation)
-            execution = session.scalar(
-                select(CommandExecutionModel)
-                .where(
-                    CommandExecutionModel.run_id == continuation.run_id,
-                    CommandExecutionModel.stage_id == continuation.current_stage_id,
-                    CommandExecutionModel.status.in_(("failed", "timed_out", "interrupted")),
-                )
-                .order_by(CommandExecutionModel.requested_at.desc())
-                .limit(1)
-            )
+            try:
+                execution, _ = resolve_causal_failed_execution(session, continuation)
+            except CausalExecutionError:
+                execution = None
             intelligence = session.scalar(
                 select(FailureIntelligenceModel)
                 .where(FailureIntelligenceModel.run_id == continuation.run_id)
@@ -4877,13 +4811,8 @@ class TransformerOrchestrator:
                             if lock_step_tmp is not None and lock_step_tmp.execution_id:
                                 lock_exec = session.get(CommandExecutionModel, lock_step_tmp.execution_id)
                             if lock_exec is None:
-                                lock_exec = session.scalar(
-                                    select(CommandExecutionModel).where(
-                                        CommandExecutionModel.run_id == continuation.run_id,
-                                        CommandExecutionModel.stage_id == continuation.current_stage_id,
-                                        CommandExecutionModel.command_id == "npm-lockfile-generate",
-                                    ).order_by(CommandExecutionModel.requested_at.desc()).limit(1)
-                                )
+                                self._block(session, continuation, "CAUSAL_EXECUTION_MISSING", "Lockfile failure is not bound to its stage step")
+                                return
                             current_fp = TransformerOrchestrator._dependency_resolution_failure_fingerprint(lock_exec)
                             if current_ordinal == 1:
                                 # Lineage-scoped NO_PROGRESS: only fingerprints from CURRENT lineage
@@ -5725,19 +5654,13 @@ class TransformerOrchestrator:
         if step is None or not step.execution_id:
             return False
         execution = session.get(CommandExecutionModel, step.execution_id)
-        latest = session.scalar(
-            select(CommandExecutionModel)
-            .where(
-                CommandExecutionModel.run_id == continuation.run_id,
-                CommandExecutionModel.stage_id == continuation.current_stage_id,
-            )
-            .order_by(CommandExecutionModel.requested_at.desc())
-            .limit(1)
-        )
+        try:
+            causal, _ = resolve_causal_failed_execution(session, continuation)
+        except CausalExecutionError:
+            return False
         return (
             execution is not None
-            and latest is not None
-            and latest.id == execution.id
+            and causal.id == execution.id
             and execution.command_id == "angular-update-exact"
         )
 

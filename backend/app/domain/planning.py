@@ -102,8 +102,9 @@ class RepairPolicy(ContractModel):
     enabled: bool = True
     proposer_reviewer_required: bool = True
     human_apply_required: bool = True
-    max_attempts: int = Field(default=3, ge=1)
-    max_applied: int = Field(default=2, ge=1)
+    max_attempts: int = Field(default=2, ge=1, le=2)
+    max_applied: int = Field(default=2, ge=1, le=2)
+    max_total_applied_per_stage: int = Field(default=6, ge=1, le=6)
 
 
 class ForbiddenChangePolicy(ContractModel):
@@ -163,6 +164,7 @@ class StageExecutionPlan(ContractModel):
     target_family: str = Field(pattern=r"^angular-(1[2-9]|2[01])\.x$")
     target_exact: str = Field(min_length=1, max_length=64)
     target_cli_exact: str | None = Field(default=None, max_length=64)
+    target_cohort: dict[str, str] = Field(default_factory=dict)
     execution_profile_id: str = Field(min_length=1, max_length=128)
     capability_snapshot_id: str | None = None
     capability_snapshot_checksum: str | None = None
@@ -190,6 +192,12 @@ class StageExecutionPlan(ContractModel):
             raise ValueError("required stage plan command groups cannot be empty")
         if self.build_system_decision.action == "blocked":
             raise ValueError("a blocked build-system decision cannot produce an executable stage plan")
+        if (
+            self.target_cohort.get("@angular/core") != self.target_exact
+            or self.target_cohort.get("@angular/cli") != self.target_cli_exact
+            or any(not _EXACT_VERSION.fullmatch(exact) for exact in self.target_cohort.values())
+        ):
+            raise ValueError("stage target cohort must contain exact approved core and CLI versions")
         return self
 
 

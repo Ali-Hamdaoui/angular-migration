@@ -32,6 +32,7 @@ from app.repositories.models import (
     StageStepModel,
     TransformationContinuationModel,
 )
+from app.services.failure_intelligence_service import is_dependency_incompatible_failure
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,7 @@ CAUSAL_REJECTION_UNRELATED_EDIT = "CAUSAL_REJECTION_UNRELATED_EDIT"
 CAUSAL_REJECTION_NO_LOCKFILE_SYNC = "CAUSAL_REJECTION_NO_LOCKFILE_SYNC"
 CAUSAL_REJECTION_FORCE = "CAUSAL_REJECTION_FORCE"
 CAUSAL_REJECTION_UNSUPPORTED_OPERATION = "CAUSAL_REJECTION_UNSUPPORTED_OPERATION"
+REPAIR_CAUSAL_KIND_MISMATCH = "REPAIR_CAUSAL_KIND_MISMATCH"
 
 _DIRTY_WORKSPACE_PHRASE = "Repository is not clean"
 _WARNING_ONLY_LINE_TOKENS = ("npm warn", "deprecat", "npm audit")
@@ -415,11 +417,9 @@ def _normalization_rejection(proposal: dict) -> CausalRejection | None:
 
 
 def _is_dependency_failure(diagnosis_kind: str, normalized: dict) -> bool:
-    if diagnosis_kind:
-        return True
-    return str(normalized.get("error_code") or "") in _DEPENDENCY_ERROR_CODES or str(
-        normalized.get("failure_code") or ""
-    ) in _DEPENDENCY_ERROR_CODES
+    return is_dependency_incompatible_failure(normalized) or str(
+        normalized.get("error_code") or ""
+    ) in _DEPENDENCY_ERROR_CODES or str(normalized.get("failure_code") or "") in _DEPENDENCY_ERROR_CODES
 
 
 def _has_manifest_edit(proposal: dict) -> bool:
@@ -488,6 +488,8 @@ def causal_rejection(
 
     diagnosis = normalized.get("failure_diagnosis")
     diagnosis_kind = str(diagnosis.get("kind") or "") if isinstance(diagnosis, dict) else ""
+    causal = evidence.get("causal_repair")
+    causal_kind = str(causal.get("causal_kind") or "") if isinstance(causal, dict) else ""
     route = str(
         evidence.get("route")
         or evidence.get("route_info")
@@ -497,7 +499,19 @@ def causal_rejection(
     # new normalization path takes precedence for dependency_incompatible / migrate_packages
     operations = proposal.get("operations") if isinstance(proposal.get("operations"), list) else []
     has_norm = any(_is_normalization_operation(op) for op in operations if isinstance(op, dict))
-    if diagnosis_kind == "dependency_incompatible" or route in (
+    has_manifest_edit = _has_manifest_edit(proposal)
+    dependency_evidence = _is_dependency_failure(diagnosis_kind, normalized)
+    if causal_kind == "environment":
+        return CausalRejection(
+            REPAIR_CAUSAL_KIND_MISMATCH,
+            "Environment failures cannot authorize an LLM code or dependency repair",
+        )
+    if causal_kind in {"build", "test", "lint", "source"} and has_manifest_edit and not dependency_evidence:
+        return CausalRejection(
+            REPAIR_CAUSAL_KIND_MISMATCH,
+            f"A {causal_kind} failure does not authorize an unrelated dependency mutation",
+        )
+    if causal_kind == "dependency" or route in (
         _DEPENDENCY_INCOMPATIBLE_ROUTE,
         "dependency_incompatible",
         _MIGRATE_PACKAGES_NODE,
@@ -521,7 +535,7 @@ def causal_rejection(
         return None
     if diagnosis_kind == "peer_dependency_conflict" or route == "angular_update_peer_conflict":
         return _peer_conflict_rejection(proposal)
-    if _is_dependency_failure(diagnosis_kind, normalized) and _has_manifest_edit(proposal):
+    if dependency_evidence and has_manifest_edit:
         if not _lockfile_generation_authority(stage_plan_commands):
             return CausalRejection(
                 CAUSAL_REJECTION_NO_LOCKFILE_SYNC,
@@ -794,8 +808,15 @@ def _succeeded_final_install(session, run_id: str, stage_id: str) -> bool:
     return execution is not None and execution.status == "succeeded" and execution.exit_code == 0
 
 
-def repair_budget(session, run_id: str, stage_id: str, repair_policy: dict) -> dict:
-    """Consumed repair attempt/applied counts for (run_id, stage_id).
+def repair_budget(
+    session,
+    run_id: str,
+    stage_id: str,
+    repair_policy: dict,
+    *,
+    lineage_root_attempt_id: str | None = None,
+) -> dict:
+    """Applied repair counts for one causal lineage plus the stage ceiling.
 
     Schema/semantic/duplicate-path/causal rejections, reviewer rejections,
     reconstruction-only states, command supersession retries, and warning-only
@@ -807,14 +828,8 @@ def repair_budget(session, run_id: str, stage_id: str, repair_policy: dict) -> d
     the retry boundary.  Completion evidence is still tracked separately by
     ``_repair_completed``.  Read-only; never raises.
     """
-    try:
-        max_attempts = int((repair_policy or {}).get("max_attempts") or 3)
-    except (TypeError, ValueError):
-        max_attempts = 3
-    try:
-        max_applied = int((repair_policy or {}).get("max_applied") or 2)
-    except (TypeError, ValueError):
-        max_applied = 2
+    max_attempts = max_applied = 2
+    max_total_applied = 6
     try:
         rows = session.scalars(
             select(RepairAttemptModel)
@@ -834,6 +849,32 @@ def repair_budget(session, run_id: str, stage_id: str, repair_policy: dict) -> d
             if row.apply_ledger_artifact_id is not None
             and row.status in _REVIEWER_ACCEPTED_STATUSES
         ]
+        total_applied = len(applied)
+        if lineage_root_attempt_id:
+            if run is None or not run.artifact_root:
+                raise ValueError("repair lineage artifact authority is missing")
+            store = LocalFilesystemArtifactStore(
+                Path(str(run.artifact_root)).parent,
+                fixed_run_root=Path(str(run.artifact_root)),
+            )
+            lineage = []
+            for row in applied:
+                context = _load_attempt_artifact(
+                    session,
+                    store,
+                    row,
+                    run_id,
+                    stage_id,
+                    "context_pack_artifact_id",
+                    "context_pack_checksum",
+                    pre_attempt=True,
+                )
+                causal = context.get("causal_repair") if isinstance(context, dict) else None
+                if not isinstance(causal, dict):
+                    raise ValueError("applied repair lacks causal lineage authority")
+                if causal.get("lineage_root_attempt_id") == lineage_root_attempt_id:
+                    lineage.append(row)
+            applied = lineage
         consumed_applied = len(applied)
         consumed_attempts = 0
         for row in applied:
@@ -852,10 +893,14 @@ def repair_budget(session, run_id: str, stage_id: str, repair_policy: dict) -> d
             "consumed_applied": 0,
             "max_attempts": max_attempts,
             "max_applied": max_applied,
+            "total_applied": max_total_applied,
+            "max_total_applied": max_total_applied,
         }
     return {
         "consumed_attempts": consumed_attempts,
         "consumed_applied": consumed_applied,
         "max_attempts": max_attempts,
         "max_applied": max_applied,
+        "total_applied": total_applied,
+        "max_total_applied": max_total_applied,
     }

@@ -174,16 +174,17 @@ class LockfileCompatibilityService:
                 status="blocked",
                 blockers=("LOCKFILE_FORMAT_UNSUPPORTED",),
             )
-        expected: dict[str, str | None] = {
-            "@angular/core": entry.target_angular_exact,
-            "@angular/cli": entry.target_cli_exact,
+        try:
+            manifest = json.loads((workspace / "package.json").read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            manifest = {}
+        direct_packages = {
+            package
+            for section in ("dependencies", "devDependencies")
+            for package in ((manifest.get(section) or {}) if isinstance(manifest, dict) else {})
+            if isinstance(package, str)
         }
-        if entry.typescript_exact:
-            expected["typescript"] = entry.typescript_exact
-        if entry.rxjs_exact:
-            expected["rxjs"] = entry.rxjs_exact
-        if entry.zone_js_exact:
-            expected["zone.js"] = entry.zone_js_exact
+        expected: dict[str, str | None] = entry.target_requirements(direct_packages)
         minimums: dict[str, str] = {}
         exclusive_maximums: dict[str, str] = {}
         allowed_ranges: dict[str, tuple[str, ...]] = {}

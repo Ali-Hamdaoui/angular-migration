@@ -118,6 +118,15 @@ DEV_RUNTIMES_PROVEN_EVIDENCE: dict[tuple[int, int], RuntimeProofProfile] = {
     (20, 21): RuntimeProofProfile(source_angular_exact="20.3.27", target_angular_exact="21.2.19", target_cli_exact="21.2.20", node_exact="22.23.1", npm_exact="8.19.4", proof_source="dev-runtimes-real-e2e", proof_status="observed", proved_at=CERTIFIED_AT),
 }
 
+# Exact migration cohorts proven by the dev-runtimes real executions. Official
+# supported ranges remain separate catalogue fields and are not replaced by
+# these selected exact package versions.
+PROVEN_TARGET_COHORTS: dict[tuple[int, int], tuple[str, str, str, str, str]] = {
+    (11, 12): ("12.2.17", "12.2.18", "4.3.5", "6.6.7", "0.11.8"),
+    (12, 13): ("13.3.12", "13.3.11", "4.6.4", "6.6.7", "0.11.8"),
+    (13, 14): ("14.3.0", "14.2.13", "4.6.4", "6.6.7", "0.11.8"),
+}
+
 
 class CompatibilityCatalogueProvider:
     """Load the active versioned catalogue independently of HTTP mutations."""
@@ -176,6 +185,12 @@ class CompatibilityCatalogueProvider:
     @classmethod
     def _entry_for(cls, major: int, certified: bool) -> CompatibilityCatalogueEntry:
         target = major + 1
+        cohort = PROVEN_TARGET_COHORTS.get((major, target))
+        target_angular_exact, target_cli_exact, typescript_exact, rxjs_exact, zone_js_exact = (
+            cohort
+            if cohort is not None
+            else (f"{target}.0.0", f"{target}.0.0", None, None, None)
+        )
         node_minimum = _NODE_MINIMUMS[target]
         ts_minimum, ts_maximum = _TYPESCRIPT_RANGES[target]
         support_level = "historical_validated" if certified else "historical_experimental"
@@ -211,18 +226,21 @@ class CompatibilityCatalogueProvider:
             stage_id=f"angular-{major}-to-{target}",
             source_family=f"angular-{major}.x",
             target_family=f"angular-{target}.x",
-            target_angular_exact=f"{target}.0.0",
-            target_cli_exact=f"{target}.0.0",
+            target_angular_exact=target_angular_exact,
+            target_cli_exact=target_cli_exact,
+            typescript_exact=typescript_exact,
             typescript_minimum=ts_minimum,
             typescript_exclusive_maximum=ts_maximum,
+            rxjs_exact=rxjs_exact,
             rxjs_minimum="6.5.3",
             rxjs_ranges=_RXJS_RANGES[target],
+            zone_js_exact=zone_js_exact,
             node_major=node_major,
             npm_major=10,
             node_minimum=node_minimum,
             node_exact=node_exact,
             npm_exact=npm_exact,
-            cli_exact=f"{target}.0.0",
+            cli_exact=target_cli_exact,
             support_level=support_level,
             fixture_status=fixture_status,
             validation_policy_id="angular-stage-standard-v2",

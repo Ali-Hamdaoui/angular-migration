@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Iterable
 from datetime import datetime
 from typing import Literal
 
@@ -24,6 +25,20 @@ SupportLevel = Literal[
     "historical_experimental",
     "blocked",
 ]
+
+FRAMEWORK_COHORT_PACKAGES = frozenset(
+    {
+        "@angular/animations",
+        "@angular/common",
+        "@angular/compiler",
+        "@angular/compiler-cli",
+        "@angular/core",
+        "@angular/forms",
+        "@angular/platform-browser",
+        "@angular/platform-browser-dynamic",
+        "@angular/router",
+    }
+)
 FeasibilityStatus = Literal[
     "feasible",
     "feasible_with_warnings",
@@ -87,6 +102,27 @@ class CompatibilityCatalogueEntry(CompatibilityModel):
     certification_status: str | None = None
     certification_source: str | None = None
     certified_at: datetime | None = None
+
+    def target_cohort(self) -> dict[str, str]:
+        """Exact backend-owned package cohort selected inside official ranges."""
+        cohort = {
+            package: self.target_angular_exact for package in FRAMEWORK_COHORT_PACKAGES
+        }
+        cohort["@angular/cli"] = self.target_cli_exact
+        cohort["@angular-devkit/build-angular"] = self.target_cli_exact
+        for package, exact in (
+            ("typescript", self.typescript_exact),
+            ("rxjs", self.rxjs_exact),
+            ("zone.js", self.zone_js_exact),
+        ):
+            if exact:
+                cohort[package] = exact
+        return cohort
+
+    def target_requirements(self, package_names: Iterable[str]) -> dict[str, str]:
+        """Return cohort pins only for direct packages present in a manifest."""
+        names = {name for name in package_names if isinstance(name, str)}
+        return {name: exact for name, exact in self.target_cohort().items() if name in names}
 
     @model_validator(mode="after")
     def validate_adjacent_families(self) -> CompatibilityCatalogueEntry:

@@ -82,6 +82,7 @@ class NextStageMaterializerService:
             "sealed_path": sealed_path,
             "sealed_fingerprint": sealed_fingerprint,
             "current_target_exact": (current_plan.stage_plan or {}).get("target_exact"),
+            "current_target_cohort": (current_plan.stage_plan or {}).get("target_cohort") or {},
             "remaining_route": route[current_index + 1 :],
             "catalogue_version": resolution.catalogue_version,
             "execution_profile_id": profile.selected_profile_id,
@@ -112,7 +113,9 @@ class NextStageMaterializerService:
             )
         try:
             observed = self._target_versions.verify(
-                sealed_root, str(context["current_target_exact"])
+                sealed_root,
+                str(context["current_target_exact"]),
+                dict(context["current_target_cohort"]),
             )
         except StageTargetVersionError as error:
             raise NextStageMaterializerError(

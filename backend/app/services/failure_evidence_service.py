@@ -21,6 +21,7 @@ from app.services.dependency_closure_service import (
     installed_dependency_version,
     is_exact_version,
 )
+from app.services.failure_intelligence_service import FailureIntelligenceService
 
 
 CONTEXT_PACK_SCHEMA_VERSION = "repair-context-pack-v1"
@@ -28,6 +29,11 @@ CONTEXT_PACK_FILES = ("package.json", "angular.json", "tsconfig.json")
 CONTEXT_PACK_MAX_FILES = 8
 CONTEXT_PACK_MAX_BYTES_PER_FILE = 20_000
 CONTEXT_PACK_MAX_TOTAL_BYTES = 100_000
+CAUSAL_REPAIR_SCHEMA_VERSION = "causal-repair-lineage-v1"
+_TERMINAL_FAILURE_STATUSES = frozenset({"failed", "timed_out", "cancelled", "interrupted"})
+_FAILURE_TARGET = re.compile(
+    r"(?P<path>(?:[A-Za-z]:[\\/][^\s:'\"()]+|(?:[A-Za-z0-9_.@-]+[\\/])+[A-Za-z0-9_.@()-]+\.(?:ts|html|scss|json)))(?::\d+(?::\d+)?)?"
+)
 ANGULAR_DIRTY_WORKSPACE_MESSAGE = (
     "Repository is not clean. Please commit or stash any changes before updating."
 )
@@ -86,6 +92,149 @@ def _installed_version_of(message: str, package: str) -> str | None:
         re.escape(package) + r"@[\^~]?\s*(\d+\.\d+\.\d+(?:[-\w.]*)?)", message
     )
     return match.group(1) if match else None
+
+
+class CausalExecutionError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def resolve_causal_failed_execution(session, continuation):
+    """Resolve the explicitly bound failed execution; fail closed on ambiguity."""
+    from sqlalchemy import select
+
+    from app.repositories.models import CommandExecutionModel, StageStepModel
+
+    def valid(execution):
+        return bool(
+            execution is not None
+            and execution.run_id == continuation.run_id
+            and execution.stage_id == continuation.current_stage_id
+            and execution.status in _TERMINAL_FAILURE_STATUSES
+            and (execution.exit_code not in (None, 0) or execution.failure_code)
+            and execution.result_artifact_id
+            and execution.command_log_artifact_id
+        )
+
+    waiting = (
+        session.get(CommandExecutionModel, continuation.waiting_execution_id)
+        if continuation.waiting_execution_id
+        else None
+    )
+    if valid(waiting):
+        step = session.scalar(
+            select(StageStepModel).where(
+                StageStepModel.run_id == continuation.run_id,
+                StageStepModel.stage_id == continuation.current_stage_id,
+                StageStepModel.execution_id == waiting.id,
+            )
+        )
+        return waiting, step.name if step else None
+
+    failed_steps = session.scalars(
+        select(StageStepModel).where(
+            StageStepModel.run_id == continuation.run_id,
+            StageStepModel.stage_id == continuation.current_stage_id,
+            StageStepModel.status == "FAILED",
+        )
+    ).all()
+    step_candidates = [
+        (execution, step.name)
+        for step in failed_steps
+        if step.execution_id
+        and valid(execution := session.get(CommandExecutionModel, step.execution_id))
+        and (
+            not continuation.last_error_code
+            or execution.failure_code == continuation.last_error_code
+        )
+    ]
+    if len(step_candidates) == 1:
+        return step_candidates[0]
+    if len(step_candidates) > 1:
+        raise CausalExecutionError(
+            "CAUSAL_EXECUTION_AMBIGUOUS",
+            "More than one failed stage step matches the current failure authority",
+        )
+
+    failed = session.scalars(
+        select(CommandExecutionModel).where(
+            CommandExecutionModel.run_id == continuation.run_id,
+            CommandExecutionModel.stage_id == continuation.current_stage_id,
+            CommandExecutionModel.status.in_(tuple(_TERMINAL_FAILURE_STATUSES)),
+        )
+    ).all()
+    failed = [execution for execution in failed if valid(execution)]
+    if len(failed) == 1:
+        newer_success = session.scalar(
+            select(CommandExecutionModel.id).where(
+                CommandExecutionModel.run_id == continuation.run_id,
+                CommandExecutionModel.stage_id == continuation.current_stage_id,
+                CommandExecutionModel.status == "succeeded",
+                CommandExecutionModel.exit_code == 0,
+                CommandExecutionModel.requested_at > failed[0].requested_at,
+            ).limit(1)
+        )
+        if newer_success is not None:
+            raise CausalExecutionError(
+                "CAUSAL_EXECUTION_AMBIGUOUS",
+                "A newer successful execution contradicts the unbound failed execution",
+            )
+        return failed[0], None
+    raise CausalExecutionError(
+        "CAUSAL_EXECUTION_AMBIGUOUS" if failed else "CAUSAL_EXECUTION_MISSING",
+        "Current failure is not bound to one immutable failed command execution",
+    )
+
+
+class FailureTargetResolver:
+    """Resolve bounded repository files named by immutable command evidence."""
+
+    MAX_FILES = 4
+
+    @classmethod
+    def resolve(cls, workspace: Path, message: str) -> tuple[str, ...]:
+        workspace = workspace.resolve(strict=True)
+        resolved: list[str] = []
+        for match in _FAILURE_TARGET.finditer(message):
+            candidate = Path(match.group("path").replace("\\", "/"))
+            path = candidate if candidate.is_absolute() else workspace / candidate
+            relative = cls._safe_relative(workspace, path)
+            if relative and relative not in resolved:
+                resolved.append(relative)
+            if len(resolved) >= cls.MAX_FILES:
+                break
+        for relative in tuple(resolved):
+            path = Path(relative)
+            paired = (
+                path.with_name(path.name.removesuffix(".spec.ts") + ".ts")
+                if path.name.endswith(".spec.ts")
+                else path.with_name(path.stem + ".spec.ts")
+                if path.suffix == ".ts"
+                else None
+            )
+            if paired is not None:
+                safe = cls._safe_relative(workspace, workspace / paired)
+                if safe and safe not in resolved and len(resolved) < cls.MAX_FILES:
+                    resolved.append(safe)
+        return tuple(resolved)
+
+    @staticmethod
+    def _safe_relative(workspace: Path, path: Path) -> str | None:
+        try:
+            target = path.resolve(strict=True)
+            relative = target.relative_to(workspace)
+        except (OSError, ValueError):
+            return None
+        current = workspace
+        for part in relative.parts:
+            current /= part
+            if current.is_symlink():
+                return None
+        if not target.is_file() or target.suffix.lower() not in {".ts", ".html", ".scss", ".json"}:
+            return None
+        return relative.as_posix()
 
 
 class FailureEvidenceService:
@@ -283,12 +432,21 @@ class FailureEvidenceService:
     def __init__(self, *, now_provider=None) -> None:
         self._now = now_provider or (lambda: datetime.now(UTC))
 
-    def collect(self, session, continuation, *, prior_fingerprints: list[str]) -> dict[str, object]:
+    def collect(
+        self,
+        session,
+        continuation,
+        *,
+        causal_execution,
+        causal_step_name: str | None,
+        prior_fingerprints: list[str],
+    ) -> dict[str, object]:
         from sqlalchemy import select
 
         from app.repositories.models import (
-            CommandExecutionModel,
             MigrationRunModel,
+            RepairAttemptModel,
+            StageCheckpointModel,
             StageExecutionPlanModel,
             StageWorkspaceBindingModel,
         )
@@ -302,21 +460,14 @@ class FailureEvidenceService:
                 StageWorkspaceBindingModel.active.is_(True),
             )
         )
-        execution = session.scalar(
-            select(CommandExecutionModel)
-            .where(
-                CommandExecutionModel.run_id == continuation.run_id,
-                CommandExecutionModel.stage_id == continuation.current_stage_id,
-            )
-            .order_by(CommandExecutionModel.requested_at.desc())
-            .limit(1)
-        )
+        execution = causal_execution
+        output = self._execution_output(session, run, execution)
         normalized = {
             "error_code": continuation.last_error_code,
-            "command_id": execution.command_id if execution else None,
-            "exit_code": execution.exit_code if execution else None,
-            "failure_code": execution.failure_code if execution else None,
-            "failure_message": (execution.failure_message or "")[:2000] if execution else None,
+            "command_id": execution.command_id,
+            "exit_code": execution.exit_code,
+            "failure_code": execution.failure_code,
+            "failure_message": output,
         }
         if normalized["command_id"] == "angular-update-exact" or str(
             normalized["command_id"] or ""
@@ -340,9 +491,68 @@ class FailureEvidenceService:
                 except ValueError:
                     pass
             normalized["failure_diagnosis"] = diagnosis
-        failure_fingerprint = "sha256:" + hashlib.sha256(
+        semantic_failure_fingerprint = "sha256:" + hashlib.sha256(
             json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
+        causal_kind = self._causal_kind(normalized, causal_step_name)
+        latest_attempt = session.scalar(
+            select(RepairAttemptModel)
+            .where(
+                RepairAttemptModel.run_id == continuation.run_id,
+                RepairAttemptModel.stage_id == continuation.current_stage_id,
+            )
+            .order_by(RepairAttemptModel.attempt_number.desc())
+            .limit(1)
+        )
+        previous = self._previous_causal_repair(session, run, latest_attempt)
+        same_state = bool(
+            previous
+            and previous.get("causal_execution_id") == execution.id
+            and previous.get("causal_kind") == causal_kind
+            and previous.get("workspace_fingerprint") == binding.workspace_fingerprint
+            and previous.get("semantic_failure_fingerprint") == semantic_failure_fingerprint
+        )
+        next_attempt_id = (
+            latest_attempt.id
+            if same_state
+            else f"repair-{continuation.current_stage_id}-{(latest_attempt.attempt_number if latest_attempt else 0) + 1}"
+        )
+        checkpoint_id = execution.checkpoint_id or session.scalar(
+            select(StageCheckpointModel.id)
+            .where(
+                StageCheckpointModel.run_id == continuation.run_id,
+                StageCheckpointModel.stage_id == continuation.current_stage_id,
+                StageCheckpointModel.safe_for_resume.is_(True),
+            )
+            .order_by(StageCheckpointModel.sequence.desc())
+            .limit(1)
+        )
+        if checkpoint_id is None:
+            raise CausalExecutionError(
+                "CAUSAL_CHECKPOINT_MISSING",
+                "Current failed execution has no authoritative stage checkpoint",
+            )
+        lineage_root = (
+            str(previous.get("lineage_root_attempt_id"))
+            if same_state and previous and previous.get("lineage_root_attempt_id")
+            else next_attempt_id
+        )
+        causal_repair = {
+            "schema_version": CAUSAL_REPAIR_SCHEMA_VERSION,
+            "causal_execution_id": execution.id,
+            "causal_command_id": execution.command_id,
+            "causal_step_name": causal_step_name or execution.command_id,
+            "causal_kind": causal_kind,
+            "semantic_failure_fingerprint": semantic_failure_fingerprint,
+            "workspace_fingerprint": binding.workspace_fingerprint,
+            "checkpoint_id": checkpoint_id,
+            "parent_attempt_id": latest_attempt.id if latest_attempt and not same_state else (previous or {}).get("parent_attempt_id"),
+            "lineage_root_attempt_id": lineage_root,
+        }
+        causal_repair["causal_state_identity"] = "sha256:" + hashlib.sha256(
+            json.dumps(causal_repair, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        failure_fingerprint = causal_repair["causal_state_identity"]
         return {
             "schema_version": "transformer-failure-evidence-v1",
             "run_id": continuation.run_id,
@@ -351,18 +561,76 @@ class FailureEvidenceService:
             "workspace_path": binding.workspace_path,
             "workspace_fingerprint": binding.workspace_fingerprint,
             "artifact_root": run.artifact_root,
-            "execution_id": execution.id if execution else None,
-            "command_log_artifact_id": execution.command_log_artifact_id if execution else None,
-            "result_artifact_id": execution.result_artifact_id if execution else None,
+            "execution_id": execution.id,
+            "command_log_artifact_id": execution.command_log_artifact_id,
+            "result_artifact_id": execution.result_artifact_id,
             "normalized_failure": normalized,
+            "causal_repair": causal_repair,
+            "semantic_failure_fingerprint": semantic_failure_fingerprint,
             "failure_fingerprint": failure_fingerprint,
             "prior_fingerprints": prior_fingerprints,
             "repair_policy": (stage_plan.stage_plan or {}).get("repair_policy") or {},
+            "target_cohort": (stage_plan.stage_plan or {}).get("target_cohort") or {},
             "forbidden_change_policy": (stage_plan.stage_plan or {}).get(
                 "forbidden_change_policy"
             )
             or {},
         }
+
+    @staticmethod
+    def _causal_kind(normalized: dict[str, object], step_name: str | None) -> str:
+        intelligence = FailureIntelligenceService()
+        if intelligence.is_dependency_incompatible(normalized):
+            return "dependency"
+        route = intelligence.classify(normalized)
+        if route in {FailureRoute.ENVIRONMENT_TRANSIENT, FailureRoute.ENVIRONMENT_PERMANENT}:
+            return "environment"
+        prefix = str(step_name or "").split("-", 1)[0]
+        return {"builds": "build", "tests": "test", "lint": "lint"}.get(prefix, "source")
+
+    @staticmethod
+    def _execution_output(session, run, execution) -> str:
+        parts = [str(execution.failure_message or "")]
+        if run is not None and run.artifact_root:
+            store = LocalFilesystemArtifactStore(
+                Path(str(run.artifact_root)).parent,
+                fixed_run_root=Path(str(run.artifact_root)),
+            )
+            from app.repositories.models import ArtifactMetadataModel
+
+            for artifact_id in (execution.stdout_artifact_id, execution.stderr_artifact_id):
+                metadata = session.get(ArtifactMetadataModel, "metadata-" + str(artifact_id)) if artifact_id else None
+                if metadata is None or metadata.run_id != execution.run_id:
+                    continue
+                try:
+                    stored = store.read_artifact(execution.run_id, metadata.relative_path)
+                except (ArtifactNotFoundError, ArtifactStoreError, OSError):
+                    continue
+                if stored.ref.checksum == metadata.checksum:
+                    parts.append(stored.content)
+        return "\n".join(part for part in parts if part)[-8000:]
+
+    @staticmethod
+    def _previous_causal_repair(session, run, attempt) -> dict[str, object] | None:
+        if attempt is None or run is None or not run.artifact_root or not attempt.failure_evidence_artifact_id:
+            return None
+        from app.repositories.models import ArtifactMetadataModel
+
+        metadata = session.get(
+            ArtifactMetadataModel, "metadata-" + str(attempt.failure_evidence_artifact_id)
+        )
+        if metadata is None or metadata.checksum != attempt.failure_evidence_checksum:
+            return None
+        try:
+            stored = LocalFilesystemArtifactStore(
+                Path(str(run.artifact_root)).parent,
+                fixed_run_root=Path(str(run.artifact_root)),
+            ).read_artifact(attempt.run_id, metadata.relative_path)
+            payload = json.loads(stored.content)
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError, TypeError, ValueError):
+            return None
+        value = payload.get("causal_repair") if isinstance(payload, dict) else None
+        return value if isinstance(value, dict) else None
 
     def classify(self, evidence: dict[str, object]) -> FailureRoute:
         code = str((evidence["normalized_failure"] or {}).get("error_code") or "")
@@ -372,6 +640,13 @@ class FailureEvidenceService:
             return FailureRoute.ANGULAR_UPDATE_COMMAND_POLICY
         if self.is_angular_update_peer_dependency_conflict(evidence):
             return FailureRoute.ANGULAR_UPDATE_PEER_CONFLICT
+        intelligence_route = FailureIntelligenceService().classify(evidence)
+        if intelligence_route in {
+            FailureRoute.DEPENDENCY_INCOMPATIBLE,
+            FailureRoute.ENVIRONMENT_TRANSIENT,
+            FailureRoute.ENVIRONMENT_PERMANENT,
+        }:
+            return intelligence_route
         if code in self.transient_codes:
             return FailureRoute.ENVIRONMENT_TRANSIENT
         if code in self.permanent_codes:
@@ -527,7 +802,10 @@ class FailureEvidenceService:
         truncated: list[str] = []
         omitted: list[str] = []
         included_bytes = 0
-        for relative in sorted(CONTEXT_PACK_FILES):
+        failure_targets = FailureTargetResolver.resolve(
+            workspace, str((evidence.get("normalized_failure") or {}).get("failure_message") or "")
+        )
+        for relative in sorted({*CONTEXT_PACK_FILES, *failure_targets}):
             if len(entries) >= max_files:
                 omitted.append(relative)
                 continue
@@ -551,6 +829,8 @@ class FailureEvidenceService:
             "failure_fingerprint": evidence["failure_fingerprint"],
             "workspace_fingerprint": evidence["workspace_fingerprint"],
             "normalized_failure": evidence["normalized_failure"],
+            "causal_repair": evidence["causal_repair"],
+            "target_cohort": evidence.get("target_cohort") or {},
             "forbidden_change_policy": evidence["forbidden_change_policy"],
             "file_excerpts": entries,
             "bounds": {
@@ -640,6 +920,25 @@ def validate_context_pack(payload: object) -> None:
         raise ValueError("repair context pack must be a JSON object")
     if payload.get("schema_version") != CONTEXT_PACK_SCHEMA_VERSION:
         raise ValueError("repair context pack schema_version is not supported")
+    causal = payload.get("causal_repair")
+    if not isinstance(causal, dict) or causal.get("schema_version") != CAUSAL_REPAIR_SCHEMA_VERSION:
+        raise ValueError("repair context pack causal repair lineage is missing")
+    required_causal = {
+        "causal_execution_id",
+        "causal_command_id",
+        "causal_step_name",
+        "causal_kind",
+        "semantic_failure_fingerprint",
+        "workspace_fingerprint",
+        "checkpoint_id",
+        "parent_attempt_id",
+        "lineage_root_attempt_id",
+        "causal_state_identity",
+    }
+    if set(causal) != required_causal | {"schema_version"}:
+        raise ValueError("repair context pack causal repair lineage fields are invalid")
+    if causal.get("causal_kind") not in {"dependency", "build", "test", "lint", "source", "environment"}:
+        raise ValueError("repair context pack causal kind is invalid")
     bounds = payload.get("bounds")
     if not isinstance(bounds, dict):
         raise ValueError("repair context pack bounds block is missing")

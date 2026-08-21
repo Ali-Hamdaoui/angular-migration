@@ -187,7 +187,11 @@ class StageSealingService:
         target_exact = (context.get("stage_plan") or {}).get("target_exact")
         if target_exact:
             try:
-                self._target_versions.verify(workspace, str(target_exact))
+                self._target_versions.verify(
+                    workspace,
+                    str(target_exact),
+                    dict((context.get("stage_plan") or {}).get("target_cohort") or {}),
+                )
             except StageTargetVersionError as error:
                 raise StageSealingError(error.code, error.message) from error
         stage_root = Path(str(context["stage_root"])).resolve(strict=True)

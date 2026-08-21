@@ -39,6 +39,7 @@ from app.domain.planning import (
     checksum_model,
 )
 from app.services.stage_knowledge_service import StageKnowledgeRegistry
+from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
 
 
 class PlanningApplicationError(ValueError):
@@ -86,13 +87,22 @@ class BuildSystemDecisionService:
 
 
 class StageExecutionPlanService:
-    def __init__(self, *, build_system_decisions: BuildSystemDecisionService | None = None) -> None:
+    def __init__(self, *, build_system_decisions: BuildSystemDecisionService | None = None, catalogue_provider: CompatibilityCatalogueProvider | None = None) -> None:
         self._builders = build_system_decisions or BuildSystemDecisionService()
+        self._catalogue = catalogue_provider or CompatibilityCatalogueProvider()
 
     def create(self, request: PlanGenerationRequest, *, plan_version: int = 1) -> StageExecutionPlan:
         source_family, target_family, catalogue_stage_id, target_exact = request.stage_route[0][:4]
         stage_id = run_scoped_stage_id(request.run_id, catalogue_stage_id)
         target_cli_exact = request.target_cli_exact or (request.stage_route[0][4] if len(request.stage_route[0]) == 5 else target_exact)
+        entry = self._catalogue.load(request.catalogue_version).entry_for(source_family, target_family)
+        if entry is None or target_exact != entry.target_angular_exact or target_cli_exact != entry.target_cli_exact:
+            raise PlanningApplicationError(
+                "TARGET_COHORT_AUTHORITY_MISMATCH",
+                "Stage route exact versions differ from the approved compatibility cohort.",
+                409,
+            )
+        target_cohort = entry.target_cohort()
         decision = self._builders.decide(builder=request.builder, decision_id=f"builder-{request.run_id}-{stage_id}-v{plan_version}")
         if decision.action == "blocked":
             raise PlanningApplicationError("UNSUPPORTED_BUILD_SYSTEM", decision.rationale, 409)
@@ -147,7 +157,7 @@ class StageExecutionPlanService:
             )
         knowledge = StageKnowledgeRegistry().entry(_major(source_family), _major(target_family))
         dispositions = StageKnowledgeRegistry.dependency_dispositions(knowledge, request.capability_facts)
-        draft = StageExecutionPlan(stage_plan_id=f"stage-plan-{request.run_id}-{stage_id}-v{plan_version}", stage_id=stage_id, plan_version=plan_version, input_fingerprint=request.input_fingerprint, evidence_set_checksum=request.evidence_set_checksum, input_workspace_fingerprint=request.input_workspace_fingerprint, source_family=source_family, source_exact=request.source_exact, target_family=target_family, target_exact=target_exact, target_cli_exact=target_cli_exact, execution_profile_id=request.execution_profile_id, capability_snapshot_id=request.capability_snapshot_id, capability_snapshot_checksum=request.capability_snapshot_checksum, expected_dependency_changes=dispositions, package_manager=request.package_manager, resolved_scripts=dict(request.resolved_scripts), project_targets=dict(request.project_targets), commands=commands, build_system_decision=decision, validation_policy=validation, recovery_policy=recovery, repair_policy=repair, forbidden_change_policy=forbidden, checksum="sha256:" + "0" * 64)
+        draft = StageExecutionPlan(stage_plan_id=f"stage-plan-{request.run_id}-{stage_id}-v{plan_version}", stage_id=stage_id, plan_version=plan_version, input_fingerprint=request.input_fingerprint, evidence_set_checksum=request.evidence_set_checksum, input_workspace_fingerprint=request.input_workspace_fingerprint, source_family=source_family, source_exact=request.source_exact, target_family=target_family, target_exact=target_exact, target_cli_exact=target_cli_exact, target_cohort=target_cohort, execution_profile_id=request.execution_profile_id, capability_snapshot_id=request.capability_snapshot_id, capability_snapshot_checksum=request.capability_snapshot_checksum, expected_dependency_changes=dispositions, package_manager=request.package_manager, resolved_scripts=dict(request.resolved_scripts), project_targets=dict(request.project_targets), commands=commands, build_system_decision=decision, validation_policy=validation, recovery_policy=recovery, repair_policy=repair, forbidden_change_policy=forbidden, checksum="sha256:" + "0" * 64)
         return draft.model_copy(update={"checksum": checksum_model(draft)})
 
     @staticmethod
