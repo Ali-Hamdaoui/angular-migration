@@ -252,6 +252,10 @@ class CompatibilityStage(CompatibilityModel):
     support_level: SupportLevel
     target_angular_exact: str
     target_cli_exact: str
+    typescript_exact: str | None = None
+    rxjs_exact: str | None = None
+    zone_js_exact: str | None = None
+    target_cohort: dict[str, str] = Field(default_factory=dict)
     node_exact: str | None = None
     npm_exact: str | None = None
     blockers: tuple[str, ...] = ()
