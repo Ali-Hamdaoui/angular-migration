@@ -20,6 +20,7 @@ from app.repositories.models import (
     ArtifactMetadataModel,
     LlmInvocationModel,
     MigrationPlanModel,
+    MigrationStageModel,
     MigrationRunModel,
     RepairAttemptModel,
     StageExecutionPlanModel,
@@ -36,7 +37,12 @@ from app.services.repair_application_service import (
     _LEGACY_SEMANTIC_RECOVERY_CODES,
     _SEMANTIC_RETRY_CODES,
 )
+from app.services.repair_lifecycle_service import RepairLifecycleService
 from app.services.stage_preparation_primitives import StageSandboxCopier
+from app.services.dependency_repair_preflight_service import (
+    DependencyRepairPreflightError,
+    DependencyRepairPreflightService,
+)
 from app.services.transformation_continuation_service import (
     append_continuation_event,
 )
@@ -55,11 +61,12 @@ _NEXT_NODE = {
     StageGateId.G08.value: TransformationNode.FINAL_INSTALL.value,
     StageGateId.G09.value: TransformationNode.CREATE_G12.value,
     StageGateId.G10.value: TransformationNode.APPLY_REPAIR.value,
-    StageGateId.G11.value: TransformationNode.SEAL_STAGE.value,
+    StageGateId.G11.value: TransformationNode.CREATE_G09.value,
     StageGateId.G12.value: TransformationNode.SEAL_STAGE.value,
 }
 
 _SEMANTIC_RECOVERY_REASON = "semantic retry exhausted recovery requested"
+_BOUND_CANDIDATE_RECOVERY_REASON = "deterministic bound candidate recovery requested"
 
 
 def _canonical_revision_payload(value: object, *, review: bool) -> dict | None:
@@ -110,6 +117,9 @@ class StageGateService:
                 package_artifact_id,
                 package_checksum,
                 artifact_set_checksum=artifact_set_checksum,
+            )
+            self._validate_dependency_repair_preflight(
+                session, continuation, package_artifact_id
             )
         existing = session.scalar(
             select(StageGatePackageModel).where(
@@ -235,22 +245,13 @@ class StageGateService:
             package.stale_at = now or datetime.now(UTC)
             raise StageGateError("STALE_GATE_BINDING", "Gate package is bound to a stale plan version")
         if gate_id == StageGateId.G10.value:
-            review_override_required = self._validate_repair_lineage(
+            self._validate_repair_lineage(
                 session,
                 continuation,
                 package.package_artifact_id,
                 package.package_checksum,
                 artifact_set_checksum=package.artifact_set_checksum,
             )
-            if (
-                review_override_required
-                and request.decision == "approve"
-                and not (request.comment and request.comment.strip())
-            ):
-                raise StageGateError(
-                    "G10_OVERRIDE_COMMENT_REQUIRED",
-                    "Approval despite Reviewer concerns requires an override comment",
-                )
         if (
             continuation.state_version != request.expected_state_version
             or package.expected_state_version != request.expected_state_version
@@ -282,11 +283,7 @@ class StageGateService:
             package_checksum=request.package_checksum,
             workspace_fingerprint=request.workspace_fingerprint,
             accepted=accepted,
-            reason_code=(
-                "REVIEW_OVERRIDE_REQUIRED"
-                if gate_id == StageGateId.G10.value and review_override_required and accepted
-                else None if accepted else request.decision.upper()
-            ),
+            reason_code=None if accepted else request.decision.upper(),
             created_at=decided_at,
         )
         session.add(decision)
@@ -306,8 +303,14 @@ class StageGateService:
                     raise StageGateError(
                         "G10_LINEAGE_STALE", "G10 repair attempt binding is missing"
                     )
-                attempt.status = "approved_pending_execution"
-                attempt.updated_at = decided_at
+                RepairLifecycleService.transition_in_session(
+                    session,
+                    attempt,
+                    "approved_pending_execution",
+                    reason="human G10 approval released reviewed repair for execution",
+                    actor=actor,
+                    now=decided_at,
+                )
             elif gate_id == StageGateId.G11.value:
                 attempt = session.scalar(
                     select(RepairAttemptModel)
@@ -318,9 +321,15 @@ class StageGateService:
                     .order_by(RepairAttemptModel.attempt_number.desc())
                 )
                 if attempt is not None:
-                    attempt.status = "validation_passed"
+                    RepairLifecycleService.transition_in_session(
+                        session,
+                        attempt,
+                        "validation_passed",
+                        reason="human G11 approval accepted validated stage",
+                        actor=actor,
+                        now=decided_at,
+                    )
                     attempt.completed_at = decided_at
-                    attempt.updated_at = decided_at
             continuation.status = "queued"
             continuation.current_node = _NEXT_NODE[gate_id]
             continuation.wake_sequence += 1
@@ -335,9 +344,15 @@ class StageGateService:
                     .order_by(RepairAttemptModel.attempt_number.desc())
                 )
                 if attempt is not None:
-                    attempt.status = "validation_failed"
+                    RepairLifecycleService.transition_in_session(
+                        session,
+                        attempt,
+                        "validation_failed",
+                        reason="human G11 rejection blocked stage validation",
+                        actor=actor,
+                        now=decided_at,
+                    )
                     attempt.completed_at = decided_at
-                    attempt.updated_at = decided_at
             continuation.status = "blocked"
             continuation.last_error_code = f"{gate_id}_{request.decision.upper()}"
             continuation.last_error_message = request.comment or f"{gate_id} was not approved"
@@ -420,6 +435,31 @@ class StageGateService:
                 "REPAIR_PARENT_LINEAGE_INVALID",
                 "G10 recovery parent lineage is invalid",
             )
+        recovery_event = session.scalars(
+            select(WorkflowEventModel).where(
+                WorkflowEventModel.run_id == continuation.run_id,
+                WorkflowEventModel.event_type
+                == WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED.value,
+            )
+        ).all()
+        bound_event = next(
+            (
+                event
+                for event in recovery_event
+                if event.reason == _BOUND_CANDIDATE_RECOVERY_REASON
+                and isinstance(event.payload, dict)
+                and event.payload.get("attempt_id") == parent.id
+                and event.payload.get("child_attempt_id") == attempt.id
+            ),
+            None,
+        )
+        parent_has_proposal_only = (
+            parent.proposal_artifact_id is not None
+            and parent.proposal_checksum is not None
+            and parent.review_artifact_id is None
+            and parent.review_checksum is None
+            and bound_event is not None
+        )
         if any(
             getattr(parent, field)
             for field in (
@@ -435,10 +475,18 @@ class StageGateService:
                 "validation_summary_checksum",
                 "post_fingerprint",
             )
-        ):
+        ) and not parent_has_proposal_only:
             raise StageGateError(
                 "REPAIR_PARENT_LINEAGE_INVALID",
                 "G10 recovery parent carries post-proposal evidence",
+            )
+        if parent_has_proposal_only and (
+            (bound_event.payload or {}).get("source_proposal_checksum")
+            != parent.proposal_checksum
+        ):
+            raise StageGateError(
+                "REPAIR_PARENT_LINEAGE_INVALID",
+                "G10 deterministic recovery parent proposal binding is stale",
             )
         if (
             package.get("parent_attempt_id") != parent.id
@@ -451,13 +499,22 @@ class StageGateService:
                 "REPAIR_PARENT_LINEAGE_INVALID",
                 "G10 recovery child carries a parent review reference",
             )
-        recovery_event = session.scalars(
-            select(WorkflowEventModel).where(
-                WorkflowEventModel.run_id == continuation.run_id,
-                WorkflowEventModel.event_type
-                == WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED.value,
-            )
-        ).all()
+        if bound_event is not None:
+            invocation = session.get(LlmInvocationModel, attempt.proposer_invocation_id)
+            if (
+                invocation is None
+                or invocation.status != "completed"
+                or invocation.role != "repair_proposer"
+                or invocation.task_type != "repair_diagnosis"
+                or invocation.deployment_alias != "deterministic-provenance-rebind"
+                or (invocation.artifact_checksums or {}).get(attempt.proposal_artifact_id)
+                != attempt.proposal_checksum
+            ):
+                raise StageGateError(
+                    "REPAIR_PARENT_LINEAGE_INVALID",
+                    "G10 deterministic candidate recovery evidence is stale",
+                )
+            return
         if not any(
             event.reason == _SEMANTIC_RECOVERY_REASON
             and isinstance(event.payload, dict)
@@ -469,6 +526,13 @@ class StageGateService:
                 "REPAIR_PARENT_LINEAGE_INVALID",
                 "G10 recovery ancestry event is missing or stale",
             )
+        recovered_proposer_id = parent.proposer_invocation_id
+        retry_invocation_id = (
+            recovered_proposer_id
+            if isinstance(recovered_proposer_id, str)
+            and ":recovery-" in recovered_proposer_id
+            else f"{parent.id}:proposer:semantic-retry-1"
+        )
         base_invocation = session.scalar(
             select(LlmInvocationModel).where(
                 LlmInvocationModel.run_id == attempt.run_id,
@@ -481,20 +545,45 @@ class StageGateService:
             select(LlmInvocationModel).where(
                 LlmInvocationModel.run_id == attempt.run_id,
                 LlmInvocationModel.stage_id == attempt.stage_id,
-                LlmInvocationModel.id == f"{parent.id}:proposer:semantic-retry-1",
+                LlmInvocationModel.id == retry_invocation_id,
                 LlmInvocationModel.idempotency_key
-                == f"{parent.id}:proposer:semantic-retry-1",
+                == retry_invocation_id,
+            )
+        )
+        base_valid = (
+            base_invocation is not None
+            and (
+                base_invocation.status == "failed"
+                or (
+                    isinstance(recovered_proposer_id, str)
+                    and ":recovery-" in recovered_proposer_id
+                    and base_invocation.status == "uncertain_abandoned"
+                )
+            )
+        )
+        retry_valid = (
+            retry_invocation is not None
+            and retry_invocation.status == "failed"
+            and retry_invocation.failure_code
+            in (_SEMANTIC_RETRY_CODES | _LEGACY_SEMANTIC_RECOVERY_CODES)
+            and (
+                (
+                    isinstance(recovered_proposer_id, str)
+                    and ":recovery-" in recovered_proposer_id
+                    and retry_invocation.failure_stage == "repair_semantics"
+                    and retry_invocation.retries >= 0
+                )
+                or (
+                    not isinstance(recovered_proposer_id, str)
+                    or ":recovery-" not in recovered_proposer_id
+                )
+                and retry_invocation.retries == 1
+                and retry_invocation.failure_stage == "repair_semantics"
             )
         )
         if (
-            base_invocation is None
-            or retry_invocation is None
-            or base_invocation.status != "failed"
-            or retry_invocation.status != "failed"
-            or retry_invocation.retries != 1
-            or retry_invocation.failure_stage != "repair_semantics"
-            or retry_invocation.failure_code
-            not in (_SEMANTIC_RETRY_CODES | _LEGACY_SEMANTIC_RECOVERY_CODES)
+            not base_valid
+            or not retry_valid
         ):
             raise StageGateError(
                 "REPAIR_PARENT_LINEAGE_INVALID",
@@ -606,6 +695,7 @@ class StageGateService:
         parent_review_payload = None
         parent = None
         recovery_parent = False
+        correction_parent = False
         if attempt.parent_attempt_id is not None:
             parent = session.get(RepairAttemptModel, attempt.parent_attempt_id)
             if (
@@ -618,14 +708,21 @@ class StageGateService:
                     "REPAIR_PARENT_LINEAGE_INVALID",
                     "G10 child repair parent lineage is invalid",
                 )
-            if not any(
-                (
-                    parent.proposal_artifact_id,
-                    parent.proposal_checksum,
-                    parent.review_artifact_id,
-                    parent.review_checksum,
-                )
-            ):
+            if str(attempt.diagnosis or "").startswith("validation correction;"):
+                if (
+                    package.get("parent_attempt_id") != parent.id
+                    or package.get("parent_review_artifact_id") is not None
+                    or package.get("parent_review_checksum") is not None
+                    or parent.apply_ledger_artifact_id is None
+                    or parent.apply_ledger_checksum is None
+                    or parent.post_fingerprint is None
+                ):
+                    raise StageGateError(
+                        "REPAIR_PARENT_LINEAGE_INVALID",
+                        "G10 validation-correction parent lineage is invalid",
+                    )
+                correction_parent = True
+            elif parent.review_artifact_id is None and parent.review_checksum is None:
                 cls._validate_recovery_parent_lineage(
                     session, continuation, attempt, parent, package
                 )
@@ -830,15 +927,28 @@ class StageGateService:
                 normalized = list(dict.fromkeys(target.strip().lower() for target in targets))
                 if normalized != targets or normalized != list(package.get("validation_targets") or []) or not normalized or any(target not in SUPPORTED_VALIDATION_TARGETS for target in normalized):
                     raise StageGateError("G10_LINEAGE_STALE", "G10 validation targets are not backend-authorized")
-            elif role == "context_pack" and attempt.parent_attempt_id is not None:
+            elif (
+                role == "context_pack"
+                and attempt.parent_attempt_id is not None
+                and not correction_parent
+            ):
                 revision = payload.get("human_revision")
                 if recovery_parent:
+                    revision_valid = (
+                        revision is None
+                        or (
+                            isinstance(revision, dict)
+                            and bool(str(revision.get("instruction") or "").strip())
+                        )
+                    )
+                    recovered_from = (
+                        envelope.input_hashes.get("recovered_from")
+                        or envelope.input_hashes.get("parent_context")
+                    )
                     if (
-                        not isinstance(revision, dict)
-                        or not str(revision.get("instruction") or "").strip()
+                        not revision_valid
                         or not envelope.input_hashes
-                        or envelope.input_hashes.get("recovered_from")
-                        != parent.context_pack_checksum
+                        or recovered_from != parent.context_pack_checksum
                     ):
                         raise StageGateError(
                             "REPAIR_PARENT_LINEAGE_INVALID",
@@ -883,9 +993,14 @@ class StageGateService:
                             "REPAIR_PARENT_LINEAGE_INVALID",
                             "G10 recovery parent context cannot be verified",
                         ) from error
+                    parent_revision = (
+                        parent_context_payload.get("human_revision")
+                        if isinstance(parent_context_payload, dict)
+                        else None
+                    )
                     if (
                         not isinstance(parent_context_payload, dict)
-                        or parent_context_payload.get("human_revision") != revision
+                        or parent_revision != revision
                     ):
                         raise StageGateError(
                             "REPAIR_PARENT_LINEAGE_INVALID",
@@ -935,12 +1050,16 @@ class StageGateService:
                         )
             elif role == "review":
                 decision = payload.get("decision")
-                if (
-                    payload.get("proposal_checksum") != attempt.proposal_checksum
-                    or decision not in {"accept", "request_changes"}
-                    or (decision == "request_changes") != review_override_required
-                ):
-                    raise StageGateError("G10_LINEAGE_STALE", "G10 review lineage is not accepted")
+                if payload.get("proposal_checksum") != attempt.proposal_checksum:
+                    raise StageGateError(
+                        "G10_LINEAGE_STALE",
+                        "G10 review proposal binding is stale",
+                    )
+                if decision != "accept" or review_override_required:
+                    raise StageGateError(
+                        "REPAIR_REVIEW_NOT_ACCEPTED",
+                        "Reviewer request_changes must be resolved before G10",
+                    )
         for invocation_id, role, artifact_id, checksum in (
             (attempt.proposer_invocation_id, "repair_proposer", attempt.proposal_artifact_id, attempt.proposal_checksum),
             (attempt.reviewer_invocation_id, "repair_reviewer", attempt.review_artifact_id, attempt.review_checksum),
@@ -967,3 +1086,76 @@ class StageGateService:
             ):
                 raise StageGateError("G10_LINEAGE_STALE", "G10 invocation provenance is stale")
         return bool(package.get("review_override_required"))
+
+    @staticmethod
+    def _validate_dependency_repair_preflight(
+        session: Session,
+        continuation: TransformationContinuationModel,
+        package_artifact_id: str,
+    ) -> None:
+        metadata = session.get(ArtifactMetadataModel, "metadata-" + package_artifact_id)
+        run = session.get(MigrationRunModel, continuation.run_id)
+        if metadata is None or run is None or not run.artifact_root:
+            raise StageGateError(
+                "REPAIR_DEPENDENCY_PREFLIGHT_FAILED",
+                "G10 dependency preflight authority is missing",
+            )
+        try:
+            store = LocalFilesystemArtifactStore(
+                Path(str(run.artifact_root)).parent,
+                fixed_run_root=Path(str(run.artifact_root)),
+            )
+            package = json.loads(
+                store.read_artifact(continuation.run_id, metadata.relative_path).content
+            )
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError, TypeError, ValueError) as error:
+            raise StageGateError(
+                "REPAIR_DEPENDENCY_PREFLIGHT_FAILED",
+                "G10 package cannot be read",
+            ) from error
+        attempt = session.get(RepairAttemptModel, package.get("repair_attempt_id"))
+        binding = session.scalar(
+            select(StageWorkspaceBindingModel).where(
+                StageWorkspaceBindingModel.run_id == continuation.run_id,
+                StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+                StageWorkspaceBindingModel.active.is_(True),
+            )
+        )
+        stage = session.get(MigrationStageModel, continuation.current_stage_id)
+        plan = session.get(MigrationPlanModel, continuation.plan_id)
+        if attempt is None or binding is None or stage is None or plan is None:
+            raise StageGateError(
+                "REPAIR_DEPENDENCY_PREFLIGHT_FAILED",
+                "G10 dependency preflight authority is missing",
+            )
+        proposal_metadata = session.get(
+            ArtifactMetadataModel, "metadata-" + str(attempt.proposal_artifact_id)
+        )
+        try:
+            proposal = json.loads(
+                store.read_artifact(continuation.run_id, proposal_metadata.relative_path).content
+            )
+            operations = proposal.get("operations") if isinstance(proposal, dict) else None
+            if not any(
+                isinstance(operation, dict)
+                and (
+                    operation.get("path") == "package.json"
+                    or str(operation.get("operation") or "").startswith("dependency_")
+                )
+                for operation in (operations if isinstance(operations, list) else [])
+            ):
+                return
+            DependencyRepairPreflightService().validate(
+                workspace=Path(binding.workspace_path),
+                proposal=proposal,
+                source_family=str(stage.source_version_family),
+                target_family=str(stage.target_version_family),
+                catalogue_version=(plan.plan or {}).get("catalogue_version"),
+            )
+        except DependencyRepairPreflightError as error:
+            raise StageGateError(error.code, error.message) from error
+        except (AttributeError, ArtifactNotFoundError, ArtifactStoreError, OSError, TypeError, ValueError) as error:
+            raise StageGateError(
+                "REPAIR_DEPENDENCY_PREFLIGHT_FAILED",
+                "Dependency proposal evidence is invalid",
+            ) from error

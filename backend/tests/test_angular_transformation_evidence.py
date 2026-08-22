@@ -50,11 +50,34 @@ def test_four_source_version_proof_and_changed_file_ledger(tmp_path: Path):
         "package_json", "package_lock", "installed_metadata", "ng_version"
     }
     assert ledger["changed_file_count"] == 2
+    assert ledger["before_fingerprint"] != ledger["after_fingerprint"]
     assert all(
         item["attributed_execution_id"] == "execution-angular"
         for item in ledger["changed_files"]
     )
     assert not any(item["path"].startswith("node_modules/") for item in ledger["changed_files"])
+
+
+def test_git_changes_are_excluded_and_zero_change_contradiction_fails(tmp_path: Path):
+    before = tmp_path / "before"
+    workspace = tmp_path / "workspace"
+    before.mkdir()
+    workspace.mkdir()
+    _write_json(before / "package.json", {"version": "1"})
+    _write_json(workspace / "package.json", {"version": "1"})
+    (before / ".git").mkdir()
+    (workspace / ".git").mkdir()
+    (before / ".git" / "index").write_text("old", encoding="utf-8")
+    (workspace / ".git" / "index").write_text("new", encoding="utf-8")
+    service = AngularTransformationEvidenceService()
+    ledger = service.migration_ledger(before, workspace, angular_execution_id="exec")
+    assert ledger["changed_file_count"] == 0
+    with pytest.raises(AngularTransformationEvidenceError, match="ledger is empty"):
+        service.migration_ledger(
+            before, workspace, angular_execution_id="exec",
+            expected_pre_fingerprint="sha256:" + "1" * 64,
+            expected_post_fingerprint="sha256:" + "2" * 64,
+        )
 
 
 def test_four_source_version_proof_rejects_one_mismatch(tmp_path: Path):
@@ -87,6 +110,31 @@ def test_four_source_version_proof_rejects_one_mismatch(tmp_path: Path):
             ng_version_output="Angular CLI: 19.2.0\nAngular: 19.2.0\n",
             angular_execution_id="execution-angular",
         )
+
+
+def test_four_source_version_proof_reads_v1_lockfile_dependencies(tmp_path: Path):
+    before = tmp_path / "before"
+    workspace = tmp_path / "workspace"
+    before.mkdir()
+    workspace.mkdir()
+    _write_json(before / "package.json", {"dependencies": {"@angular/core": "10.2.0"}})
+    _write_json(workspace / "package.json", {"dependencies": {"@angular/core": "11.2.0", "@angular/cli": "11.2.0"}})
+    _write_json(workspace / "package-lock.json", {
+        "lockfileVersion": 1,
+        "dependencies": {
+            "@angular/core": {"version": "11.2.0"},
+            "@angular/cli": {"version": "11.2.0"},
+        },
+    })
+    _write_json(workspace / "node_modules/@angular/core/package.json", {"version": "11.2.0"})
+    _write_json(workspace / "node_modules/@angular/cli/package.json", {"version": "11.2.0"})
+
+    versions, _ = AngularTransformationEvidenceService().build(
+        str(workspace), str(before), target_core="11.2.0", target_cli="11.2.0",
+        ng_version_output="Angular CLI: 11.2.0\nAngular: 11.2.0\n", angular_execution_id="execution-v1",
+    )
+    assert versions["core_sources"]["package_lock"] == "11.2.0"
+    assert versions["cli_sources"]["package_lock"] == "11.2.0"
 
 
 def test_ng_version_output_with_aligned_columns_parses_cli_and_core(tmp_path: Path):

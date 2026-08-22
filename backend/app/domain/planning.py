@@ -102,8 +102,9 @@ class RepairPolicy(ContractModel):
     enabled: bool = True
     proposer_reviewer_required: bool = True
     human_apply_required: bool = True
-    max_attempts: int = Field(default=3, ge=1)
-    max_applied: int = Field(default=2, ge=1)
+    max_attempts: int = Field(default=2, ge=1, le=2)
+    max_applied: int = Field(default=2, ge=1, le=2)
+    max_total_applied_per_stage: int = Field(default=6, ge=1, le=6)
 
 
 class ForbiddenChangePolicy(ContractModel):
@@ -134,15 +135,18 @@ class MigrationPlan(ContractModel):
     plan_id: str = Field(min_length=1, max_length=128)
     run_id: str = Field(min_length=1, max_length=128)
     version: int = Field(ge=1)
-    source_family: str = Field(pattern=r"^angular-(18|19|20)\.x$")
+    source_family: str = Field(pattern=r"^angular-(1[1-9]|2[01])\.x$")
     source_exact: str = Field(min_length=1, max_length=64)
-    target_family: str = Field(pattern=r"^angular-(19|20|21)\.x$")
+    target_family: str = Field(pattern=r"^angular-(1[2-9]|2[01])\.x$")
     route: tuple[str, ...] = Field(min_length=1)
     mode: Literal["strict_compatibility"] = "strict_compatibility"
     catalogue_version: str = Field(min_length=1, max_length=128)
     stage_plan_strategy: Literal["resolve_exact_before_each_stage"] = "resolve_exact_before_each_stage"
     approval_policy: str = "mandatory-human-v1"
     repair_policy: RepairPolicy
+    capability_snapshot_id: str | None = None
+    capability_snapshot_checksum: str | None = None
+    stage_dependency_dispositions: dict[str, tuple[dict[str, str], ...]] = Field(default_factory=dict)
     command_policy: str = "structured-registry-v1"
     artifact_policy: str = "immutable-stage-scoped-v1"
     checksum: str = Field(pattern=_CHECKSUM)
@@ -155,12 +159,16 @@ class StageExecutionPlan(ContractModel):
     input_fingerprint: str = Field(pattern=_CHECKSUM)
     evidence_set_checksum: str | None = Field(default=None, pattern=_CHECKSUM)
     input_workspace_fingerprint: str | None = Field(default=None, pattern=_CHECKSUM)
-    source_family: str = Field(pattern=r"^angular-(18|19|20)\.x$")
+    source_family: str = Field(pattern=r"^angular-(1[1-9]|2[01])\.x$")
     source_exact: str = Field(min_length=1, max_length=64)
-    target_family: str = Field(pattern=r"^angular-(19|20|21)\.x$")
+    target_family: str = Field(pattern=r"^angular-(1[2-9]|2[01])\.x$")
     target_exact: str = Field(min_length=1, max_length=64)
     target_cli_exact: str | None = Field(default=None, max_length=64)
+    target_cohort: dict[str, str] = Field(default_factory=dict)
     execution_profile_id: str = Field(min_length=1, max_length=128)
+    capability_snapshot_id: str | None = None
+    capability_snapshot_checksum: str | None = None
+    expected_dependency_changes: tuple[dict[str, str], ...] = Field(default_factory=tuple)
     package_manager: str = Field(default="npm", min_length=1, max_length=32)
     resolved_scripts: dict[str, str] = Field(default_factory=dict)
     project_targets: dict[str, str] = Field(default_factory=dict)
@@ -174,13 +182,22 @@ class StageExecutionPlan(ContractModel):
 
     @model_validator(mode="after")
     def validate_commands(self) -> "StageExecutionPlan":
-        required = {"bootstrap_install", "angular_update", "target_version_check", "lockfile_generation", "final_install", "builds", "tests", "lint"}
-        if set(self.commands) != required:
+        required = {"bootstrap_install", "angular_update", "target_version_check", "lockfile_generation", "final_install", "migrate_packages", "builds", "tests", "lint"}
+        optional = {"installed_migration_fallback"}
+        if set(self.commands) - required - optional or not required.issubset(self.commands):
             raise ValueError("stage plan commands must contain the complete standard command set")
+        if self.commands.get("installed_migration_fallback") and len(self.commands["installed_migration_fallback"]) != 1:
+            raise ValueError("installed migration fallback must contain one governed command")
         if any(not refs for name, refs in self.commands.items() if name != "lint"):
             raise ValueError("required stage plan command groups cannot be empty")
         if self.build_system_decision.action == "blocked":
             raise ValueError("a blocked build-system decision cannot produce an executable stage plan")
+        if (
+            self.target_cohort.get("@angular/core") != self.target_exact
+            or self.target_cohort.get("@angular/cli") != self.target_cli_exact
+            or any(not _EXACT_VERSION.fullmatch(exact) for exact in self.target_cohort.values())
+        ):
+            raise ValueError("stage target cohort must contain exact approved core and CLI versions")
         return self
 
 
@@ -191,8 +208,8 @@ class PlanGenerationRequest(ContractModel):
     actor: str = Field(min_length=1, max_length=128)
     correlation_id: str | None = Field(default=None, max_length=128)
     source_exact: str = Field(min_length=1, max_length=64)
-    source_family: str = Field(pattern=r"^angular-(18|19|20)\.x$")
-    target_family: str = Field(default="angular-21.x", pattern=r"^angular-(19|20|21)\.x$")
+    source_family: str = Field(pattern=r"^angular-(1[1-9]|2[01])\.x$")
+    target_family: str = Field(default="angular-21.x", pattern=r"^angular-(1[2-9]|2[01])\.x$")
     catalogue_version: str = Field(min_length=1, max_length=128)
     input_fingerprint: str = Field(pattern=_CHECKSUM)
     evidence_set_checksum: str | None = Field(default=None, pattern=_CHECKSUM)
@@ -212,6 +229,10 @@ class PlanGenerationRequest(ContractModel):
     validation_policy_id: str = "angular-stage-standard-v2"
     recovery_policy_id: str = "safe-boundary-v1"
     repair_policy_id: str = "proposer-reviewer-human-v1"
+    capability_facts: tuple[dict[str, str], ...] = ()
+    capability_snapshot_id: str | None = None
+    capability_snapshot_checksum: str | None = None
+    installed_migration_fallback: bool = False
 
     @model_validator(mode="after")
     def validate_route(self) -> "PlanGenerationRequest":

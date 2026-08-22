@@ -79,12 +79,11 @@ class RuntimeCandidate(_ImmutableModel):
 
 class RuntimePolicy(_ImmutableModel):
     policy_version: str = POLICY_VERSION
-    angular_major: int = 18
-    supported_angular_minors: tuple[int, ...] = (0, 1, 2)
-    node_minimums: dict[int, str] = {18: "18.19.1", 20: "20.11.1", 22: "22.0.0"}
-    typescript_minimum: str = "5.4.0"
-    typescript_exclusive_maximum: str = "5.6.0"
-    rxjs_minimums: tuple[str, ...] = ("6.5.3", "7.4.0")
+    supported_angular_minimum: int = 11
+    supported_angular_maximum: int = 21
+    node_ranges: dict[int, tuple[str, ...]] = {}
+    typescript_ranges: dict[int, tuple[str, str]] = {}
+    rxjs_ranges: dict[int, tuple[str, ...]] = {}
     operating_system: str = "windows"
     architecture: str = "amd64"
     allowed_network_policies: tuple[str, ...] = ("approved-registries-only",)
@@ -133,12 +132,17 @@ class RuntimeResolutionResult(_ImmutableModel):
 
 
 class RuntimePolicyLoader:
-    """Loads the versioned, checked-in policy for Sprint 1 source intake."""
+    """Loads the versioned catalogue policy for source intake."""
 
     def load(self, policy_version: str = POLICY_VERSION) -> RuntimePolicy:
         if policy_version != POLICY_VERSION:
             raise ValueError("unsupported runtime compatibility policy")
-        return RuntimePolicy(policy_version=policy_version)
+        # Keep the domain resolver free of import-time service coupling while
+        # using the same checked-in compatibility data as G05 and stage policy.
+        from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
+
+        constraints = CompatibilityCatalogueProvider().source_runtime_constraints()
+        return RuntimePolicy(policy_version=policy_version, **constraints)
 
 
 class SourceRuntimeResolver:
@@ -149,11 +153,15 @@ class SourceRuntimeResolver:
         policy = self._loader.load(request.expected_policy_version)
         blockers: list[str] = []
         source = Version.parse(request.source_angular_exact)
-        if source is None or source.major != policy.angular_major or source.minor not in policy.supported_angular_minors:
+        if (
+            source is None
+            or source.major < policy.supported_angular_minimum
+            or source.major > policy.supported_angular_maximum
+        ):
             blockers.append("SOURCE_ANGULAR_VERSION_UNSUPPORTED")
-        if request.source_typescript_exact and not self._typescript_allowed(request.source_typescript_exact, policy):
+        if request.source_typescript_exact and not self._typescript_allowed(request.source_typescript_exact, source, policy):
             blockers.append("SOURCE_TYPESCRIPT_VERSION_INCOMPATIBLE")
-        if request.source_rxjs_exact and not self._rxjs_allowed(request.source_rxjs_exact, policy):
+        if request.source_rxjs_exact and not self._rxjs_allowed(request.source_rxjs_exact, source, policy):
             blockers.append("SOURCE_RXJS_VERSION_INCOMPATIBLE")
         if blockers:
             return self._blocked(policy, blockers)
@@ -193,11 +201,12 @@ class SourceRuntimeResolver:
         if candidate.operating_system.lower() != policy.operating_system or candidate.architecture.lower() != policy.architecture:
             reasons.append("RUNTIME_PLATFORM_INCOMPATIBLE")
         node = Version.parse(candidate.node_exact)
-        if node is None or source is None or node.major not in policy.node_minimums or not node.at_least(Version.parse(policy.node_minimums[node.major])):
+        allowed_node_ranges = policy.node_ranges.get(source.major) if source else None
+        if node is None or source is None or not allowed_node_ranges or not SourceRuntimeResolver._satisfies_any(node, allowed_node_ranges):
             reasons.append("NODE_VERSION_INCOMPATIBLE")
         if Version.parse(candidate.npm_exact) is None or Version.parse(candidate.npx_exact) is None:
             reasons.append("PACKAGE_MANAGER_VERSION_UNRESOLVED")
-        if candidate.angular_cli_exact and (Version.parse(candidate.angular_cli_exact) or Version(major=0, minor=0, patch=0)).major != policy.angular_major:
+        if candidate.angular_cli_exact and (Version.parse(candidate.angular_cli_exact) or Version(major=0, minor=0, patch=0)).major != (source.major if source else -1):
             reasons.append("ANGULAR_CLI_VERSION_INCOMPATIBLE")
         for valid, reason in ((candidate.registry_configured, "REGISTRY_UNAVAILABLE"), (candidate.certificate_valid, "CERTIFICATE_INVALID"), (candidate.environment_allowlist_valid, "ENVIRONMENT_ALLOWLIST_INVALID"), (candidate.cache_policy_valid, "CACHE_POLICY_INVALID")):
             if not valid:
@@ -212,14 +221,31 @@ class SourceRuntimeResolver:
         return (version.major, version.minor, version.patch) if version else (-1, -1, -1)
 
     @staticmethod
-    def _typescript_allowed(value: str, policy: RuntimePolicy) -> bool:
+    def _typescript_allowed(value: str, source: Version | None, policy: RuntimePolicy) -> bool:
         version = Version.parse(value)
-        return bool(version and version.at_least(Version.parse(policy.typescript_minimum)) and not version.at_least(Version.parse(policy.typescript_exclusive_maximum)))
+        bounds = policy.typescript_ranges.get(source.major) if source else None
+        return bool(
+            version
+            and bounds
+            and version.at_least(Version.parse(bounds[0]))
+            and not version.at_least(Version.parse(bounds[1]))
+        )
 
     @staticmethod
-    def _rxjs_allowed(value: str, policy: RuntimePolicy) -> bool:
+    def _rxjs_allowed(value: str, source: Version | None, policy: RuntimePolicy) -> bool:
         version = Version.parse(value)
-        return bool(version and any(version.at_least(Version.parse(minimum)) for minimum in policy.rxjs_minimums))
+        ranges = policy.rxjs_ranges.get(source.major) if source else None
+        return bool(version and ranges and SourceRuntimeResolver._satisfies_any(version, ranges))
+
+    @staticmethod
+    def _satisfies_any(version: Version, ranges: tuple[str, ...]) -> bool:
+        return any(
+            value.startswith("^")
+            and (minimum := Version.parse(value[1:])) is not None
+            and version.at_least(minimum)
+            and version.major == minimum.major
+            for value in ranges
+        )
 
     @staticmethod
     def _profile(candidate: RuntimeCandidate, request: RuntimeResolutionRequest, policy: RuntimePolicy) -> ExecutionProfile:

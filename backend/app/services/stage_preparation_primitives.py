@@ -22,6 +22,10 @@ class SandboxCopyReport:
 class StageSandboxCopier:
     excluded_names = STAGE_VOLATILE_NAMES
 
+    @classmethod
+    def is_excluded_path(cls, relative: Path) -> bool:
+        return any(part in cls.excluded_names for part in Path(relative).parts)
+
     def copy(self, source: Path, target: Path, *, registered_root: Path | None = None) -> SandboxCopyReport:
         source = Path(source).resolve(strict=True)
         target = Path(target).resolve(strict=False)
@@ -35,6 +39,8 @@ class StageSandboxCopier:
         if target.exists():
             raise ValueError("stage sandbox target already exists")
         for item in source.rglob("*"):
+            if self.is_excluded_path(item.relative_to(source)):
+                continue
             if item.is_symlink():
                 raise ValueError("unsupported symlink in source workspace")
         excluded: list[str] = []
@@ -43,7 +49,7 @@ class StageSandboxCopier:
         try:
             for item in source.rglob("*"):
                 relative = item.relative_to(source)
-                if any(part in self.excluded_names for part in relative.parts):
+                if self.is_excluded_path(relative):
                     excluded.append(relative.as_posix())
                     continue
                 destination = target / relative

@@ -4,9 +4,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable
 
-from app.domain.command import ANGULAR_UPDATE_V3_RENDERER, TRANSFORMATION_COMMAND_CATALOGUE
+from app.domain.command import ANGULAR_INSTALLED_MIGRATION_RENDERER, ANGULAR_UPDATE_V5_RENDERER, ANGULAR_UPDATE_V6_RENDERER, TRANSFORMATION_COMMAND_CATALOGUE
+
+try:
+    from app.domain.command import ANGULAR_MIGRATE_RANGE_RENDERER
+except ImportError:  # frozen contract even if sibling absent
+    from app.domain.command import TransformationCommandDefinition
+
+    ANGULAR_MIGRATE_RANGE_RENDERER = TransformationCommandDefinition(
+        command_id="angular-migrate-range",
+        template_id="tpl-angular-migrate-range-v1",
+        executable="npx",
+        argument_patterns=("ng", "update", "{package}", "--migrate-only", "--from", "{from_version}", "--to", "{to_version}"),
+        executable_aliases=("npx.cmd",),
+        timeout_seconds=1800,
+        allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE", "NG_DISABLE_VERSION_CHECK"),
+        max_output_bytes=5_000_000,
+        description="Execute a governed migrate-only update for one package range",
+    )
 from app.domain.planning import (
     BuildSystemDecision,
     CommandTemplateReference,
@@ -20,14 +38,33 @@ from app.domain.planning import (
     ValidationPolicy,
     checksum_model,
 )
+from app.services.stage_knowledge_service import StageKnowledgeRegistry
+from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
 
 
 class PlanningApplicationError(ValueError):
-    def __init__(self, code: str, message: str, status_code: int = 422) -> None:
+    def __init__(self, code: str, message: str, status_code: int = 422, *, details=None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.status_code = status_code
+        self.details = details
+
+
+def planning_failure_details(error: Exception, *, planning_component: str) -> dict[str, str]:
+    current = error
+    seen: set[int] = set()
+    while (current.__cause__ or current.__context__) and id(current) not in seen:
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    sanitize = lambda value: re.sub(r"(?:[A-Za-z]:\\|/|\\\\)[^\s,;]+", "<path>", " ".join(str(value).split()))[:500]
+    return {
+        "exception_type": type(error).__name__,
+        "sanitized_exception_message": sanitize(error),
+        "root_exception_type": type(current).__name__,
+        "root_exception_message": sanitize(current),
+        "planning_component": planning_component,
+    }
 
 
 def run_scoped_stage_id(run_id: str, catalogue_stage_id: str) -> str:
@@ -50,13 +87,22 @@ class BuildSystemDecisionService:
 
 
 class StageExecutionPlanService:
-    def __init__(self, *, build_system_decisions: BuildSystemDecisionService | None = None) -> None:
+    def __init__(self, *, build_system_decisions: BuildSystemDecisionService | None = None, catalogue_provider: CompatibilityCatalogueProvider | None = None) -> None:
         self._builders = build_system_decisions or BuildSystemDecisionService()
+        self._catalogue = catalogue_provider or CompatibilityCatalogueProvider()
 
     def create(self, request: PlanGenerationRequest, *, plan_version: int = 1) -> StageExecutionPlan:
         source_family, target_family, catalogue_stage_id, target_exact = request.stage_route[0][:4]
         stage_id = run_scoped_stage_id(request.run_id, catalogue_stage_id)
         target_cli_exact = request.target_cli_exact or (request.stage_route[0][4] if len(request.stage_route[0]) == 5 else target_exact)
+        entry = self._catalogue.load(request.catalogue_version).entry_for(source_family, target_family)
+        if entry is None or target_exact != entry.target_angular_exact or target_cli_exact != entry.target_cli_exact:
+            raise PlanningApplicationError(
+                "TARGET_COHORT_AUTHORITY_MISMATCH",
+                "Stage route exact versions differ from the approved compatibility cohort.",
+                409,
+            )
+        target_cohort = entry.target_cohort()
         decision = self._builders.decide(builder=request.builder, decision_id=f"builder-{request.run_id}-{stage_id}-v{plan_version}")
         if decision.action == "blocked":
             raise PlanningApplicationError("UNSUPPORTED_BUILD_SYSTEM", decision.rationale, 409)
@@ -77,24 +123,71 @@ class StageExecutionPlanService:
         recovery = RecoveryPolicy(policy_id=request.recovery_policy_id)
         repair = RepairPolicy(policy_id=request.repair_policy_id)
         forbidden = ForbiddenChangePolicy(policy_id="forbidden-modernization-v1")
+        angular_bindings = {"target_cli_exact": target_cli_exact, "target_exact": target_exact}
+        if all(
+            package in target_cohort
+            for package in ("typescript", "rxjs", "zone.js", "@angular-devkit/build-angular")
+        ):
+            angular_definition = ANGULAR_UPDATE_V6_RENDERER
+            angular_template_version = 6
+            angular_bindings.update(
+                {
+                    "target_typescript_exact": target_cohort["typescript"],
+                    "target_rxjs_exact": target_cohort["rxjs"],
+                    "target_zone_js_exact": target_cohort["zone.js"],
+                }
+            )
+        else:
+            angular_definition = ANGULAR_UPDATE_V5_RENDERER
+            angular_template_version = 5
         commands = {
             "bootstrap_install": (self._command("npm-ci-bootstrap", request),),
-            "angular_update": (self._command("angular-update-exact", request, {"target_cli_exact": target_cli_exact, "target_exact": target_exact}),),
+            "angular_update": (self._command("angular-update-exact", request, angular_bindings, definition=angular_definition, template_version=angular_template_version),),
             "target_version_check": (self._command("angular-version-verify", request),),
             "lockfile_generation": (self._command("npm-lockfile-generate", request),),
             "final_install": (self._command("npm-ci-final", request),),
+            "migrate_packages": (self._command("angular-migrate-range", request, {"package": "@angular/core", "from_version": request.source_exact, "to_version": target_exact}),),
             "builds": (self._command("npm-script-build-production", request, {"build_script": request.resolved_scripts["build"], "build_configuration": "production"}),),
             "tests": (self._command("npm-script-test-ci", request, {"test_script": request.resolved_scripts["test"], "test_watch_flag": "--watch=false"}),),
             "lint": (self._command("npm-script-lint", request, {"lint_script": request.resolved_scripts["lint"]}),) if "lint" in request.resolved_scripts else (),
         }
-        draft = StageExecutionPlan(stage_plan_id=f"stage-plan-{request.run_id}-{stage_id}-v{plan_version}", stage_id=stage_id, plan_version=plan_version, input_fingerprint=request.input_fingerprint, evidence_set_checksum=request.evidence_set_checksum, input_workspace_fingerprint=request.input_workspace_fingerprint, source_family=source_family, source_exact=request.source_exact, target_family=target_family, target_exact=target_exact, target_cli_exact=target_cli_exact, execution_profile_id=request.execution_profile_id, package_manager=request.package_manager, resolved_scripts=dict(request.resolved_scripts), project_targets=dict(request.project_targets), commands=commands, build_system_decision=decision, validation_policy=validation, recovery_policy=recovery, repair_policy=repair, forbidden_change_policy=forbidden, checksum="sha256:" + "0" * 64)
+        if request.installed_migration_fallback and not StageKnowledgeRegistry.allows_installed_migration_fallback(
+            StageKnowledgeRegistry().entry(_major(source_family), _major(target_family)),
+            request.capability_facts,
+        ):
+            raise PlanningApplicationError(
+                "INSTALLED_MIGRATION_FALLBACK_NOT_AUTHORIZED",
+                "Installed Angular migrations require an approved stage-plan policy.",
+                409,
+            )
+        if request.installed_migration_fallback:
+            commands["installed_migration_fallback"] = (
+                self._command(
+                    "angular-migrate-installed",
+                    request,
+                    {
+                        "package": "@angular/core",
+                        "from_version": request.source_exact,
+                        "to_version": target_exact,
+                    },
+                ),
+            )
+        knowledge = StageKnowledgeRegistry().entry(_major(source_family), _major(target_family))
+        dispositions = StageKnowledgeRegistry.dependency_dispositions(knowledge, request.capability_facts)
+        draft = StageExecutionPlan(stage_plan_id=f"stage-plan-{request.run_id}-{stage_id}-v{plan_version}", stage_id=stage_id, plan_version=plan_version, input_fingerprint=request.input_fingerprint, evidence_set_checksum=request.evidence_set_checksum, input_workspace_fingerprint=request.input_workspace_fingerprint, source_family=source_family, source_exact=request.source_exact, target_family=target_family, target_exact=target_exact, target_cli_exact=target_cli_exact, target_cohort=target_cohort, execution_profile_id=request.execution_profile_id, capability_snapshot_id=request.capability_snapshot_id, capability_snapshot_checksum=request.capability_snapshot_checksum, expected_dependency_changes=dispositions, package_manager=request.package_manager, resolved_scripts=dict(request.resolved_scripts), project_targets=dict(request.project_targets), commands=commands, build_system_decision=decision, validation_policy=validation, recovery_policy=recovery, repair_policy=repair, forbidden_change_policy=forbidden, checksum="sha256:" + "0" * 64)
         return draft.model_copy(update={"checksum": checksum_model(draft)})
 
     @staticmethod
-    def _command(command_id, request, parameter_bindings=None):
+    def _command(command_id, request, parameter_bindings=None, *, definition=None, template_version=None):
         if command_id == "angular-update-exact":
-            definition = ANGULAR_UPDATE_V3_RENDERER
-            template_version = 3
+            definition = definition or ANGULAR_UPDATE_V5_RENDERER
+            template_version = template_version or 5
+        elif command_id == "angular-migrate-installed":
+            definition = ANGULAR_INSTALLED_MIGRATION_RENDERER
+            template_version = 1
+        elif command_id == "angular-migrate-range":
+            definition = ANGULAR_MIGRATE_RANGE_RENDERER
+            template_version = 1
         else:
             definition = TRANSFORMATION_COMMAND_CATALOGUE[command_id]
             template_version = 1
@@ -123,7 +216,14 @@ class MigrationPlanService:
             run_scoped_stage_id(request.run_id, item[2])
             for item in request.stage_route
         )
-        draft = MigrationPlan(plan_id=f"plan-{request.run_id}-v{plan_version}", run_id=request.run_id, version=plan_version, source_family=request.source_family, source_exact=request.source_exact, target_family=request.target_family, route=route, catalogue_version=request.catalogue_version, repair_policy=repair, checksum="sha256:" + "0" * 64)
+        dispositions = {
+            item[2]: StageKnowledgeRegistry.dependency_dispositions(
+                StageKnowledgeRegistry().entry(_major(item[0]), _major(item[1])),
+                request.capability_facts,
+            )
+            for item in request.stage_route
+        }
+        draft = MigrationPlan(plan_id=f"plan-{request.run_id}-v{plan_version}", run_id=request.run_id, version=plan_version, source_family=request.source_family, source_exact=request.source_exact, target_family=request.target_family, route=route, catalogue_version=request.catalogue_version, repair_policy=repair, capability_snapshot_id=request.capability_snapshot_id, capability_snapshot_checksum=request.capability_snapshot_checksum, stage_dependency_dispositions=dispositions, checksum="sha256:" + "0" * 64)
         return draft.model_copy(update={"checksum": checksum_model(draft)})
 
 
@@ -156,7 +256,12 @@ class PlanningApplicationService:
         except PlanningApplicationError:
             raise
         except Exception as error:
-            raise PlanningApplicationError("PLAN_GENERATION_FAILED", "Plan generation failed closed.", 503) from error
+            raise PlanningApplicationError(
+                "PLAN_GENERATION_FAILED",
+                "Plan generation failed closed.",
+                503,
+                details=planning_failure_details(error, planning_component="PlanningApplicationService.generate"),
+            ) from error
         result = PlanGenerationResult(run_id=request.run_id, status="generated", plan=plan, first_stage_plan=stage, artifact_inputs=request.prerequisite_artifacts, state_version=request.expected_state_version)
         self._results[key] = (request_checksum, result)
         return result
@@ -175,3 +280,7 @@ class PlanningApplicationService:
     @staticmethod
     def _request_checksum(request: PlanGenerationRequest) -> str:
         return "sha256:" + hashlib.sha256(json.dumps(request.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _major(family: str) -> int:
+    return int(family.removeprefix("angular-").removesuffix(".x"))

@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.api.authentication import authenticated_actor, authorize_run
 from app.api.errors import error_response
 from app.domain.transformation import (
+    LegacyRepairOverrideRecoveryRequest,
     RepairDecisionRequest,
     RepairInvocationRecoveryRequest,
     RepairRevisionRequest,
@@ -27,6 +28,7 @@ from app.repositories.models import (
     StageGateDecisionModel,
     StageGatePackageModel,
     StagePromptRequestModel,
+    StageRecoveryOperationModel,
     StageStepModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
@@ -44,6 +46,7 @@ from app.artifact_store import ArtifactNotFoundError, ArtifactStoreError, LocalF
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformer_prompt_service import TransformerPromptError, TransformerPromptService
 from app.services.transformer_stage_service import TransformerStageService
+from app.services.stage_recovery_service import StageRecoveryError, StageRecoveryService
 from app.domain.transformation import PromptDecisionRequest
 
 router = APIRouter(prefix="/runs", tags=["transformation"])
@@ -106,6 +109,7 @@ _NODE_ACTION_LABELS = {
     "seal_stage": "Sealing the stage",
     "materialize_next_stage": "Materializing the next stage",
     "complete_run": "Completing the migration run",
+    "migrate_packages": "Running remaining package migrations",
 }
 
 
@@ -154,6 +158,7 @@ _WORKFLOW_STEPS = {
     "materialize_next_stage": "stage_completed",
     "complete_run": "stage_completed",
     "terminal": "stage_completed",
+    "migrate_packages": "migrate_packages",
 }
 
 
@@ -221,7 +226,83 @@ def _dependency_operation(proposal: dict[str, object] | None) -> dict[str, objec
     return None
 
 
-def _next_backend_action(continuation) -> str | None:
+def _is_dependency_normalization(proposal: dict[str, object] | None) -> bool:
+    if not proposal:
+        return False
+    for op in (proposal.get("operations") or []):
+        if not isinstance(op, dict):
+            continue
+        if op.get("operation") == "dependency_manifest_normalization":
+            return True
+        if op.get("repair_kind") == "dependency_manifest_normalization":
+            return True
+        if op.get("schema_version") == "dependency-normalization-v1":
+            return True
+    return False
+
+
+def _dependency_normalization_payload(
+    proposal: dict[str, object] | None,
+    repair,
+    safe_diff: str | None,
+    review: dict[str, object] | None,
+    continuation,
+) -> dict[str, object] | None:
+    if repair is None or proposal is None:
+        return None
+    if not _is_dependency_normalization(proposal):
+        return None
+    ops = [o for o in (proposal.get("operations") or []) if isinstance(o, dict)]
+    dep_op = None
+    for o in ops:
+        if (
+            o.get("operation") == "dependency_manifest_normalization"
+            or o.get("repair_kind") == "dependency_manifest_normalization"
+            or o.get("schema_version") == "dependency-normalization-v1"
+        ):
+            dep_op = o
+            break
+    if dep_op is None:
+        return None
+    schema_version = str(dep_op.get("schema_version") or "dependency-normalization-v1")
+    analysis_summary = dep_op.get("analysis_summary") or proposal.get("analysis_summary") or ""
+    if not isinstance(analysis_summary, str) or not analysis_summary:
+        rat = proposal.get("rationale")
+        if isinstance(rat, list) and rat:
+            analysis_summary = str(rat[0])
+        else:
+            analysis_summary = str(analysis_summary) if analysis_summary else ""
+    actions = dep_op.get("approved_actions") or dep_op.get("packages") or []
+    if not isinstance(actions, list):
+        actions = []
+    package_json_diff = safe_diff
+    if not package_json_diff and isinstance(dep_op.get("diff"), str):
+        package_json_diff = dep_op.get("diff")
+    proposal_checksum = repair.proposal_checksum
+    review_status = None
+    if isinstance(review, dict):
+        review_status = review.get("decision") or review.get("status") or review.get("result")
+    if not review_status:
+        review_status = _repair_lifecycle(repair.status, continuation)
+    # reuse existing revision mechanism: request changes / approve when waiting for revision
+    can_request_changes = continuation.status == "waiting_repair_revision"
+    can_approve = continuation.status == "waiting_repair_revision" or repair.status == "waiting_g10"
+    return {
+        "schema_version": schema_version,
+        "plan_number": repair.attempt_number,
+        "analysis_summary": analysis_summary,
+        "actions": actions,
+        "package_json_diff": package_json_diff,
+        "proposal_checksum": proposal_checksum,
+        "review_status": review_status,
+        "can_request_changes": bool(can_request_changes),
+        "can_approve": bool(can_approve),
+    }
+
+
+def _next_backend_action(continuation, recovery=None) -> str | None:
+    if recovery is not None and recovery.status not in {"COMPLETED", "FAILED"}:
+        return "Recover stage through RECOVER_STAGE"
     if continuation.status == "waiting_command":
         return "Command in flight"
     if continuation.status == "waiting_gate":
@@ -260,6 +341,16 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
             StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
             StageWorkspaceBindingModel.active.is_(True),
         )
+    )
+    recovery = session.scalar(
+        select(StageRecoveryOperationModel)
+        .where(
+            StageRecoveryOperationModel.run_id == continuation.run_id,
+            StageRecoveryOperationModel.stage_id == continuation.current_stage_id,
+            StageRecoveryOperationModel.status.not_in(("COMPLETED", "FAILED")),
+        )
+        .order_by(StageRecoveryOperationModel.created_at.desc())
+        .limit(1)
     )
     command = session.scalar(
         select(CommandExecutionModel)
@@ -548,6 +639,17 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
             }
         )
     dependency_operation = _dependency_operation(proposal)
+    dependency_normalization = _dependency_normalization_payload(proposal, repair, safe_diff, review, continuation)
+    _base_next = _next_backend_action(continuation, recovery)
+    if dependency_normalization is not None:
+        if continuation.current_node == "migrate_packages":
+            _base_next = "Running remaining package migrations"
+        elif continuation.status == "waiting_repair_revision":
+            _base_next = "Waiting for dependency plan revision"
+        elif repair is not None and _repair_lifecycle(repair.status, continuation) == "approved_pending_execution":
+            _base_next = "Resolving approved dependency manifest"
+        elif continuation.current_node in ("propose_repair", "review_repair", "classify_failure"):
+            _base_next = "Analyzing target dependency compatibility"
     human_decision = None
     if repair is not None and repair.g10_gate_package_id:
         decision = session.scalar(
@@ -629,7 +731,35 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
         "repair_rationale": proposal.get("rationale", []) if proposal else [],
         "repair_apply_checksum": repair.apply_ledger_checksum if repair else None,
         "repair_validation_checksum": repair.validation_summary_checksum if repair else None,
-        "next_backend_action": _next_backend_action(continuation),
+        "next_backend_action": _base_next,
+        "recovery_state": (
+            "BLOCKED_RECOVERY"
+            if recovery is not None and recovery.status not in {"COMPLETED", "FAILED"}
+            else None
+        ),
+        "required_action": (
+            "RECOVER_STAGE"
+            if recovery is not None and recovery.status not in {"COMPLETED", "FAILED"}
+            else None
+        ),
+        "recovery_id": recovery.id if recovery is not None else None,
+        "recovery_kind": recovery.kind if recovery is not None else None,
+        "recovery_status": recovery.status if recovery is not None else None,
+        "recovery_command_execution_id": (
+            recovery.command_execution_id if recovery is not None else None
+        ),
+        "recovery_observed_workspace_fingerprint": (
+            recovery.observed_workspace_fingerprint if recovery is not None else None
+        ),
+        "recovery_governed_workspace_fingerprint": (
+            recovery.governed_workspace_fingerprint if recovery is not None else None
+        ),
+        "recovery_drift_classification": (
+            recovery.drift_classification if recovery is not None else None
+        ),
+        "recovery_interrupted_evidence_checksum": (
+            recovery.interrupted_evidence_checksum if recovery is not None else None
+        ),
         "angular_update_retry_attempt": (
             retry_execution.attempt_number if retry_execution else None
         ),
@@ -691,6 +821,7 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
             if repair else None
         ),
         "dependency_closure": dependency_closure,
+        "dependency_normalization": dependency_normalization,
         "validation_results": validation_results,
         "active_error": active_error,
         "historical_diagnostics": historical_diagnostics,
@@ -732,6 +863,64 @@ def get_transformation(
                 message="Transformer continuation has not been created",
             )
         return _projection(session, continuation)
+
+
+@router.post("/{run_id}/transformation/recovery")
+def recover_stage(
+    run_id: str,
+    body: TransformationRestartRequest,
+    request: Request,
+    actor: str = Depends(authenticated_actor),
+):
+    with session_scope() as session:
+        authorize_run(session, run_id, actor)
+    try:
+        return StageRecoveryService(scope=session_scope).create(
+            run_id=run_id,
+            expected_state_version=body.expected_state_version,
+            idempotency_key=body.idempotency_key,
+            actor=actor,
+            correlation_id=body.correlation_id,
+        )
+    except StageRecoveryError as error:
+        return error_response(
+            request,
+            status_code=409,
+            error_code=error.code,
+            message=error.message,
+            details=error.details,
+            correlation_id=body.correlation_id,
+        )
+
+
+@router.post("/{run_id}/transformation/recovery/{recovery_id}/retry")
+def retry_stage_recovery(
+    run_id: str,
+    recovery_id: str,
+    body: TransformationRestartRequest,
+    request: Request,
+    actor: str = Depends(authenticated_actor),
+):
+    with session_scope() as session:
+        authorize_run(session, run_id, actor)
+    try:
+        return StageRecoveryService(scope=session_scope).retry_failed(
+            run_id=run_id,
+            recovery_id=recovery_id,
+            expected_state_version=body.expected_state_version,
+            idempotency_key=body.idempotency_key,
+            actor=actor,
+            correlation_id=body.correlation_id,
+        )
+    except StageRecoveryError as error:
+        return error_response(
+            request,
+            status_code=409,
+            error_code=error.code,
+            message=error.message,
+            details=error.details,
+            correlation_id=body.correlation_id,
+        )
 
 
 @router.post("/{run_id}/transformation/repairs/{attempt_id}/revisions")
@@ -802,6 +991,153 @@ def recover_exhausted_semantic_retry(
             expected_state_version=body.expected_state_version,
             idempotency_key=body.idempotency_key,
             actor=actor,
+        )
+    except RepairApplicationError as error:
+        return error_response(
+            request,
+            status_code=409,
+            error_code=error.code,
+            message=error.message,
+        )
+
+
+@router.post("/{run_id}/transformation/repairs/{attempt_id}/recover-dependency-state")
+def recover_dependency_state(
+    run_id: str,
+    attempt_id: str,
+    body: TransformationRestartRequest,
+    request: Request,
+    actor: str = Depends(authenticated_actor),
+):
+    with session_scope() as session:
+        authorize_run(session, run_id, actor)
+    try:
+        return StageRecoveryService(scope=session_scope).create(
+            run_id=run_id,
+            expected_state_version=body.expected_state_version,
+            idempotency_key=body.idempotency_key,
+            actor=actor,
+            correlation_id=body.correlation_id,
+        )
+    except StageRecoveryError as error:
+        return error_response(
+            request,
+            status_code=409,
+            error_code=error.code,
+            message=error.message,
+            details=error.details,
+            correlation_id=body.correlation_id,
+        )
+
+
+@router.post("/{run_id}/transformation/repairs/{attempt_id}/recover-bound-candidate")
+def recover_bound_candidate(
+    run_id: str,
+    attempt_id: str,
+    body: TransformationRestartRequest,
+    request: Request,
+    actor: str = Depends(authenticated_actor),
+):
+    with session_scope() as session:
+        authorize_run(session, run_id, actor)
+        attempt = session.get(RepairAttemptModel, attempt_id)
+        if attempt is None or attempt.run_id != run_id:
+            return error_response(
+                request,
+                status_code=404,
+                error_code="REPAIR_ATTEMPT_NOT_FOUND",
+                message="Repair attempt is missing",
+            )
+    try:
+        return RepairApplicationService(scope=session_scope).recover_bound_candidate(
+            run_id=run_id,
+            attempt_id=attempt_id,
+            expected_state_version=body.expected_state_version,
+            idempotency_key=body.idempotency_key,
+            actor=actor,
+            correlation_id=body.correlation_id,
+        )
+    except RepairApplicationError as error:
+        return error_response(
+            request,
+            status_code=409,
+            error_code=error.code,
+            message=error.message,
+        )
+
+
+@router.post("/{run_id}/transformation/repairs/{attempt_id}/recover-bound-context")
+def recover_bound_context(
+    run_id: str,
+    attempt_id: str,
+    body: TransformationRestartRequest,
+    request: Request,
+    actor: str = Depends(authenticated_actor),
+):
+    with session_scope() as session:
+        authorize_run(session, run_id, actor)
+        attempt = session.get(RepairAttemptModel, attempt_id)
+        if attempt is None or attempt.run_id != run_id:
+            return error_response(
+                request,
+                status_code=404,
+                error_code="REPAIR_ATTEMPT_NOT_FOUND",
+                message="Repair attempt is missing",
+            )
+    try:
+        return RepairApplicationService(scope=session_scope).recover_bound_context(
+            run_id=run_id,
+            attempt_id=attempt_id,
+            expected_state_version=body.expected_state_version,
+            idempotency_key=body.idempotency_key,
+            actor=actor,
+            correlation_id=body.correlation_id,
+        )
+    except RepairApplicationError as error:
+        return error_response(
+            request,
+            status_code=409,
+            error_code=error.code,
+            message=error.message,
+        )
+
+
+@router.post("/{run_id}/transformation/repairs/{attempt_id}/recover-invalid-g10-override")
+def recover_invalid_g10_override(
+    run_id: str,
+    attempt_id: str,
+    body: LegacyRepairOverrideRecoveryRequest,
+    request: Request,
+    actor: str = Depends(authenticated_actor),
+):
+    if body.attempt_id != attempt_id:
+        return error_response(
+            request,
+            status_code=409,
+            error_code="REPAIR_ATTEMPT_MISMATCH",
+            message="Repair attempt path and payload do not match",
+        )
+    with session_scope() as session:
+        authorize_run(session, run_id, actor)
+        attempt = session.get(RepairAttemptModel, attempt_id)
+        if attempt is None or attempt.run_id != run_id:
+            return error_response(
+                request,
+                status_code=404,
+                error_code="REPAIR_ATTEMPT_NOT_FOUND",
+                message="Repair attempt is missing",
+            )
+    try:
+        return RepairApplicationService(scope=session_scope).recover_invalid_g10_override(
+            run_id=run_id,
+            attempt_id=attempt_id,
+            proposal_id=body.proposal_id,
+            base_checksum=body.base_checksum,
+            instruction=body.instruction,
+            expected_state_version=body.expected_state_version,
+            idempotency_key=body.idempotency_key,
+            actor=actor,
+            correlation_id=body.correlation_id,
         )
     except RepairApplicationError as error:
         return error_response(
@@ -1089,6 +1425,33 @@ def restart_transformation(
                 status_code=404,
                 error_code="TRANSFORMATION_NOT_FOUND",
                 message="Transformer continuation has not been created",
+            )
+        recovery = session.scalar(
+            select(StageRecoveryOperationModel)
+            .where(
+                StageRecoveryOperationModel.run_id == run_id,
+                StageRecoveryOperationModel.stage_id == continuation.current_stage_id,
+                StageRecoveryOperationModel.status.not_in(("COMPLETED", "FAILED")),
+            )
+            .order_by(StageRecoveryOperationModel.created_at.desc())
+            .limit(1)
+        )
+        if (
+            StageRecoveryService.recovery_required(continuation, recovery)
+            and not StageRecoveryService.normal_failure_handoff_allowed(session, continuation)
+        ):
+            return error_response(
+                request,
+                status_code=409,
+                error_code="RECOVERY_ACTION_REQUIRED",
+                message="This blocked continuation is owned by governed stage recovery",
+                details={
+                    "required_action": "RECOVER_STAGE",
+                    "recovery_id": recovery.id if recovery is not None else None,
+                    "recovery_kind": recovery.kind if recovery is not None else "RECONSTRUCT_THEN_RECONCILE",
+                    "state_version": continuation.state_version,
+                },
+                correlation_id=body.correlation_id,
             )
         replay = session.scalar(
             select(WorkflowEventModel).where(

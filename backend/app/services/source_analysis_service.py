@@ -105,6 +105,15 @@ class SourceAnalysisService:
             node = packages.get(f"node_modules/{name}", {})
             if isinstance(node, dict) and isinstance(node.get("version"), str):
                 result[name] = node["version"]
+        # npm lockfile v1 stores installed versions in the top-level
+        # dependencies map instead of the v2+ packages map.
+        legacy_dependencies = lockfile.get("dependencies", {})
+        for name in SourceAnalysisService.tracked_packages:
+            if name in result:
+                continue
+            node = legacy_dependencies.get(name, {})
+            if isinstance(node, dict) and isinstance(node.get("version"), str):
+                result[name] = node["version"]
         return result
 
     @staticmethod

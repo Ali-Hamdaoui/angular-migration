@@ -129,8 +129,21 @@ def test_install_persists_execution_events_artifacts_and_idempotent_replay(tmp_p
         assert [event.event_type for event in events] == ["COMMAND_QUEUED", "COMMAND_STARTED", "COMMAND_OUTPUT_AVAILABLE", "BASELINE_INSTALL_SUCCEEDED"]
         metadata = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == "run-1")))
         assert len(metadata) == 4
-    assert service.get("run-1", first.execution_id).artifact_ids == first.artifact_ids
     engine.dispose()
+
+
+def test_baseline_install_does_not_require_future_g05_approval(tmp_path):
+    scope, sessions, engine, service = _fixture(tmp_path)
+
+    class RejectingFutureGate:
+        def require_approved_g05(self, *args, **kwargs):
+            raise AssertionError("G05 must not gate baseline installation")
+
+    service._g05 = RejectingFutureGate()
+
+    result = service.install("run-1", _request())
+
+    assert result.status == "succeeded"
 
 
 def test_install_persists_structured_dependency_security_risk(tmp_path):

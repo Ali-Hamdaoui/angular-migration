@@ -1157,6 +1157,60 @@ def test_dependency_change_routes_to_lockfile_generation_before_revalidation():
     assert TransformerOrchestrator._post_apply_node(ordinary) == "repair_revalidate"
 
 
+def test_dependency_change_keeps_lockfile_materialization_even_when_retry_is_eligible():
+    dependency = {
+        "proposal_format": "operations",
+        "operations": [{"operation": "dependency_change", "path": "package.json"}],
+    }
+    ordinary = {
+        "proposal_format": "operations",
+        "operations": [{"operation": "replace_text", "path": "src/app.ts"}],
+    }
+
+    assert (
+        TransformerOrchestrator._post_apply_node(
+            dependency, angular_update_retry_eligible=True
+        )
+        == "lockfile_generation"
+    )
+    assert (
+        TransformerOrchestrator._post_apply_node(
+            ordinary, angular_update_retry_eligible=True
+        )
+        == "angular_update_retry"
+    )
+
+
+def test_applied_dependency_repair_recovers_pending_lockfile_materialization():
+    dependency = {
+        "proposal_format": "operations",
+        "operations": [{"operation": "dependency_change", "path": "package.json"}],
+    }
+    ordinary = {
+        "proposal_format": "operations",
+        "operations": [{"operation": "replace_text", "path": "src/app.ts"}],
+    }
+
+    assert TransformerOrchestrator._needs_dependency_materialization_recovery(
+        dependency,
+        "applied_verified",
+        "PENDING",
+        materialization_succeeded=False,
+    )
+    assert not TransformerOrchestrator._needs_dependency_materialization_recovery(
+        ordinary,
+        "applied_verified",
+        "PENDING",
+        materialization_succeeded=False,
+    )
+    assert not TransformerOrchestrator._needs_dependency_materialization_recovery(
+        dependency,
+        "applied_verified",
+        "PASSED",
+        materialization_succeeded=False,
+    )
+
+
 def test_lockfile_generation_failure_blocks_with_precise_reason():
     continuation = SimpleNamespace()
 

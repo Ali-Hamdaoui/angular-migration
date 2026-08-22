@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 
 from sqlalchemy import select
 
@@ -27,11 +28,13 @@ class RegistrySnapshotBuilder:
         if environment is None or analysis is None or probe.get("status") != "passed" or not probe.get("value"):
             raise RegistrySnapshotBuildError("Approved environment registry-probe evidence is unavailable.")
         versions = (analysis.snapshot or {}).get("versions", [])
-        packages = [
-            {"package": item.get("package"), "declared": item.get("declared"), "resolved": item.get("resolved")}
-            for item in versions
-            if item.get("package") in {"@angular/core", "typescript", "rxjs"} and item.get("resolved")
-        ]
+        packages = []
+        for item in versions:
+            if item.get("package") not in {"@angular/core", "typescript", "rxjs"}:
+                continue
+            resolved = item.get("resolved") or self._single_version(item.get("declared"))
+            if resolved:
+                packages.append({"package": item.get("package"), "declared": item.get("declared"), "resolved": resolved})
         if not any(item["package"] == "@angular/core" for item in packages):
             raise RegistrySnapshotBuildError("Source analysis lacks resolved @angular/core evidence.")
         payload = {
@@ -59,3 +62,8 @@ class RegistrySnapshotBuilder:
         session.add(record)
         session.flush()
         return record
+
+    @staticmethod
+    def _single_version(value: object) -> str | None:
+        match = re.fullmatch(r"[~^=]?\s*(\d+\.\d+\.\d+)", str(value or "").strip())
+        return match.group(1) if match else None

@@ -14,6 +14,7 @@ class FeasibilityCreateRequest(ContractModel):
     expected_state_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=128)
     source_angular_exact: str = Field(min_length=1, max_length=64)
+    target_family: str = Field(default="angular-21.x", pattern=r"^(?:angular-)?(1[1-9]|2[01])\.x$")
     catalogue_version: str = Field(min_length=1, max_length=128)
     registry_snapshot_id: str = Field(min_length=1, max_length=128)
     registry_snapshot_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")

@@ -17,6 +17,7 @@ from app.domain.failure_intelligence import (
     FailureGroup,
     FailureRootCause,
 )
+from app.domain.transformation import FailureRoute
 from app.repositories.models import FailureDiagnosticPackModel, FailureIntelligenceModel
 from app.repositories.session import session_scope
 
@@ -32,6 +33,26 @@ class FailureIntelligenceError(ValueError):
 #: chain is the root cause.
 _ROOT_CAUSE_PRECEDENCE = (
     "environment", "dependency", "command", "state", "policy", "transport", "llm", "workflow", "unknown",
+)
+
+# ponytail: deterministic dependency vs environment routing, no workspace mutation
+_NPM_ERESOLVE_RE = re.compile(r"eresolve", re.I)
+_NPM_ETARGET_RE = re.compile(r"etarget|no matching version found for", re.I)
+_PEER_INCOMPAT_RE = re.compile(
+    r"incompatible.*peer|peer.*incompatible|peer dependency.*incompatible|has an incompatible peer dependency|peer dep.*missing|missing.*peer",
+    re.I,
+)
+_ANGULAR_INCOMPAT_RE = re.compile(
+    r"requir.*angular|does not support|dependencies are not compatible|incompatible.*angular|peer dep.*angular|angular.*peer",
+    re.I,
+)
+# operational markers that must NOT become DEPENDENCY_INCOMPATIBLE
+_ENVIRONMENT_RE = re.compile(
+    r"enet|econn|etimedout|enotfound|eai_again|enospc|enomen|eacces|eperm|permission denied|"
+    r"read.only|disk.*full|no space left|e401|e403|unauthorized|forbidden|registry.*auth|"
+    r"node-gyp|gyp err|prebuild|native.*binary|worker.*lost|claim.*expir|interrupted|timed.?out|"
+    r"command.*timeout|network error|registry timeout",
+    re.I,
 )
 
 
@@ -200,6 +221,115 @@ class FailureIntelligenceService:
                 .order_by(FailureIntelligenceModel.created_at.desc())
                 .limit(1)
             )
+
+    def classify(self, evidence: dict[str, Any] | Any) -> FailureRoute:
+        """Deterministic closed-route classification for P2 evidence.
+
+        ERESOLVE, ETARGET, peer incompatibility, third-party Angular
+        incompatibility -> DEPENDENCY_INCOMPATIBLE.
+        Network/disk/permissions/registry auth/native binary/worker
+        interruption remains operational (ENVIRONMENT_*), never dependency.
+        """
+        return classify_failure_route(evidence)
+
+    def is_dependency_incompatible(self, evidence: dict[str, Any] | Any) -> bool:
+        return is_dependency_incompatible_failure(evidence)
+
+
+def _extract_normalized(evidence: Any) -> tuple[str, str, dict[str, Any] | None]:
+    """Return (message, code, diagnosis) from evidence or normalized dict."""
+    if isinstance(evidence, dict) and "normalized_failure" in evidence:
+        norm = evidence.get("normalized_failure") or {}
+        if not isinstance(norm, dict):
+            norm = {}
+    elif isinstance(evidence, dict) and any(k in evidence for k in ("failure_message", "failure_code", "message", "error_code", "command_id")):
+        norm = evidence
+    elif isinstance(evidence, str):
+        return evidence, "", None
+    else:
+        norm = {}
+        if isinstance(evidence, dict):
+            # fallback: treat whole dict as normalized if it looks like one
+            norm = evidence
+    message = str(norm.get("failure_message") or norm.get("message") or "")
+    code = str(norm.get("failure_code") or norm.get("error_code") or norm.get("fault_code") or "")
+    diagnosis = norm.get("failure_diagnosis") if isinstance(norm.get("failure_diagnosis"), dict) else None
+    # also handle direct diagnosis at top level
+    if diagnosis is None and isinstance(evidence, dict) and isinstance(evidence.get("failure_diagnosis"), dict):
+        diagnosis = evidence.get("failure_diagnosis")
+    return message, code, diagnosis
+
+
+def _is_environment_failure_message(message: str, code: str) -> bool:
+    combined = f"{code} {message}"
+    return bool(_ENVIRONMENT_RE.search(combined))
+
+
+def _is_dependency_incompatible_message(message: str, code: str, diagnosis: dict[str, Any] | None = None) -> bool:
+    lower = message.lower()
+    code_upper = code.upper()
+    # explicit failure codes
+    if code_upper in {"ERESOLVE", "ETARGET", "LOCKFILE_GENERATION_ERESOLVE", "LOCKFILE_GENERATION_ETARGET"}:
+        return True
+    if _NPM_ERESOLVE_RE.search(message):
+        return True
+    if _NPM_ETARGET_RE.search(message):
+        return True
+    if diagnosis is not None and isinstance(diagnosis, dict):
+        if diagnosis.get("kind") == "peer_dependency_conflict":
+            return True
+        # third-party angular incompatibility often surfaces as peer conflict with angular peer
+        req = diagnosis.get("required_ranges") if isinstance(diagnosis.get("required_ranges"), dict) else {}
+        if any("angular" in str(k).lower() for k in req):
+            return True
+    if _PEER_INCOMPAT_RE.search(message):
+        return True
+    if "angular" in lower and _ANGULAR_INCOMPAT_RE.search(message):
+        return True
+    # generic third-party angular peer: angular + peer/missing/incompatible nearby
+    if "angular" in lower and any(k in lower for k in ("peer", "missing", "incompatible", "requires", "required")):
+        return True
+    # fallback: third-party Angular incompatibility phrasing
+    if "has an incompatible peer dependency" in lower:
+        return True
+    if "peer dep" in lower and "angular" in lower:
+        return True
+    return False
+
+
+def is_environment_failure(evidence: Any) -> bool:
+    message, code, _ = _extract_normalized(evidence)
+    return _is_environment_failure_message(message, code)
+
+
+def is_dependency_incompatible_failure(evidence: Any) -> bool:
+    message, code, diagnosis = _extract_normalized(evidence)
+    # environment takes precedence: never classify operational failures as dependency
+    if _is_environment_failure_message(message, code):
+        return False
+    return _is_dependency_incompatible_message(message, code, diagnosis)
+
+
+def classify_failure_route(evidence: Any) -> FailureRoute:
+    """Deterministic routing: dependency vs environment vs repairable."""
+    message, code, diagnosis = _extract_normalized(evidence)
+    if _is_environment_failure_message(message, code):
+        # distinguish permanent vs transient deterministically
+        lower = message.lower()
+        if any(k in lower for k in ("e401", "e403", "auth", "permission", "enospc", "eacces", "eperm", "node-gyp", "gyp err")):
+            return FailureRoute.ENVIRONMENT_PERMANENT
+        return FailureRoute.ENVIRONMENT_TRANSIENT
+    if _is_dependency_incompatible_message(message, code, diagnosis):
+        return FailureRoute.DEPENDENCY_INCOMPATIBLE
+    # fallback: keep existing closed routes for other codes
+    code_upper = code.upper()
+    if code_upper in {"COMMAND_WORKER_LOST_REQUEUED", "COMMAND_TIMED_OUT", "REGISTRY_TIMEOUT", "NETWORK_ERROR"}:
+        return FailureRoute.ENVIRONMENT_TRANSIENT
+    if code_upper in {"EXECUTION_PROFILE_NOT_FOUND", "STAGE_WORKSPACE_MISSING"}:
+        return FailureRoute.ENVIRONMENT_PERMANENT
+    if code_upper in {"DEPENDENCY_PREFLIGHT_BLOCKED", "VERSION_VERIFICATION_FAILED", "VALIDATION_TARGET_MISSING"}:
+        return FailureRoute.DEPENDENCY_INCOMPATIBLE
+    return FailureRoute.REPAIRABLE_SOURCE
 
 
 def _signature(message: str) -> str:

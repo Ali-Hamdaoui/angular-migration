@@ -55,6 +55,7 @@ class RuntimeRequirement(_ImmutableModel):
     version_exact: str | None = None
     minimum_version: str | None = None
     required_sha256: str | None = None
+    allowed_major_versions: tuple[int, ...] = ()
 
     @field_validator("version_exact", "minimum_version")
     @classmethod
@@ -75,6 +76,8 @@ class RuntimeRequirement(_ImmutableModel):
             return False
         version = Version.parse(descriptor.version_exact or "") if descriptor.version_exact else None
         if version is None:
+            return False
+        if self.allowed_major_versions and version.major not in self.allowed_major_versions:
             return False
         if self.version_exact and descriptor.version_exact != self.version_exact:
             return False

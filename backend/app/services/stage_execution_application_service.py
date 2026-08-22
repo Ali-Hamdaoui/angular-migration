@@ -82,6 +82,32 @@ def validation_execution_key(
     return bounded_idempotency_key(raw)
 
 
+def migration_attempt_key(migration_identity: str) -> str:
+    """Canonical migration attempt key: migrate:<canonical_migration_identity>."""
+    return f"migrate:{migration_identity}"
+
+
+def expected_migrate_execution_idempotency_key(
+    continuation_id: str,
+    stage_id: str,
+    migration_identity: str,
+    package: str,
+    from_version: str,
+    to_version: str,
+) -> str:
+    """Derive the exact persisted CommandExecution.idempotency_key for a migrate-only command.
+
+    Must use the SAME bounded helper and grammar as the governed queue path:
+      continuation.id + stage_id + command + attempt_key  → bounded_idempotency_key
+    where attempt_key = migrate:<identity>:<package>:<from>-><to>
+    and final raw = <continuation>:<stage>:command:<dynamic_key>:migrate_packages
+    """
+    attempt_key = migration_attempt_key(migration_identity)
+    dynamic_key = f"{attempt_key}:{package}:{from_version}->{to_version}"
+    raw = f"{continuation_id}:{stage_id}:command:{dynamic_key}:migrate_packages"
+    return bounded_idempotency_key(raw)
+
+
 @dataclass(frozen=True)
 class _ValidatedStageStart:
     run_id: str
@@ -217,6 +243,7 @@ class StageExecutionApplicationService:
                 validated.aliases,
                 validated.stage_id,
                 expected_fingerprint=expected_fingerprint,
+                expected_source_fingerprint=validated.aliases.get("BASELINE_SANDBOX_FINGERPRINT"),
             )
         except StagePreparationError as error:
             raise StageExecutionError(error.code, error.message, 409) from error
@@ -380,6 +407,7 @@ class StageExecutionApplicationService:
         group="bootstrap_install",
         command_index=0,
         persisted_idempotency_key=None,
+        parameter_bindings_override=None,
     ):
         stage_plan = stage.stage_plan or {}
         references = (stage_plan.get("commands") or {}).get(group) or []
@@ -391,6 +419,23 @@ class StageExecutionApplicationService:
         if command_index >= len(references):
             raise StageExecutionError("STAGE_COMMAND_NOT_FOUND", f"{group} command index is invalid.")
         reference = references[command_index]
+        # P0-2: dynamic migrate-only bindings — keep template authority but bind exact package/from/to
+        if group == "migrate_packages" and isinstance(parameter_bindings_override, dict) and parameter_bindings_override:
+            # Validate that plan authorizes the migrate-range template at all
+            if reference.get("command_id") != "angular-migrate-range" or reference.get("template_id") != "tpl-angular-migrate-range-v1":
+                raise StageExecutionError("MIGRATE_RANGE_TEMPLATE_NOT_AUTHORIZED", "Stage plan does not authorize angular-migrate-range template")
+            from app.domain.command import ANGULAR_MIGRATE_RANGE_RENDERER
+
+            try:
+                rendered = list(ANGULAR_MIGRATE_RANGE_RENDERER.render_arguments(parameter_bindings_override))
+            except ValueError as error:
+                raise StageExecutionError("MIGRATE_RANGE_BINDING_INVALID", str(error)) from error
+            # Build dynamic reference preserving template identity but with exact bindings
+            reference = {
+                **reference,
+                "parameter_bindings": dict(parameter_bindings_override),
+                "arguments": rendered,
+            }
         profile_id = stage_plan.get("execution_profile_id")
         if not isinstance(profile_id, str) or not profile_id:
             raise StageExecutionError("EXECUTION_PROFILE_NOT_APPROVED", "The approved stage plan has no execution profile.")

@@ -48,6 +48,52 @@ class LockfileCompatibilityService:
         self._now_provider = now_provider or (lambda: datetime.now(UTC))
 
     @staticmethod
+    def detect_lockfile_format(payload: object) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        version = payload.get("lockfileVersion")
+        return {1: "v1", 2: "v2", 3: "v3"}.get(version)
+
+    @staticmethod
+    def resolve_package_version(payload: object, package_name: str) -> str | None:
+        """Resolve one package from npm v1/v2/v3 shapes, fail-closed."""
+        if not isinstance(payload, dict) or not package_name:
+            return None
+        packages = payload.get("packages")
+        if isinstance(packages, dict):
+            entry = packages.get(f"node_modules/{package_name}")
+            if isinstance(entry, dict) and isinstance(entry.get("version"), str):
+                return entry["version"]
+
+        def walk(node: object) -> str | None:
+            if not isinstance(node, dict):
+                return None
+            entry = node.get(package_name)
+            if isinstance(entry, dict) and isinstance(entry.get("version"), str):
+                return entry["version"]
+            for value in node.values():
+                if isinstance(value, dict):
+                    found = walk(value.get("dependencies"))
+                    if found:
+                        return found
+            return None
+
+        return walk(payload.get("dependencies"))
+
+    @staticmethod
+    def resolve_root_package_version(payload: object, package_name: str) -> str | None:
+        """Resolve only the project's root package, never a nested copy."""
+        if not isinstance(payload, dict) or not package_name:
+            return None
+        packages = payload.get("packages")
+        if isinstance(packages, dict):
+            entry = packages.get(f"node_modules/{package_name}")
+            return entry.get("version") if isinstance(entry, dict) and isinstance(entry.get("version"), str) else None
+        dependencies = payload.get("dependencies")
+        entry = dependencies.get(package_name) if isinstance(dependencies, dict) else None
+        return entry.get("version") if isinstance(entry, dict) and isinstance(entry.get("version"), str) else None
+
+    @staticmethod
     def inspect_lockfile(workspace: Path) -> LockfileDependencySet:
         """Parse package-lock.json into a deterministic dependency set.
 
@@ -67,6 +113,9 @@ class LockfileCompatibilityService:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return LockfileDependencySet(checksum=checksum)
         packages = payload.get("packages", {}) if isinstance(payload, dict) else {}
+        lockfile_version = payload.get("lockfileVersion") if isinstance(payload, dict) else None
+        if isinstance(lockfile_version, int) and lockfile_version not in {1, 2, 3}:
+            return LockfileDependencySet(lockfile_version=lockfile_version, checksum=checksum)
         resolved: dict[str, str] = {}
         if isinstance(packages, dict):
             for key, entry in packages.items():
@@ -97,7 +146,7 @@ class LockfileCompatibilityService:
 
             walk(payload.get("dependencies", {}))
         return LockfileDependencySet(
-            lockfile_version=payload.get("lockfileVersion") if isinstance(payload, dict) and isinstance(payload.get("lockfileVersion"), int) else None,
+            lockfile_version=lockfile_version if isinstance(lockfile_version, int) else None,
             root_dependencies={k: v for k, v in root_deps.items() if isinstance(v, str)},
             resolved_packages=resolved,
             checksum=checksum,
@@ -110,36 +159,56 @@ class LockfileCompatibilityService:
 
         The compatibility catalogue is the authority for Angular/CLI pins and for
         typescript/rxjs/zone.js when it declares exact versions.  When the
-        catalogue does not pin those, conservative per-major minimums are used as
-        documented fallbacks (``_DEFAULT_TYPESCRIPT_MINIMUMS`` plus rxjs>=6.5.3
-        and zone.js>=0.14.0), mirroring the Angular support envelope.
+        catalogue does not pin those, the catalogue's minimum, exclusive
+        maximum, and allowed-range alternatives are enforced.  No global
+        ``zone.js`` fallback is invented when the catalogue provides no
+        authoritative constraint.
         """
         entry = self._catalogue_entry(source_family, target_family, catalogue_version)
         target_major = _target_major(target_family)
         dependency_set = self.inspect_lockfile(workspace)
-        expected: dict[str, str | None] = {
-            "@angular/core": entry.target_angular_exact,
-            "@angular/cli": entry.target_cli_exact,
+        if dependency_set.lockfile_version is not None and dependency_set.lockfile_version not in {1, 2, 3}:
+            return LockfileCompatibilityVerdict(
+                source_family=source_family,
+                target_family=target_family,
+                status="blocked",
+                blockers=("LOCKFILE_FORMAT_UNSUPPORTED",),
+            )
+        try:
+            manifest = json.loads((workspace / "package.json").read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            manifest = {}
+        direct_packages = {
+            package
+            for section in ("dependencies", "devDependencies")
+            for package in ((manifest.get(section) or {}) if isinstance(manifest, dict) else {})
+            if isinstance(package, str)
         }
-        if entry.typescript_exact:
-            expected["typescript"] = entry.typescript_exact
-        if entry.rxjs_exact:
-            expected["rxjs"] = entry.rxjs_exact
-        if entry.zone_js_exact:
-            expected["zone.js"] = entry.zone_js_exact
+        expected: dict[str, str | None] = entry.target_requirements(direct_packages)
         minimums: dict[str, str] = {}
+        exclusive_maximums: dict[str, str] = {}
+        allowed_ranges: dict[str, tuple[str, ...]] = {}
         if not entry.typescript_exact:
-            minimums["typescript"] = entry.typescript_minimum or _DEFAULT_TYPESCRIPT_MINIMUMS.get(target_major, "5.0.0")
+            if entry.typescript_minimum:
+                minimums["typescript"] = entry.typescript_minimum
+            elif _DEFAULT_TYPESCRIPT_MINIMUMS.get(target_major):
+                minimums["typescript"] = _DEFAULT_TYPESCRIPT_MINIMUMS[target_major]
+            if entry.typescript_exclusive_maximum:
+                exclusive_maximums["typescript"] = entry.typescript_exclusive_maximum
         if not entry.rxjs_exact:
-            minimums["rxjs"] = entry.rxjs_minimum or "6.5.3"
-        if not entry.zone_js_exact:
-            minimums["zone.js"] = "0.14.0"
+            if entry.rxjs_ranges:
+                allowed_ranges["rxjs"] = entry.rxjs_ranges
+            elif entry.rxjs_minimum:
+                minimums["rxjs"] = entry.rxjs_minimum
+        # Do not invent a Zone constraint when the catalogue provides none.
         return evaluate_lockfile_compatibility(
             dependency_set,
             source_family=source_family,
             target_family=target_family,
             catalogue_expected=expected,
             catalogue_minimums=minimums,
+            catalogue_exclusive_maximums=exclusive_maximums,
+            catalogue_allowed_ranges=allowed_ranges,
         )
 
     def _catalogue_entry(self, source_family: str, target_family: str, catalogue_version: str | None) -> CompatibilityCatalogueEntry:

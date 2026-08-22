@@ -6,6 +6,11 @@ import pytest
 from app.services.stage_preparation_primitives import StageSandboxCopier
 
 
+def test_exclusion_policy_is_shared_with_stage_cleanliness(tmp_path: Path):
+    assert StageSandboxCopier.is_excluded_path(Path("node_modules/pkg/server.key"))
+    assert not StageSandboxCopier.is_excluded_path(Path("src/server.key"))
+
+
 def test_copy_excludes_dependencies_caches_outputs_and_reports_fingerprint(tmp_path: Path):
     source = tmp_path / "baseline"
     target = tmp_path / "stage"
@@ -62,6 +67,25 @@ def test_copy_rejects_a_symlink_in_the_source_tree(tmp_path: Path):
         StageSandboxCopier().copy(source, target)
 
     assert not target.exists()
+
+
+def test_copy_excludes_symlinks_under_volatile_paths(tmp_path: Path):
+    source = tmp_path / "baseline"
+    target = tmp_path / "stage"
+    source.mkdir()
+    external = tmp_path / "external.txt"
+    external.write_text("outside", encoding="utf-8")
+    try:
+        dependency_link = source / "node_modules" / "dependency-link"
+        dependency_link.parent.mkdir(parents=True)
+        dependency_link.symlink_to(external)
+    except OSError:
+        pytest.skip("symlink creation is unavailable in this environment")
+
+    report = StageSandboxCopier().copy(source, target)
+
+    assert not (target / "node_modules").exists()
+    assert "node_modules" in report.excluded_paths
 
 
 def test_copy_rejects_a_target_that_contains_the_source(tmp_path: Path):

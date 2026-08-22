@@ -158,6 +158,31 @@ def test_supervisor_writes_bounded_stdin_and_closes_pipe(tmp_path: Path) -> None
     assert result.stdout.strip() == "yes"
 
 
+def test_supervisor_emits_short_prompt_output_before_process_exit(tmp_path: Path) -> None:
+    worker, _, _ = _worker(tmp_path)
+    structured = replace(
+        worker._policy.validate(_request()),
+        command=(
+            sys.executable,
+            "-c",
+            "import sys,time; sys.stdout.write('Would you like to continue? [y/N]\\n'); sys.stdout.flush(); time.sleep(5)",
+        ),
+    )
+    cancel_event = threading.Event()
+    observed: list[str] = []
+    started = time.monotonic()
+
+    result = WorkerSupervisor().run(
+        structured,
+        cancel_event=cancel_event,
+        output_callback=lambda _stream, text: (observed.append(text), cancel_event.set()),
+    )
+
+    assert result.cancelled is True
+    assert observed
+    assert time.monotonic() - started < 3
+
+
 def test_worker_registers_output_artifact_truncation_metadata(tmp_path: Path) -> None:
     worker, _artifact_store, _sandbox_root = _worker(tmp_path)
 

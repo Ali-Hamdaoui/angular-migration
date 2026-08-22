@@ -62,6 +62,7 @@ class EnvironmentCapabilityService:
 
         runtimes = [self._probe_runtime(name, snapshot_id, idempotency_key, captured_at) for name in self.runtime_names]
         controlled_probes = self._controlled_probes(runtimes, snapshot_id, idempotency_key, captured_at)
+        runtime_matrix = self._probe_runtime_matrix()
         blockers: list[str] = []
         warnings: list[str] = []
         runtime_by_name = {runtime.name: runtime for runtime in runtimes}
@@ -110,6 +111,7 @@ class EnvironmentCapabilityService:
             "blockers": blockers,
             "warnings": warnings,
             "controlled_probes": controlled_probes,
+            "runtime_matrix": runtime_matrix,
         }
         snapshot = EnvironmentCapabilitySnapshot(**payload, checksum=self._checksum(payload))
         summary = self._artifact_store.write_text_artifact(
@@ -132,13 +134,40 @@ class EnvironmentCapabilityService:
             created_at=captured_at,
             policy_version=self.policy_version,
         )
+        matrix_inventory = self._artifact_store.write_text_artifact(
+            snapshot_id,
+            "global/00_setup/runtime_matrix_inventory.json",
+            json.dumps({"runtimes": runtime_matrix}, indent=2, sort_keys=True),
+            ArtifactType.JSON,
+            created_by="environment-capability-service",
+            created_at=captured_at,
+            policy_version=self.policy_version,
+        )
         return EnvironmentCapabilityResult(
             snapshot=snapshot,
             artifact={
                 "summary": summary.ref.artifact_id,
                 "runtime_inventory": inventory.ref.artifact_id,
+                "runtime_matrix_inventory": matrix_inventory.ref.artifact_id,
             },
         )
+
+    def _probe_runtime_matrix(self) -> list[dict]:
+        """Discover every configured paired runtime independently of PATH.
+
+        Source Angular compatibility is evaluated against a suitable runtime,
+        not necessarily the runtime that launched FastAPI.  The resolver
+        authority performs executable probing and records checksums; this
+        snapshot only serializes those immutable facts for later run-bound
+        resolution.
+        """
+        root = self._settings.runtime_node_install_root
+        if root is None or not root.expanduser().resolve().exists():
+            return []
+        from app.services.runtime_resolution_application_service import RuntimeResolutionApplicationService
+
+        descriptors = RuntimeResolutionApplicationService(self._settings).discover()
+        return [descriptor.model_dump(mode="json") for descriptor in descriptors]
 
     def _controlled_probes(self, runtimes, snapshot_id, idempotency_key, now):
         """Prove executable identity/configuration through the command authority."""

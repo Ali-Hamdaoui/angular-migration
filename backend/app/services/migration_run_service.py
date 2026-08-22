@@ -16,6 +16,7 @@ from app.domain.contracts import ArtifactRefDto, ArtifactType, CommandStatus, Ru
 from app.domain.preflight import PreflightSnapshot
 from app.orchestration.source_intake import SourceIntakeGraph, default_source_intake_graph
 from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, CommandExecutionModel, CompatibilityResolutionModel, DiscoveryEvidenceModel, MigrationRunModel, PathValidationModel, PlanningJobModel, SourceIntakeJobModel, TargetReservationModel, WorkflowEventModel
+from app.repositories.path_validation import PathValidationRepository
 from app.repositories.preflight_models import ApprovalGateModel, PreflightModel
 from app.repositories.session import session_scope
 from app.state.transition_service import (
@@ -187,6 +188,7 @@ class MigrationRunService:
             now = self._now()
             claim.lease_owner = actor
             claim.expires_at = now + timedelta(seconds=self._lease_seconds)
+            self._renew_bound_target_reservation(session, run, now)
 
     def start(self, *, run_id: str, expected_state_version: int, idempotency_key: str, actor: str) -> RunResult:
         thread_id = ""
@@ -241,11 +243,20 @@ class MigrationRunService:
             if existing is not None:
                 self._replay_or_reject(session, existing, self._retry_request(run_id, expected_state_version, idempotency_key, actor, previous))
                 return self._result_from_event(session, existing, replay=True)
-            if run.status != RunStatus.FAILED.value:
-                raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "Source-intake retry is only available after a failed run.")
-            retryable_codes = {"GRAPH_HANDOFF_FAILED", "SNAPSHOT_CREATION_FAILED", "SOURCE_CHANGED_DURING_COPY", "SNAPSHOT_LAYOUT_MISSING", "ExecutionProfileApplicationError"}
+            retryable_codes = {"GRAPH_HANDOFF_FAILED", "SNAPSHOT_CREATION_FAILED", "SOURCE_CHANGED_DURING_COPY", "SNAPSHOT_LAYOUT_MISSING", "ExecutionProfileApplicationError", "RUNTIME_PROFILE_BLOCKED", "EXECUTION_PROFILE_REQUIRED", "BASELINE_PREQUALIFICATION_BLOCKED", "BaselineValidationApplicationError", "BaselineApplicationError", "IdempotencyPayloadMismatchError", "G03_APPROVAL_REQUIRED"}
+            g03_approved = session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id, WorkflowEventModel.event_type == WorkflowEventType.G03_APPROVED.value)) is not None
+            restart_recovery_after_g03 = previous is not None and previous.last_error_code == "G03_APPROVAL_REQUIRED" and g03_approved
+            allowed_statuses = {RunStatus.FAILED.value, RunStatus.DIAGNOSTIC_HOLD.value}
+            if restart_recovery_after_g03:
+                # G03 approval legitimately advances the run to BASELINE_QUALIFIED.
+                # If restart misclassified the durable waiting boundary, the failed
+                # job still needs a supported retry without rolling back that gate.
+                allowed_statuses.add(RunStatus.BASELINE_QUALIFIED.value)
+            if run.status not in allowed_statuses:
+                raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "Source-intake retry is only available after a failed or retryable diagnostic hold.")
             if previous is None or previous.last_error_code not in retryable_codes:
                 raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "The failed run does not have a retryable source-intake failure.")
+            self._renew_retry_claim_if_reservation_is_live(session, run)
             self._validate_start_boundary(session, run)
             if run.state_version != expected_state_version:
                 raise MigrationRunError("STALE_STATE_VERSION", "The run state changed. Refresh the authoritative state and retry.")
@@ -253,7 +264,7 @@ class MigrationRunService:
             if active_job is not None:
                 raise MigrationRunError("SOURCE_INTAKE_ALREADY_ACTIVE", "A source-intake job is already active for this run.")
             thread_id = previous.thread_id
-            post_g03 = previous.last_error_code == "ExecutionProfileApplicationError" and session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id, WorkflowEventModel.event_type == WorkflowEventType.G03_APPROVED.value)) is not None
+            post_g03 = previous.last_error_code in {"ExecutionProfileApplicationError", "G03_APPROVAL_REQUIRED"} and g03_approved
             accepted = StateTransitionService(session).apply_transition(self._retry_request(run_id, expected_state_version, idempotency_key, actor, previous))
             queued = SourceIntakeJobModel(
                 id=f"intake-{uuid4().hex[:12]}", run_id=run_id, thread_id=thread_id,
@@ -311,6 +322,32 @@ class MigrationRunService:
             reservation = session.get(TargetReservationModel, snapshot.target_reservation_id)
             if reservation is None or reservation.target_path != run.target_output_path or reservation.status not in {"claimed", "consumed"}:
                 raise MigrationRunError("TARGET_RESERVATION_INVALID", "The transferred target reservation is missing or does not match the run boundary.")
+
+    def _renew_retry_claim_if_reservation_is_live(self, session, run: MigrationRunModel) -> None:
+        """Renew a stale lease only when the durable target reservation remains valid."""
+        claim = session.scalar(select(ActiveRunClaimModel).where(
+            ActiveRunClaimModel.run_id == run.id,
+            ActiveRunClaimModel.target_output_path == run.target_output_path,
+        ))
+        if claim is None or self._utc(claim.expires_at) > self._utc(self._now()):
+            return
+        preflight = session.get(PreflightModel, run.preflight_id) if run.preflight_id else None
+        snapshot = PreflightSnapshot.model_validate(preflight.snapshot) if preflight is not None else None
+        reservation = session.get(TargetReservationModel, snapshot.target_reservation_id) if snapshot and snapshot.target_reservation_id else None
+        if reservation is None or reservation.status not in {"claimed", "consumed"} or reservation.target_path != run.target_output_path:
+            return
+        now = self._now()
+        if self._utc(reservation.expires_at) <= self._utc(now):
+            reservation.expires_at = now + PathValidationRepository.reservation_ttl
+        claim.expires_at = now + timedelta(seconds=self._lease_seconds)
+
+    @staticmethod
+    def _renew_bound_target_reservation(session, run: MigrationRunModel, now: datetime) -> None:
+        preflight = session.get(PreflightModel, run.preflight_id) if run.preflight_id else None
+        snapshot = PreflightSnapshot.model_validate(preflight.snapshot) if preflight is not None else None
+        reservation = session.get(TargetReservationModel, snapshot.target_reservation_id) if snapshot and snapshot.target_reservation_id else None
+        if reservation is not None and reservation.status in {"claimed", "consumed"} and reservation.target_path == run.target_output_path:
+            reservation.expires_at = now + PathValidationRepository.reservation_ttl
 
     @staticmethod
     def _utc(value: datetime) -> datetime:

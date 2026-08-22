@@ -63,6 +63,10 @@ class EnvironmentCapabilitySnapshot(BaseModel):
     blockers: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     controlled_probes: dict[str, dict[str, str | None]] = Field(default_factory=dict)
+    # Complete PATH-independent Node/npm/npx inventory.  ``runtimes`` above
+    # remains the compatibility/readiness view of the active backend PATH;
+    # this matrix is the immutable source-runtime resolution evidence.
+    runtime_matrix: list[dict] = Field(default_factory=list)
     checksum: str
 
 

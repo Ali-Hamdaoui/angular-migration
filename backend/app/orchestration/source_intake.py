@@ -92,7 +92,22 @@ class SourceIntakeDispatcher:
                     approved = session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.run_id == job.run_id, WorkflowEventModel.event_type == WorkflowEventType.G03_APPROVED.value))
                     job.status = "waiting_g03" if approved is not None else "queued"
                     job.started_at = None
-        dispatchable = [job for job in jobs if job.status != "waiting_retry"]
+        dispatchable = []
+        for job in jobs:
+            if job.status == "waiting_retry":
+                continue
+            # ``waiting_g03`` is also the durable pre-approval boundary. It
+            # must remain parked across a backend restart until the human
+            # approval event exists; only the G03 approval callback may
+            # dispatch the post-G03 continuation.
+            if job.status == "waiting_g03":
+                approved = session.scalar(select(WorkflowEventModel).where(
+                    WorkflowEventModel.run_id == job.run_id,
+                    WorkflowEventModel.event_type == WorkflowEventType.G03_APPROVED.value,
+                ))
+                if approved is None:
+                    continue
+            dispatchable.append(job)
         for job in dispatchable:
             self.start(run_id=job.run_id, thread_id=job.thread_id)
         return len(dispatchable)
@@ -109,15 +124,7 @@ class SourceIntakeDispatcher:
                 run = session.get(MigrationRunModel, run_id)
                 if run is None:
                     return
-                StateTransitionService(session).append_audit_event(
-                    run_id=run_id,
-                    idempotency_key=f"{job.idempotency_key}:started",
-                    event_type=WorkflowEventType.SOURCE_INTAKE_STARTED,
-                    actor=job.actor,
-                    reason="durable source-intake worker started",
-                    occurred_at=datetime.now(UTC),
-                    payload={"job_id": job.id, "worker_id": self._worker_id, "attempt": job.attempt},
-                )
+                self._record_started_event(session, run_id, job)
                 expected_version = run.state_version
 
             snapshot = SourceSnapshotApplicationService(self._settings).create(
@@ -502,6 +509,23 @@ class SourceIntakeDispatcher:
             job.worker_id = self._worker_id
             job.started_at = datetime.now(UTC)
             return job
+
+    def _record_started_event(self, session, run_id: str, job: SourceIntakeJobModel) -> None:
+        started_key = f"{job.idempotency_key}:started"
+        if session.scalar(select(WorkflowEventModel).where(
+            WorkflowEventModel.run_id == run_id,
+            WorkflowEventModel.idempotency_key == started_key,
+        )) is not None:
+            return
+        StateTransitionService(session).append_audit_event(
+            run_id=run_id,
+            idempotency_key=started_key,
+            event_type=WorkflowEventType.SOURCE_INTAKE_STARTED,
+            actor=job.actor,
+            reason="durable source-intake worker started",
+            occurred_at=datetime.now(UTC),
+            payload={"job_id": job.id, "worker_id": self._worker_id, "attempt": job.attempt},
+        )
 
     def _set_status(self, job_id: str, status: str) -> None:
         with session_scope() as session:

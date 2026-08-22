@@ -8,6 +8,7 @@ from app.api.baseline_g03_contracts import BaselineAssessmentResponse
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.core.datetime import normalize_persisted_utc
 from app.domain.baseline_qualification import BaselineEvidence, BaselinePolicyService, G03ApprovalPackageBuilder, G03ApprovalService, G03Decision, KnownFailurePolicy
+from app.domain.baseline_matrix import latest_records_by_key
 from app.domain.contracts import ArtifactType, RunStatus, WorkflowEventType
 from app.repositories.models import ArtifactMetadataModel, BaselineAssessmentModel, BaselineParityEvidenceModel, BaselineQualificationModel, BaselineValidationModel, CommandExecutionModel, ExecutionProfileModel, MigrationRunModel
 from app.repositories.baseline_g03_models import G03ApprovalModel
@@ -39,7 +40,8 @@ class BaselineG03ApplicationService:
             parity=s.scalar(select(BaselineParityEvidenceModel).where(BaselineParityEvidenceModel.run_id==run_id).order_by(BaselineParityEvidenceModel.created_at.desc()))
             if parity is None or parity.status != "captured":
                 raise BaselineG03ApplicationError("BASELINE_PARITY_EVIDENCE_REQUIRED", "Baseline parity evidence must be captured before G03 qualification.", 409)
-            vals=list(s.scalars(select(BaselineValidationModel).where(BaselineValidationModel.run_id==run_id)))
+            validation_rows=list(s.scalars(select(BaselineValidationModel).where(BaselineValidationModel.run_id==run_id)))
+            vals=list(latest_records_by_key(validation_rows, lambda validation: validation.kind))
             profile=s.scalar(select(ExecutionProfileModel).where(ExecutionProfileModel.run_id==run_id).order_by(ExecutionProfileModel.updated_at.desc()))
             self._validate_parity(s, run, baseline, parity, vals, profile)
             installation = s.scalar(select(CommandExecutionModel).where(CommandExecutionModel.run_id == run_id, CommandExecutionModel.command_id == "npm-ci-bootstrap").order_by(CommandExecutionModel.finished_at.desc()))

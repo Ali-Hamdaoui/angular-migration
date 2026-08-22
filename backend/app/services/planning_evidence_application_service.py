@@ -30,18 +30,19 @@ from app.repositories.models import (
 )
 from app.repositories.session import session_scope
 from app.domain.compatibility import calculate_stage1_profile_checksum
-from app.services.planning_application_service import PlanningApplicationError, PlanningApplicationService
+from app.services.planning_application_service import PlanningApplicationError, PlanningApplicationService, planning_failure_details
 from app.services.artifact_binding import canonical_artifact_references, canonical_artifact_set_checksum
 from app.services.compatibility_evidence_application_service import CompatibilityEvidenceApplicationService
 from app.state.transition_service import StateTransitionService, StaleStateVersionError, TransitionError, TransitionRequest
 
 
 class PlanningEvidenceError(ValueError):
-    def __init__(self, code: str, message: str, status_code: int = 422) -> None:
+    def __init__(self, code: str, message: str, status_code: int = 422, *, details=None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.status_code = status_code
+        self.details = details
 
 
 class PlanningEvidenceApplicationService:
@@ -55,6 +56,7 @@ class PlanningEvidenceApplicationService:
     def record_failure(self, session, run, job, *, disposition, stage: str, diagnostic=None) -> tuple[str, object]:
         """Persist diagnostic evidence before exposing a planning failure."""
         now = self._now()
+        diagnostic_fields = diagnostic if isinstance(diagnostic, dict) else {}
         details = {
             "run_id": run.id,
             "planning_job_id": job.id,
@@ -68,7 +70,12 @@ class PlanningEvidenceApplicationService:
             "encoding": getattr(diagnostic, "encoding", None),
             "bom_detected": getattr(diagnostic, "bom_detected", None),
             "parser_mode": getattr(diagnostic, "parser_mode", None),
-            "exception_type": getattr(diagnostic, "exception_type", None),
+            "exception_type": diagnostic_fields.get("exception_type", getattr(diagnostic, "exception_type", None)),
+            "sanitized_exception_message": diagnostic_fields.get("sanitized_exception_message"),
+            "root_exception_type": diagnostic_fields.get("root_exception_type"),
+            "root_exception_message": diagnostic_fields.get("root_exception_message"),
+            "planning_component": diagnostic_fields.get("planning_component"),
+            "failure_stage": stage,
             "line": getattr(diagnostic, "line", None),
             "column": getattr(diagnostic, "column", None),
             "position": getattr(diagnostic, "position", None),
@@ -119,9 +126,14 @@ class PlanningEvidenceApplicationService:
             try:
                 result = PlanningApplicationService(artifact_checksum_reader=lambda artifact_id: self._artifact_checksum(self._store_for_run(run), artifact_id)).generate(request, plan_version=version)
             except PlanningApplicationError as error:
-                raise PlanningEvidenceError(error.code, error.message, error.status_code) from error
+                raise PlanningEvidenceError(error.code, error.message, error.status_code, details=error.details) from error
             except Exception as error:
-                raise PlanningEvidenceError("PLAN_GENERATION_FAILED", "Plan generation failed closed.", 503) from error
+                raise PlanningEvidenceError(
+                    "PLAN_GENERATION_FAILED",
+                    "Plan generation failed closed.",
+                    503,
+                    details=planning_failure_details(error, planning_component="PlanningEvidenceApplicationService.create"),
+                ) from error
 
             stage = result.first_stage_plan
             if stage is None:

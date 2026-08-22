@@ -11,7 +11,11 @@ from pathlib import Path
 
 from sqlalchemy import select, update
 
-from app.artifact_store import LocalFilesystemArtifactStore
+from app.artifact_store import (
+    ArtifactNotFoundError,
+    ArtifactStoreError,
+    LocalFilesystemArtifactStore,
+)
 from app.domain.baseline import (
     BaselineQualificationError,
     LockfilePrequalificationService,
@@ -21,9 +25,11 @@ from app.domain.contracts import ArtifactType
 from app.repositories.models import (
     ArtifactMetadataModel,
     CommandExecutionModel,
+    MigrationStageModel,
     MigrationRunModel,
     RepairAttemptModel,
     StageExecutionPlanModel,
+    StageRecoveryOperationModel,
     StageStepModel,
     StageWorkspaceBindingModel,
 )
@@ -43,8 +49,14 @@ LOCKFILE_GENERATION_FINGERPRINT_SCOPE = "lockfile-generation-mutation-v2"
 #: generation.  The successor idempotency key is derived from this suffix, so
 #: restarts reconstruct the same key and never queue endless successors.
 LOCKFILE_GENERATION_ATTEMPT_2_MARKER = ":attempt-2"
+LOCKFILE_RECONCILIATION_MARKER = ":reconcile-stale-lock"
 LOCKFILE_GENERATION_ETARGET = "LOCKFILE_GENERATION_ETARGET"
 LOCKFILE_GENERATION_ERESOLVE = "LOCKFILE_GENERATION_ERESOLVE"
+
+#: Frozen contract for P4 V2.2 dependency normalization — preserve-first materialization.
+DEPENDENCY_NORMALIZATION_REPAIR_KIND = "dependency_manifest_normalization"
+DEPENDENCY_NORMALIZATION_SCHEMA_VERSION = "dependency-normalization-v1"
+DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED = "DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED"
 
 _NPM_ERROR_PREFIX = r"npm\s+(?:error|ERR!)"
 _NPM_ETARGET_CODE = re.compile(
@@ -54,7 +66,15 @@ _NPM_NO_MATCHING_VERSION = re.compile(
     rf"(?im)^\s*{_NPM_ERROR_PREFIX}\s+notarget\s+No matching version found for\s+\S+"
 )
 _NPM_ERESOLVE = re.compile(
-    rf"(?im)^\s*(?:{_NPM_ERROR_PREFIX}\s+)?(?:code\s+)?ERESOLVE\b"
+    rf"(?im)^\s*(?:{_NPM_ERROR_PREFIX}|npm\s+WARN)\s+ERESOLVE\b"
+    rf"|^\s*(?:{_NPM_ERROR_PREFIX}\s+)?(?:code\s+)?ERESOLVE\b"
+)
+
+# lock-specific malformed/unsupported evidence — NOT ERESOLVE/ETARGET peer conflict.
+_NPM_LOCK_MALFORMED = re.compile(
+    r"(?im)EBADLOCK|EINVALID|lockfile.*(?:corrupt|invalid|unsupported)|"
+    r"unsupported.*lockfile|lockfileVersion.*unsupported|"
+    r"must be.*lockfileVersion|ETARGET.*lockfile"
 )
 
 
@@ -98,6 +118,70 @@ def _file_checksum(path: Path) -> str:
     )
 
 
+def _is_normalization_op(op: object) -> bool:
+    if not isinstance(op, dict):
+        return False
+    return (
+        str(op.get("repair_kind") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+        or str(op.get("operation") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+        or str(op.get("schema_version") or "") == DEPENDENCY_NORMALIZATION_SCHEMA_VERSION
+    )
+
+
+def _proposal_is_normalization(proposal: object) -> bool:
+    if not isinstance(proposal, dict):
+        return False
+    ops = proposal.get("operations")
+    if not isinstance(ops, list):
+        return False
+    return any(_is_normalization_op(op) for op in ops)
+
+
+def _is_lock_malformed_evidence(workspace: Path) -> bool:
+    lock = workspace / "package-lock.json"
+    if not lock.is_file() or lock.is_symlink():
+        return True
+    try:
+        data = json.loads(lock.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return True
+    if not isinstance(data, dict):
+        return True
+    ver = data.get("lockfileVersion")
+    if not isinstance(ver, int) or ver < 1 or ver > 3:
+        return True
+    # structural: packages vs dependencies missing entirely
+    if not isinstance(data.get("packages"), dict) and not isinstance(data.get("dependencies"), dict):
+        # empty lockfile without packages is considered malformed for v3 verification
+        # treat as unusable only when lockfileVersion claims v3
+        if ver >= 3:
+            return True
+    return False
+
+
+def _failure_message_indicates_lock_corrupt(message: str) -> bool:
+    return bool(_NPM_LOCK_MALFORMED.search(message or ""))
+
+
+def validate_generated_lockfile(workspace: Path) -> str:
+    """Validate the generic npm lockfile against the current manifest."""
+    try:
+        package = PackageMetadataInspector().inspect(workspace)
+        lock = LockfilePrequalificationService().inspect(workspace, package)
+    except BaselineQualificationError as error:
+        raise LockfileGenerationError(
+            "LOCKFILE_GENERATION_PACKAGE_INVALID", str(error)
+        ) from error
+    if lock.status != "valid":
+        code = (
+            "LOCKFILE_GENERATION_LOCKFILE_INVALID"
+            if "NPM_LOCKFILE_INVALID" in lock.blockers
+            else "LOCKFILE_GENERATION_LOCKFILE_UNSYNCHRONIZED"
+        )
+        raise LockfileGenerationError(code, ", ".join(lock.blockers))
+    return lock.status
+
+
 def _is_governed_volatile_relative(relative: str) -> bool:
     """True when any path part is a governed volatile root (node_modules/** etc.).
 
@@ -138,6 +222,154 @@ class LockfileGenerationRunner:
         self._stage = stage_service or TransformerStageService()
         self._now = now_provider or (lambda: datetime.now(UTC))
 
+    def _detect_normalization(self, session, continuation) -> tuple[bool, object | None]:
+        """True when the active applied repair is dependency_manifest_normalization.
+
+        Reads the immutable repair proposal artifact bound to the active attempt
+        (same as _authority's check) and inspects repair_kind / operation /
+        schema_version without touching filesystem outside the store.
+        """
+        try:
+            run = session.get(MigrationRunModel, continuation.run_id)
+            attempt = session.scalar(
+                select(RepairAttemptModel)
+                .where(
+                    RepairAttemptModel.run_id == continuation.run_id,
+                    RepairAttemptModel.stage_id == continuation.current_stage_id,
+                    RepairAttemptModel.status.in_(("applied", "applied_verified")),
+                )
+                .order_by(RepairAttemptModel.attempt_number.desc())
+            )
+            if run is None or attempt is None or not run.artifact_root:
+                return False, None
+            if not attempt.proposal_artifact_id or not attempt.proposal_checksum:
+                return False, None
+            metadata = session.get(ArtifactMetadataModel, "metadata-" + attempt.proposal_artifact_id)
+            if metadata is None or metadata.checksum != attempt.proposal_checksum:
+                return False, None
+            stored = LocalFilesystemArtifactStore(
+                Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+            ).read_artifact(run.id, metadata.relative_path)
+            if stored.ref.checksum != attempt.proposal_checksum:
+                return False, None
+            proposal = json.loads(stored.content)
+            if _proposal_is_normalization(proposal):
+                return True, attempt
+            # also accept the Pydantic view for legacy stored shape
+            try:
+                parsed = RepairProposal.model_validate(proposal)
+                for item in parsed.operations:
+                    if item.operation == DEPENDENCY_NORMALIZATION_REPAIR_KIND or (item.repair_kind or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND:
+                        return True, attempt
+            except Exception:
+                pass
+            return False, attempt
+        except Exception:
+            return False, None
+
+    def _normalization_fresh_fallback_qualified(self, workspace: Path, execution) -> bool:
+        """Qualified fresh-lock fallback: only when lock itself proves malformed/unsupported/corrupt.
+
+        Never on mere ERESOLVE/ETARGET peer-conflict evidence. Reuses the lock-malformed
+        predicate and lock-specific corrupt pattern; callers reuse the existing governed
+        stale-lock preparation primitive rather than building a second recovery system.
+        """
+        if _is_lock_malformed_evidence(workspace):
+            return True
+        if _failure_message_indicates_lock_corrupt(str(execution.failure_message or "")):
+            return True
+        return False
+
+    def _record_normalization_failure_evidence(self, session, continuation, execution, workspace, attempt) -> None:
+        """Persist immutable normalized evidence for a DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED.
+
+        The evidence freezes package.json / package-lock checksums, plan number, generation,
+        and the npm failure message so P6 can enforce plan1->new constraint->plan2->BLOCK.
+        """
+        try:
+            run = session.get(MigrationRunModel, continuation.run_id)
+            if run is None or not run.artifact_root:
+                return
+            store = LocalFilesystemArtifactStore(
+                Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+            )
+            start = execution.start_fingerprint or {}
+            plan_number = getattr(attempt, "attempt_number", None) if attempt is not None else None
+            generation = start.get("normalization_generation") or start.get("reconciliation_generation") or 1
+            payload = {
+                "schema_version": "dependency-normalization-failure-v1",
+                "repair_kind": DEPENDENCY_NORMALIZATION_REPAIR_KIND,
+                "normalization_schema_version": DEPENDENCY_NORMALIZATION_SCHEMA_VERSION,
+                "plan_number": plan_number,
+                "generation": generation,
+                "attempt_id": getattr(attempt, "id", None),
+                "execution_id": execution.id,
+                "stage_id": continuation.current_stage_id,
+                "run_id": continuation.run_id,
+                "package_json_sha256": _file_checksum(workspace / "package.json"),
+                "package_lock_sha256": _file_checksum(workspace / "package-lock.json"),
+                "pre_command_package_json_sha256": start.get("post_apply_pre_command_package_json_sha256"),
+                "pre_command_package_lock_sha256": start.get("post_apply_pre_command_package_lock_sha256"),
+                "pre_command_governed_workspace_fingerprint": start.get("post_apply_pre_command_governed_workspace_fingerprint"),
+                "failure_code": execution.failure_code,
+                "failure_message": execution.failure_message,
+                "exit_code": execution.exit_code,
+                "command_id": execution.command_id,
+                "arguments": list(execution.arguments or []),
+                "preserve_first": start.get("preserve_first") is True,
+                "package_lock_only": start.get("package_lock_only") is True,
+                "immutable": True,
+            }
+            content = json.dumps(payload, sort_keys=True, indent=2)
+            checksum = "sha256:" + hashlib.sha256(content.encode()).hexdigest()
+            relative = f"05_repairs/attempt-{attempt.id}/dependency-normalization-failure.{execution.id}.{checksum[7:15]}.json" if attempt and getattr(attempt, "id", None) else f"04_workflow_state/command_executions/{execution.id}.dependency-normalization-failure.json"
+            stored = store.write_text_artifact(
+                run.id,
+                relative,
+                content,
+                ArtifactType.JSON,
+                stage_id=continuation.current_stage_id,
+                attempt_id=getattr(attempt, "id", None),
+                created_by="lockfile-generation-runner",
+                created_at=self._now(),
+                input_hashes={
+                    "execution": execution.id,
+                    "package_json": payload["package_json_sha256"],
+                    "package_lock": payload["package_lock_sha256"],
+                    "failure_message": hashlib.sha256(str(execution.failure_message or "").encode()).hexdigest()[:16],
+                },
+                policy_version="dependency-normalization-failure-v1",
+            )
+            meta_id = "metadata-" + stored.ref.artifact_id
+            if session.get(ArtifactMetadataModel, meta_id) is None:
+                session.add(
+                    ArtifactMetadataModel(
+                        id=meta_id,
+                        run_id=run.id,
+                        stage_id=continuation.current_stage_id,
+                        artifact_type=stored.ref.artifact_type.value,
+                        relative_path=stored.ref.relative_path,
+                        checksum=stored.ref.checksum,
+                        schema_version=stored.envelope.schema_version,
+                        created_at=stored.ref.created_at,
+                        finalized_at=stored.ref.created_at,
+                        immutable=True,
+                        execution_id=execution.id,
+                        owner_reference=f"{execution.id}:dependency-normalization-failure",
+                        correlation_id=execution.correlation_id,
+                        safe_metadata={
+                            "repair_kind": DEPENDENCY_NORMALIZATION_REPAIR_KIND,
+                            "schema_version": DEPENDENCY_NORMALIZATION_SCHEMA_VERSION,
+                            "plan_number": plan_number,
+                            "generation": generation,
+                            "immutable_normalized_evidence": True,
+                        },
+                    )
+                )
+                session.flush()
+        except Exception:
+            return
+
     def advance(self, session, continuation, *, next_node: str) -> str:
         step = session.scalar(
             select(StageStepModel).where(
@@ -165,12 +397,88 @@ class LockfileGenerationRunner:
             self._stage._wait_for_command(session, continuation, execution.id)
             return "waiting"
         if execution.status != "succeeded" or execution.exit_code != 0:
+            # P4 V2.2 preserve-first normalization path — ERESOLVE/ETARGET become
+            # DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED with immutable evidence.
+            # Historical reconciliation routes are preserved for non-normalization.
+            is_norm, norm_attempt = self._detect_normalization(session, continuation)
+            if is_norm and (is_npm_etarget_failure(execution) or is_npm_eresolve_failure(execution)):
+                workspace_for_norm: Path | None = None
+                binding_for_norm = session.scalar(
+                    select(StageWorkspaceBindingModel).where(
+                        StageWorkspaceBindingModel.run_id == continuation.run_id,
+                        StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+                        StageWorkspaceBindingModel.active.is_(True),
+                    )
+                )
+                if binding_for_norm is not None:
+                    try:
+                        workspace_for_norm = Path(binding_for_norm.workspace_path).resolve(strict=True)
+                    except (OSError, ValueError):
+                        workspace_for_norm = None
+                # package.json mutation guard — do not hide a mutation behind a resolution failure
+                if workspace_for_norm is not None:
+                    start_guard = execution.start_fingerprint or {}
+                    expected_pkg = start_guard.get("post_apply_pre_command_package_json_sha256")
+                    if expected_pkg is not None and _file_checksum(workspace_for_norm / "package.json") != expected_pkg:
+                        raise LockfileGenerationError(
+                            "LOCKFILE_GENERATION_PACKAGE_JSON_MUTATED",
+                            "npm-lockfile-generate modified approved package.json",
+                        )
+                    # qualified fresh-lock fallback ONLY when lock itself is malformed/unsupported/corrupt
+                    if self._normalization_fresh_fallback_qualified(workspace_for_norm, execution):
+                        try:
+                            return self._queue_stale_lock_reconciliation(session, continuation, execution)
+                        except LockfileGenerationError as error:
+                            if error.code not in {
+                                "LOCKFILE_RECONCILIATION_WORKSPACE_STALE",
+                                "LOCKFILE_RECONCILIATION_EVIDENCE_MISSING",
+                                "LOCKFILE_RECONCILIATION_EVIDENCE_INVALID",
+                            }:
+                                raise
+                            pass
+                    self._record_normalization_failure_evidence(session, continuation, execution, workspace_for_norm, norm_attempt)
+                raise LockfileGenerationError(
+                    DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED,
+                    execution.failure_message or "npm reported an unresolved dependency tree for normalized manifest",
+                )
             if is_npm_etarget_failure(execution):
                 raise LockfileGenerationError(
                     LOCKFILE_GENERATION_ETARGET,
                     execution.failure_message or "npm reported an unavailable dependency version",
                 )
             if is_npm_eresolve_failure(execution):
+                start = execution.start_fingerprint or {}
+                if start.get("current_state_reconciliation") is True:
+                    return self._queue_stale_lock_reconciliation(
+                        session, continuation, execution
+                    )
+                if start.get("reconciliation_generation") is True:
+                    raise LockfileGenerationError(
+                        LOCKFILE_GENERATION_ERESOLVE,
+                        execution.failure_message
+                        or "npm reported an unresolved dependency tree",
+                    )
+                if self._current_state_reconciliation_allowed(
+                    session, continuation, execution
+                ):
+                    return self._queue_current_state_reconciliation(
+                        session, continuation, execution
+                    )
+                if self._stale_lock_reconciliation_allowed(session, continuation, execution):
+                    try:
+                        return self._queue_stale_lock_reconciliation(
+                            session, continuation, execution
+                        )
+                    except LockfileGenerationError as error:
+                        if error.code not in {
+                            "LOCKFILE_RECONCILIATION_WORKSPACE_STALE",
+                            "LOCKFILE_RECONCILIATION_EVIDENCE_MISSING",
+                            "LOCKFILE_RECONCILIATION_EVIDENCE_INVALID",
+                        }:
+                            raise
+                        return self._queue_current_state_reconciliation(
+                            session, continuation, execution
+                        )
                 raise LockfileGenerationError(
                     LOCKFILE_GENERATION_ERESOLVE,
                     execution.failure_message or "npm reported an unresolved dependency tree",
@@ -183,7 +491,10 @@ class LockfileGenerationRunner:
             return self._queue_successor(session, continuation, execution)
         self._verify(session, continuation, step, execution)
         self._record_catalogue_evidence(session, continuation, execution)
-        self._resume(continuation, next_node)
+        resume_node = (execution.start_fingerprint or {}).get(
+            "post_reconciliation_next_node", next_node
+        )
+        self._resume(continuation, resume_node)
         return "passed"
 
     def _record_catalogue_evidence(self, session, continuation, execution) -> None:
@@ -245,8 +556,17 @@ class LockfileGenerationRunner:
         except Exception:
             return
 
-    def _queue(self, session, continuation, *, generation: int = 1) -> str:
-        if generation not in {1, 2}:
+    def _queue(
+        self,
+        session,
+        continuation,
+        *,
+        generation: int = 1,
+        reconciliation_key: str | None = None,
+        current_state: bool = False,
+        next_node: str | None = None,
+    ) -> str:
+        if generation not in {1, 2, 3}:
             raise LockfileGenerationError(
                 "LOCKFILE_GENERATION_FINGERPRINT_INVALID",
                 "Only one v1 -> v2 successor generation is permitted",
@@ -263,6 +583,12 @@ class LockfileGenerationRunner:
                     "LOCKFILE_GENERATION_WORKSPACE_STALE",
                     "The post-apply workspace no longer matches its active binding",
                 )
+        elif current_state and generation == 3:
+            if STAGE_FINGERPRINT_PROFILE.fingerprint(workspace) != binding.workspace_fingerprint:
+                raise LockfileGenerationError(
+                    "LOCKFILE_GENERATION_WORKSPACE_STALE",
+                    "The current reconciliation workspace no longer matches its active binding",
+                )
         else:
             self._require_successor_workspace(session, continuation, workspace)
         if binding.fingerprint_profile_id != STAGE_FINGERPRINT_PROFILE.profile_id:
@@ -272,16 +598,33 @@ class LockfileGenerationRunner:
             )
         start = {
             "fingerprint_scope": LOCKFILE_GENERATION_FINGERPRINT_SCOPE,
+            "reconciliation_generation": generation == 3,
+            "current_state_reconciliation": current_state,
             "post_apply_pre_command_package_json_sha256": _file_checksum(workspace / "package.json"),
             "post_apply_pre_command_package_lock_sha256": _file_checksum(workspace / "package-lock.json"),
             "post_apply_pre_command_governed_workspace_fingerprint": workspace_excluding_governed_volatile_fingerprint(workspace),
             "post_apply_pre_command_binding_fingerprint": binding.workspace_fingerprint,
         }
+        # P4 V2.2 preserve-first / package-lock-only visibility for P6 enforcement
+        is_norm_start, _norm_att_start = self._detect_normalization(session, continuation)
+        if is_norm_start:
+            start["normalization_repair_kind"] = DEPENDENCY_NORMALIZATION_REPAIR_KIND
+            start["normalization_schema_version"] = DEPENDENCY_NORMALIZATION_SCHEMA_VERSION
+            start["normalization_plan_number"] = getattr(attempt, "attempt_number", None)
+            start["normalization_generation"] = generation
+            start["dependency_normalization_generation"] = generation
+            start["preserve_first"] = True
+            start["package_lock_only"] = True
+        else:
+            start["preserve_first"] = generation == 1
+            start["package_lock_only"] = True
         if start["post_apply_pre_command_package_json_sha256"] == "missing":
             raise LockfileGenerationError("PACKAGE_JSON_MISSING", "Approved package.json is missing")
         try:
             result = self._stage.queue_lockfile_generation(
-                session, continuation, attempt_key=self._attempt_key(attempt, generation)
+                session,
+                continuation,
+                attempt_key=self._attempt_key(attempt, generation, reconciliation_key),
             )
         except TransformerStageError as error:
             code = (
@@ -296,13 +639,361 @@ class LockfileGenerationRunner:
                 "LOCKFILE_GENERATION_QUEUE_FAILED", "Queued command evidence is missing"
             )
         execution.start_fingerprint = start
+        if next_node is not None:
+            execution.start_fingerprint["post_reconciliation_next_node"] = next_node
+        return "queued"
+
+    def _current_state_reconciliation_allowed(self, session, continuation, execution) -> bool:
+        if (execution.start_fingerprint or {}).get("current_state_reconciliation") is True:
+            return False
+        run, _attempt, _binding, workspace = self._authority(session, continuation)
+        stage = session.get(MigrationStageModel, continuation.current_stage_id)
+        if stage is None:
+            return False
+        from app.services.dependency_repair_preflight_service import DependencyRepairPreflightService
+
+        diagnosis = DependencyRepairPreflightService().classify_current_state(
+            workspace=workspace,
+            source_family=stage.source_version_family,
+            target_family=stage.target_version_family,
+        )
+        return diagnosis.get("classification") == "TARGET_MANIFEST_AHEAD"
+
+    def _queue_current_state_reconciliation(self, session, continuation, failed_execution) -> str:
+        """Queue a fresh lockfile command from the current target manifest.
+
+        The historical ERESOLVE remains the causal diagnostic, but its old
+        package/lockfile baseline cannot authorize mutation after the manifest
+        has advanced.  The current governed binding becomes the new command
+        baseline and the idempotency key includes both generations.
+        """
+        run, _attempt, _binding, workspace = self._authority(session, continuation)
+        stage = session.get(MigrationStageModel, continuation.current_stage_id)
+        if stage is None:
+            raise LockfileGenerationError(
+                "LOCKFILE_GENERATION_AUTHORITY_MISSING",
+                "The stage authority is missing for current-state reconciliation",
+            )
+        from app.services.dependency_repair_preflight_service import DependencyRepairPreflightService
+
+        diagnosis = DependencyRepairPreflightService().classify_current_state(
+            workspace=workspace,
+            source_family=stage.source_version_family,
+            target_family=stage.target_version_family,
+        )
+        if diagnosis.get("classification") != "TARGET_MANIFEST_AHEAD":
+            raise LockfileGenerationError(
+                "DEPENDENCY_STATE_RECONCILIATION_NOT_APPLICABLE",
+                f"Current dependency state is {diagnosis.get('classification')}",
+            )
+        result = session.get(
+            ArtifactMetadataModel,
+            "metadata-" + str(failed_execution.result_artifact_id),
+        )
+        if result is None or not result.immutable or result.execution_id != failed_execution.id:
+            raise LockfileGenerationError(
+                "LOCKFILE_RECONCILIATION_EVIDENCE_MISSING",
+                "The historical lockfile failure result is unavailable",
+            )
+        package_checksum = _file_checksum(workspace / "package.json")
+        lock_checksum = _file_checksum(workspace / "package-lock.json")
+        request = {
+            "run_id": run.id,
+            "stage_id": continuation.current_stage_id,
+            "failed_execution_id": failed_execution.id,
+            "failed_result_checksum": result.checksum,
+            "package_json_checksum": package_checksum,
+            "package_lock_checksum": lock_checksum,
+            "classification": diagnosis["classification"],
+        }
+        reconciliation_checksum = hashlib.sha256(
+            json.dumps(request, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        self._queue(
+            session,
+            continuation,
+            generation=3,
+            reconciliation_key=f"current:{reconciliation_checksum}",
+            current_state=True,
+            next_node="repair_revalidate",
+        )
+        step = session.scalar(
+            select(StageStepModel).where(
+                StageStepModel.run_id == continuation.run_id,
+                StageStepModel.stage_id == continuation.current_stage_id,
+                StageStepModel.name == "lockfile_generation-0",
+            )
+        )
+        queued = session.get(CommandExecutionModel, step.execution_id) if step else None
+        if queued is None:
+            raise LockfileGenerationError(
+                "LOCKFILE_GENERATION_QUEUE_FAILED",
+                "Current-state reconciliation command evidence is missing",
+            )
         return "queued"
 
     @staticmethod
-    def _attempt_key(attempt, generation: int) -> str:
+    def _attempt_key(attempt, generation: int, reconciliation_key: str | None = None) -> str:
         if generation == 1:
             return attempt.id
-        return f"{attempt.id}{LOCKFILE_GENERATION_ATTEMPT_2_MARKER}"
+        marker = (
+            LOCKFILE_GENERATION_ATTEMPT_2_MARKER
+            if generation == 2
+            else f"{LOCKFILE_RECONCILIATION_MARKER}:{reconciliation_key}"
+        )
+        return f"{attempt.id}{marker}"
+
+    def _stale_lock_reconciliation_allowed(self, session, continuation, execution) -> bool:
+        if (
+            LOCKFILE_RECONCILIATION_MARKER in str(execution.idempotency_key or "")
+            or (execution.start_fingerprint or {}).get("reconciliation_generation")
+        ):
+            return False
+        run, _attempt, _binding, workspace = self._authority(session, continuation)
+        stage = session.get(MigrationStageModel, continuation.current_stage_id)
+        if stage is None:
+            return False
+        from app.services.dependency_repair_preflight_service import DependencyRepairPreflightService
+
+        diagnosis = DependencyRepairPreflightService().classify_current_state(
+            workspace=workspace,
+            source_family=stage.source_version_family,
+            target_family=stage.target_version_family,
+        )
+        return diagnosis.get("classification") == "TARGET_MANIFEST_AHEAD"
+
+    def _reusable_preparation(self, session, continuation, execution, package_checksum, governed):
+        run, _attempt, _binding, workspace = self._authority(session, continuation)
+        if (workspace / "package-lock.json").exists():
+            return None
+        for candidate in session.scalars(
+            select(ArtifactMetadataModel)
+            .where(
+                ArtifactMetadataModel.run_id == run.id,
+                ArtifactMetadataModel.stage_id == continuation.current_stage_id,
+                ArtifactMetadataModel.owner_reference.like("%:stale-lock:%"),
+                ArtifactMetadataModel.immutable.is_(True),
+            )
+            .order_by(ArtifactMetadataModel.created_at.desc())
+        ):
+            metadata = candidate.safe_metadata or {}
+            failed = session.get(
+                CommandExecutionModel, metadata.get("failed_execution_id")
+            )
+            if (
+                metadata.get("package_json_checksum") != package_checksum
+                or metadata.get("governed_workspace_fingerprint") != governed
+                or failed is None
+                or failed.run_id != run.id
+                or failed.stage_id != continuation.current_stage_id
+                or failed.command_id != "npm-lockfile-generate"
+                or failed.status != "failed"
+                or failed.exit_code in (None, 0)
+            ):
+                continue
+            try:
+                stored = LocalFilesystemArtifactStore(
+                    Path(run.artifact_root).parent,
+                    fixed_run_root=Path(run.artifact_root),
+                ).read_artifact(run.id, candidate.relative_path)
+            except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError):
+                continue
+            if stored.ref.checksum == candidate.checksum:
+                return metadata
+        return None
+
+    def _queue_stale_lock_reconciliation(
+        self,
+        session,
+        continuation,
+        execution,
+        *,
+        recovery_id: str | None = None,
+        recovery_owned: bool = False,
+    ) -> str:
+        run, attempt, binding, workspace = self._authority(session, continuation)
+        lockfile = workspace / "package-lock.json"
+        start = execution.start_fingerprint or {}
+        result = session.get(
+            ArtifactMetadataModel, "metadata-" + str(execution.result_artifact_id)
+        )
+        expected_lock = start.get("post_apply_pre_command_package_lock_sha256")
+        expected_package = start.get("post_apply_pre_command_package_json_sha256")
+        if result is None or not result.immutable or result.execution_id != execution.id:
+            raise LockfileGenerationError(
+                "LOCKFILE_RECONCILIATION_EVIDENCE_MISSING",
+                "The causal lockfile result evidence is unavailable",
+            )
+        identity_payload = {
+            "run_id": continuation.run_id,
+            "stage_id": continuation.current_stage_id,
+            "repair_attempt_id": attempt.id,
+            "failed_execution_id": execution.id,
+            "failed_execution_result_checksum": result.checksum,
+            "stale_lockfile_checksum": expected_lock,
+            "package_json_checksum": expected_package,
+        }
+        reconciliation_checksum = hashlib.sha256(
+            json.dumps(identity_payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        owner = (
+            f"{recovery_id}:stale-lock:{reconciliation_checksum[:24]}"
+            if recovery_id
+            else f"{execution.id}:stale-lock:{reconciliation_checksum[:24]}"
+        )
+        preparation = session.scalar(
+            select(ArtifactMetadataModel).where(
+                ArtifactMetadataModel.run_id == continuation.run_id,
+                ArtifactMetadataModel.stage_id == continuation.current_stage_id,
+                ArtifactMetadataModel.owner_reference == owner,
+                ArtifactMetadataModel.immutable.is_(True),
+            )
+        )
+        if preparation is None and expected_lock == "missing":
+            reusable = self._reusable_preparation(
+                session,
+                continuation,
+                execution,
+                expected_package,
+                start.get("post_apply_pre_command_governed_workspace_fingerprint"),
+            )
+            if reusable is not None:
+                return self._queue(
+                    session,
+                    continuation,
+                    generation=3,
+                    reconciliation_key=(
+                        f"resume:{reusable['reconciliation_checksum']}:{execution.id}"
+                    ),
+                )
+        if preparation is None:
+            if (
+                not lockfile.is_file()
+                or lockfile.is_symlink()
+                or _file_checksum(lockfile) != expected_lock
+                or _file_checksum(workspace / "package.json") != expected_package
+                or STAGE_FINGERPRINT_PROFILE.fingerprint(workspace)
+                != binding.workspace_fingerprint
+            ):
+                raise LockfileGenerationError(
+                    "LOCKFILE_RECONCILIATION_WORKSPACE_STALE",
+                    "The stale lockfile preparation source changed",
+                )
+            store = LocalFilesystemArtifactStore(
+                Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+            )
+            stored = store.write_text_artifact(
+                run.id,
+                (
+                    f"04_workflow_state/recovery/{recovery_id}/stale-package-lock."
+                    f"{reconciliation_checksum}.json"
+                    if recovery_id
+                    else f"05_repairs/attempt-{attempt.id}/stale-package-lock.{reconciliation_checksum}.json"
+                ),
+                lockfile.read_text(encoding="utf-8"),
+                ArtifactType.JSON,
+                stage_id=continuation.current_stage_id,
+                attempt_id=attempt.id,
+                created_by="lockfile-generation-runner",
+                created_at=self._now(),
+                input_hashes={
+                    "failed_execution": execution.id,
+                    "result": result.checksum,
+                    "lockfile": expected_lock,
+                    "manifest": expected_package,
+                },
+                policy_version="dependency-state-reconciliation-v2",
+            )
+            session.add(
+                ArtifactMetadataModel(
+                    id="metadata-" + stored.ref.artifact_id,
+                    run_id=run.id,
+                    stage_id=continuation.current_stage_id,
+                    artifact_type=stored.ref.artifact_type.value,
+                    relative_path=stored.ref.relative_path,
+                    checksum=stored.ref.checksum,
+                    created_at=stored.ref.created_at,
+                    finalized_at=stored.ref.created_at,
+                    immutable=True,
+                    execution_id=execution.id,
+                    owner_reference=owner,
+                    safe_metadata={
+                        **identity_payload,
+                        "reconciliation_checksum": reconciliation_checksum,
+                        "preparation_binding_fingerprint": binding.workspace_fingerprint,
+                        "governed_workspace_fingerprint": start.get(
+                            "post_apply_pre_command_governed_workspace_fingerprint"
+                        ),
+                    },
+                )
+            )
+            if not recovery_owned:
+                self._resume(continuation, "lockfile_generation")
+            return "preparing"
+
+        metadata = preparation.safe_metadata or {}
+        if metadata.get("reconciliation_checksum") != reconciliation_checksum:
+            raise LockfileGenerationError(
+                "LOCKFILE_RECONCILIATION_EVIDENCE_INVALID",
+                "Stale-lock preparation identity does not match causal evidence",
+            )
+        pre_binding = metadata.get("preparation_binding_fingerprint")
+        if lockfile.exists():
+            if lockfile.is_symlink() or _file_checksum(lockfile) != expected_lock:
+                raise LockfileGenerationError(
+                    "LOCKFILE_RECONCILIATION_WORKSPACE_STALE",
+                    "The stale lockfile changed after preparation",
+                )
+            lockfile.unlink()
+        if (
+            _file_checksum(workspace / "package.json") != expected_package
+            or workspace_excluding_governed_volatile_fingerprint(workspace)
+            != metadata.get("governed_workspace_fingerprint")
+        ):
+            raise LockfileGenerationError(
+                "LOCKFILE_RECONCILIATION_WORKSPACE_STALE",
+                "Workspace changed outside the governed stale-lock scope",
+            )
+        prepared_fingerprint = STAGE_FINGERPRINT_PROFILE.fingerprint(workspace)
+        if binding.workspace_fingerprint == pre_binding:
+            cas = session.execute(
+                update(StageWorkspaceBindingModel)
+                .where(
+                    StageWorkspaceBindingModel.id == binding.id,
+                    StageWorkspaceBindingModel.workspace_fingerprint == pre_binding,
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+                .values(
+                    workspace_fingerprint=prepared_fingerprint,
+                    last_verified_fingerprint=prepared_fingerprint,
+                    last_verified_at=self._now(),
+                )
+            )
+            if cas.rowcount != 1:
+                raise LockfileGenerationError(
+                    "LOCKFILE_RECONCILIATION_BINDING_STALE",
+                    "Workspace authority changed during stale-lock preparation",
+                )
+            binding.workspace_fingerprint = prepared_fingerprint
+        elif binding.workspace_fingerprint != prepared_fingerprint:
+            raise LockfileGenerationError(
+                "LOCKFILE_RECONCILIATION_BINDING_STALE",
+                "Prepared workspace does not match durable binding authority",
+            )
+        queue_reconciliation_key = (
+            "recovery-"
+            + hashlib.sha256(
+                f"{recovery_id}:{reconciliation_checksum}".encode()
+            ).hexdigest()[:48]
+            if recovery_id
+            else reconciliation_checksum
+        )
+        return self._queue(
+            session,
+            continuation,
+            generation=3,
+            reconciliation_key=queue_reconciliation_key,
+        )
 
     def _queue_successor(self, session, continuation, stale_execution) -> str:
         """Queue the one durable V1 -> V2 successor for a terminal stale-baseline execution.
@@ -348,13 +1039,27 @@ class LockfileGenerationRunner:
 
     def _authority(self, session, continuation):
         run = session.get(MigrationRunModel, continuation.run_id)
-        attempt = session.scalar(
-            select(RepairAttemptModel)
+        recovery = session.scalar(
+            select(StageRecoveryOperationModel)
             .where(
-                RepairAttemptModel.run_id == continuation.run_id,
-                RepairAttemptModel.stage_id == continuation.current_stage_id,
+                StageRecoveryOperationModel.run_id == continuation.run_id,
+                StageRecoveryOperationModel.stage_id == continuation.current_stage_id,
+                StageRecoveryOperationModel.status.not_in(("COMPLETED", "FAILED")),
             )
-            .order_by(RepairAttemptModel.attempt_number.desc())
+            .order_by(StageRecoveryOperationModel.created_at.desc())
+        )
+        attempt = (
+            session.get(RepairAttemptModel, recovery.repair_attempt_id)
+            if recovery is not None and recovery.repair_attempt_id
+            else session.scalar(
+                select(RepairAttemptModel)
+                .where(
+                    RepairAttemptModel.run_id == continuation.run_id,
+                    RepairAttemptModel.stage_id == continuation.current_stage_id,
+                    RepairAttemptModel.status.in_(("applied", "applied_verified")),
+                )
+                .order_by(RepairAttemptModel.attempt_number.desc())
+            )
         )
         binding = session.scalar(
             select(StageWorkspaceBindingModel).where(
@@ -397,16 +1102,37 @@ class LockfileGenerationRunner:
                 Path(run.artifact_root).parent,
                 fixed_run_root=Path(run.artifact_root),
             ).read_artifact(run.id, metadata.relative_path)
-            proposal = RepairProposal.model_validate(json.loads(stored.content))
-        except (OSError, ValueError):
+            proposal_raw = json.loads(stored.content)
+        except (OSError, ValueError, Exception):
             return False
+        is_norm_raw = _proposal_is_normalization(proposal_raw)
+        try:
+            proposal = RepairProposal.model_validate(proposal_raw)
+        except Exception:
+            if is_norm_raw:
+                return (
+                    stored.ref.checksum == attempt.proposal_checksum
+                    and stored.envelope is not None
+                    and stored.envelope.stage_id == stage_id
+                    and stored.envelope.attempt_id == attempt.id
+                )
+            return False
+        if is_norm_raw:
+            return (
+                stored.ref.checksum == attempt.proposal_checksum
+                and stored.envelope is not None
+                and stored.envelope.stage_id == stage_id
+                and stored.envelope.attempt_id == attempt.id
+            )
         return (
             stored.ref.checksum == attempt.proposal_checksum
             and stored.envelope is not None
             and stored.envelope.stage_id == stage_id
             and stored.envelope.attempt_id == attempt.id
             and any(
-                item.operation in {"dependency_change", "dependency_add"}
+                item.operation in {"dependency_change", "dependency_add", DEPENDENCY_NORMALIZATION_REPAIR_KIND}
+                or (getattr(item, "repair_kind", None) or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+                or (getattr(item, "schema_version", None) or "") == DEPENDENCY_NORMALIZATION_SCHEMA_VERSION
                 for item in proposal.operations
             )
         )
@@ -459,8 +1185,13 @@ class LockfileGenerationRunner:
             else None
         )
         planned = planned_commands[0] if planned_commands and len(planned_commands) == 1 else {}
+        try:
+            stage_runtime = TransformerStageService._stage_runtime_rows(session, continuation)
+        except TransformerStageError as error:
+            raise LockfileGenerationError(error.code, error.message) from error
         if (
-            execution.runtime_checksum != planned.get("runtime_profile_checksum")
+            stage_runtime is None
+            or execution.runtime_checksum != stage_runtime.get("checksum")
             or execution.command_id != "npm-lockfile-generate"
             or execution.executable != planned.get("executable")
             or list(execution.arguments or []) != list(planned.get("arguments") or [])
@@ -476,20 +1207,7 @@ class LockfileGenerationRunner:
                 "LOCKFILE_GENERATION_EVIDENCE_INCOMPLETE",
                 "Command execution artifacts or runtime correlation are incomplete",
             )
-        try:
-            package = PackageMetadataInspector().inspect(workspace)
-            lock = LockfilePrequalificationService().inspect(workspace, package)
-        except BaselineQualificationError as error:
-            raise LockfileGenerationError(
-                "LOCKFILE_GENERATION_PACKAGE_INVALID", str(error)
-            ) from error
-        if lock.status != "valid":
-            code = (
-                "LOCKFILE_GENERATION_LOCKFILE_INVALID"
-                if "NPM_LOCKFILE_INVALID" in lock.blockers
-                else "LOCKFILE_GENERATION_LOCKFILE_UNSYNCHRONIZED"
-            )
-            raise LockfileGenerationError(code, ", ".join(lock.blockers))
+        lock_status = validate_generated_lockfile(workspace)
         post_binding = STAGE_FINGERPRINT_PROFILE.fingerprint(workspace)
         end = {
             "post_command_package_json_sha256": package_checksum,
@@ -512,7 +1230,7 @@ class LockfileGenerationRunner:
             },
             "pre_command": start,
             "post_command": end,
-            "lockfile_status": lock.status,
+            "lockfile_status": lock_status,
         }
         stored = self._write_or_recover_verification(run, continuation, execution, payload)
         metadata_id = "metadata-" + stored.ref.artifact_id

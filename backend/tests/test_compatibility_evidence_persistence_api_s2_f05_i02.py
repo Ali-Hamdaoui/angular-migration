@@ -44,6 +44,8 @@ def _catalogue():
                 target_cli_exact=f"{major + 1}.0.0",
                 node_major=20,
                 npm_major=10,
+                node_exact="20.11.1",
+                npm_exact="10.2.4",
                 support_level="historical_experimental",
                 fixture_status="incomplete",
                 validation_policy_id="angular-stage-standard-v2",

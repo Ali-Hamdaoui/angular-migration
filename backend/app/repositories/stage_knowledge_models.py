@@ -21,6 +21,8 @@ class StageKnowledgeEntryModel(Base):
     expected_transforms: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     validation_expectations: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     expected_dependency_changes: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    dependency_rules: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    migration_actions: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
     known_risks: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     created_by: Mapped[str | None] = mapped_column(String(128))

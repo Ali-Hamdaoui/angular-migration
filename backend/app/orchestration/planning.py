@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -20,6 +21,7 @@ from app.services.planning_job_service import PlanningFailureDisposition, claim_
 from app.services.planning_review_evidence_application_service import PlanningReviewEvidenceApplicationService
 from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
 from app.services.project_planning_resolver import ProjectPlanningResolutionError, ProjectPlanningResolver
+from app.services.project_capability_service import ProjectCapabilityService
 from app.services.workspace_integrity_service import WorkspaceIntegrityError, WorkspaceIntegrityService
 from app.state.transition_service import StateTransitionService, TransitionRequest
 
@@ -168,6 +170,8 @@ def generate_plan_step(job_id: str, *, scope=session_scope) -> None:
         builder = selected_target.builder
         command_bindings = project_inputs.command_bindings(selected_target)
         physical_fingerprint = integrity.actual_fingerprint
+        capability_snapshot = ProjectCapabilityService().snapshot(run_id, Path(workspace))
+        capability_facts = tuple(capability.model_dump(mode="json") for capability in capability_snapshot.capabilities)
         plan = PlanningEvidenceApplicationService(scope=scope).create(run_id, PlanCreateRequest(
             expected_state_version=expected_state_version,
             idempotency_key=f"plan:auto:{run_id}:{gate.package_checksum}",
@@ -187,6 +191,9 @@ def generate_plan_step(job_id: str, *, scope=session_scope) -> None:
             builder=builder,
             prerequisite_artifacts=list(prerequisites),
             correlation_id=f"planning:{run_id}",
+            capability_facts=list(capability_facts),
+            capability_snapshot_id=ProjectCapabilityService.snapshot_id(run_id, capability_snapshot.checksum),
+            capability_snapshot_checksum=capability_snapshot.checksum,
         ), actor)
         with scope() as session:
             job = session.get(PlanningJobModel, job_id)
@@ -200,7 +207,7 @@ def generate_plan_step(job_id: str, *, scope=session_scope) -> None:
             job.retryable = False
             job.updated_at = datetime.now(UTC)
     except Exception as error:
-        _mark_retry(job_id, disposition=classify_planning_failure(error), stage="generating_plan", diagnostic=getattr(error, "details", None), scope=scope)
+        _mark_retry(job_id, disposition=classify_planning_failure(error), stage="generating_plan", diagnostic=getattr(error, "details", error), scope=scope)
 
 
 def run_planning_review_step(job_id: str, *, scope=session_scope) -> None:
@@ -219,6 +226,7 @@ def run_planning_review_step(job_id: str, *, scope=session_scope) -> None:
             stage_plan=stage.stage_plan,
             artifact_set_checksum=gate.artifact_set_checksum,
             prerequisite_artifacts=list(prerequisites),
+            workspace_fingerprint=stage.stage_plan.get("input_workspace_fingerprint"),
             plan_version=int(plan.plan["version"]),
             correlation_id=f"planning:{run_id}",
         ), actor)

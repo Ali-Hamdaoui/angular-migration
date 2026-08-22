@@ -5,20 +5,30 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
-from app.domain.contracts import WorkflowEventType
+from app.artifact_store import LocalFilesystemArtifactStore
+from app.domain.contracts import ArtifactType, WorkflowEventType
 from app.domain.transformation import TransformationNode, TransformationStatus
 from app.repositories.models import (
+    ArtifactMetadataModel,
+    CommandExecutionModel,
     G06ApprovalModel,
     MigrationPlanModel,
     MigrationStageModel,
+    MigrationRunModel,
+    RepairAttemptModel,
+    StageCheckpointModel,
     StageExecutionPlanModel,
+    StageWorkspaceBindingModel,
     TransformationContinuationModel,
+    WorkflowEventModel,
 )
+from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.state import StateTransitionService
 
 
@@ -241,6 +251,192 @@ class TransformationContinuationService:
         )
         return candidate
 
+    def record_unhandled_workflow_fault(
+        self,
+        session: Session,
+        *,
+        continuation_id: str,
+        claimed_worker_id: str,
+        claim_snapshot: dict[str, object],
+        exception_type: str,
+        sanitized_message: str,
+        traceback_text: str,
+    ) -> bool:
+        """Persist an unexpected claimed-workflow failure in a fresh transaction.
+
+        The worker owns the invocation only while the durable row is still the
+        same running claim. A stale claim is intentionally a no-op.
+        """
+        continuation = session.get(TransformationContinuationModel, continuation_id)
+        if continuation is None:
+            return False
+        fault_fingerprint = self._fault_fingerprint(
+            continuation_id, continuation.state_version, continuation.current_node,
+            exception_type, sanitized_message, traceback_text,
+        )
+        event_key = f"fault:{continuation.state_version}:{continuation.current_node}:{fault_fingerprint}"
+        existing = session.scalar(
+            select(WorkflowEventModel).where(
+                WorkflowEventModel.run_id == continuation.run_id,
+                WorkflowEventModel.idempotency_key == f"{continuation.id}:{event_key}",
+            )
+        )
+        if existing is not None:
+            return True
+        if (
+            continuation.status != TransformationStatus.RUNNING.value
+            or continuation.worker_id != claimed_worker_id
+        ):
+            return False
+
+        now = datetime.now(UTC)
+        previous_state_version = continuation.state_version
+        run = session.get(MigrationRunModel, continuation.run_id)
+        binding = session.scalar(
+            select(StageWorkspaceBindingModel)
+            .where(
+                StageWorkspaceBindingModel.run_id == continuation.run_id,
+                StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+                StageWorkspaceBindingModel.active.is_(True),
+            )
+            .order_by(StageWorkspaceBindingModel.created_at.desc())
+        )
+        persisted_fingerprint = binding.workspace_fingerprint if binding else None
+        live_fingerprint = self._safe_workspace_fingerprint(binding.workspace_path if binding else None)
+        reconstruction_required = live_fingerprint != persisted_fingerprint
+        attempt = session.scalar(
+            select(RepairAttemptModel)
+            .where(
+                RepairAttemptModel.run_id == continuation.run_id,
+                RepairAttemptModel.stage_id == continuation.current_stage_id,
+            )
+            .order_by(RepairAttemptModel.created_at.desc(), RepairAttemptModel.id.desc())
+        )
+        checkpoint = session.scalar(
+            select(StageCheckpointModel)
+            .where(
+                StageCheckpointModel.run_id == continuation.run_id,
+                StageCheckpointModel.stage_id == continuation.current_stage_id,
+                StageCheckpointModel.safe_for_resume.is_(True),
+            )
+            .order_by(StageCheckpointModel.sequence.desc(), StageCheckpointModel.id.desc())
+        )
+        waiting_execution_id = continuation.waiting_execution_id
+        current_command = session.scalar(
+            select(CommandExecutionModel)
+            .where(
+                CommandExecutionModel.run_id == continuation.run_id,
+                CommandExecutionModel.stage_id == continuation.current_stage_id,
+                CommandExecutionModel.status.in_(("queued", "pending", "running")),
+            )
+            .order_by(CommandExecutionModel.requested_at.desc(), CommandExecutionModel.id.desc())
+        )
+
+        claimed = session.execute(
+            update(TransformationContinuationModel)
+            .where(
+                TransformationContinuationModel.id == continuation.id,
+                TransformationContinuationModel.status == TransformationStatus.RUNNING.value,
+                TransformationContinuationModel.worker_id == claimed_worker_id,
+                TransformationContinuationModel.state_version == previous_state_version,
+            )
+            .values(
+                status=TransformationStatus.BLOCKED.value,
+                last_error_code="TRANSFORMER_WORKFLOW_UNHANDLED_ERROR",
+                last_error_message=(
+                    f"Unhandled Transformer workflow exception: {sanitized_message[:2000]}"
+                ),
+                worker_id=None,
+                lease_expires_at=None,
+                state_version=previous_state_version + 1,
+                updated_at=now,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount != 1:
+            return False
+        session.refresh(continuation)
+
+        diagnostic = {
+            "schema_version": 1,
+            "run_id": continuation.run_id,
+            "continuation_id": continuation.id,
+            "stage_id": continuation.current_stage_id,
+            "node": continuation.current_node,
+            "state_version_before_fault": previous_state_version,
+            "state_version_at_persistence": continuation.state_version,
+            "worker_id": claimed_worker_id,
+            "claim_count": claim_snapshot.get("claim_count"),
+            "exception_type": exception_type,
+            "sanitized_message": sanitized_message[:2000],
+            "traceback": traceback_text[:100000],
+            "attempt_id": attempt.id if attempt else None,
+            "attempt_number": attempt.attempt_number if attempt else None,
+            "waiting_execution_id": waiting_execution_id,
+            "current_command_id": current_command.id if current_command else None,
+            "workspace_binding_id": binding.id if binding else None,
+            "persisted_workspace_fingerprint": persisted_fingerprint,
+            "live_workspace_fingerprint": live_fingerprint,
+            "workspace_reconstruction_required": reconstruction_required,
+            "latest_checkpoint_id": checkpoint.id if checkpoint else None,
+            "occurred_at": now.isoformat(),
+        }
+        if run is None or not run.artifact_root:
+            raise TransformationContinuationError(
+                "WORKFLOW_FAULT_ARTIFACT_ROOT_MISSING",
+                "Cannot persist workflow fault without a run artifact root",
+            )
+        store = LocalFilesystemArtifactStore(
+            Path(run.artifact_root).parent,
+            fixed_run_root=Path(run.artifact_root),
+        )
+        stored = store.write_text_artifact(
+            continuation.run_id,
+            f"04_workflow_state/transformer_faults/{continuation.id}.{previous_state_version}.{fault_fingerprint}.json",
+            json.dumps(diagnostic, sort_keys=True, indent=2),
+            ArtifactType.JSON,
+            stage_id=continuation.current_stage_id,
+            created_by="transformer-worker-fault-boundary",
+            created_at=now,
+            input_hashes={"exception": fault_fingerprint},
+            policy_version="transformer-workflow-fault-v1",
+        )
+        session.add(
+            ArtifactMetadataModel(
+                id=f"metadata-{stored.ref.artifact_id}",
+                run_id=continuation.run_id,
+                stage_id=continuation.current_stage_id,
+                artifact_type=stored.ref.artifact_type.value,
+                relative_path=stored.ref.relative_path,
+                checksum=stored.ref.checksum,
+                created_at=stored.ref.created_at,
+                finalized_at=stored.ref.created_at,
+                immutable=True,
+                owner_reference=continuation.id,
+                mime_type="application/json",
+                size_bytes=len(stored.content.encode("utf-8")),
+            )
+        )
+        append_continuation_event(
+            session,
+            continuation,
+            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_BLOCKED,
+            key=event_key,
+            reason="Unhandled Transformer workflow exception; immutable diagnostic persisted",
+            payload={
+                "error_code": "TRANSFORMER_WORKFLOW_UNHANDLED_ERROR",
+                "exception_type": exception_type,
+                "node": continuation.current_node,
+                "previous_state_version": previous_state_version,
+                "diagnostic_artifact_id": stored.ref.artifact_id,
+                "diagnostic_checksum": stored.ref.checksum,
+                "workspace_reconstruction_required": reconstruction_required,
+            },
+            occurred_at=now,
+            actor="transformer-worker",
+        )
+        return True
+
     def wait(
         self,
         session: Session,
@@ -407,6 +603,29 @@ class TransformationContinuationService:
     def _checksum(value: dict[str, object]) -> str:
         encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
         return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _fault_fingerprint(
+        continuation_id: str,
+        state_version: int,
+        node: str,
+        exception_type: str,
+        message: str,
+        traceback_text: str,
+    ) -> str:
+        payload = "\n".join(
+            (continuation_id, str(state_version), node, exception_type, message, traceback_text)
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()[:32]
+
+    @staticmethod
+    def _safe_workspace_fingerprint(path: str | None) -> str | None:
+        if not path:
+            return None
+        try:
+            return StageSandboxCopier.fingerprint(Path(path))
+        except (OSError, ValueError):
+            return None
 
     @staticmethod
     def _get(session: Session, continuation_id: str) -> TransformationContinuationModel:

@@ -50,8 +50,16 @@ class LockfileCompatibilityVerdict(_ImmutableModel):
     blockers: tuple[str, ...] = ()
 
 
-def version_satisfies(resolved: str | None, expected: str | None, *, minimum: str | None = None) -> bool:
-    """Resolved version satisfies an exact expectation or a semver minimum."""
+def version_satisfies(
+    resolved: str | None,
+    expected: str | None,
+    *,
+    minimum: str | None = None,
+    exclusive_maximum: str | None = None,
+    allowed_ranges: tuple[str, ...] | None = None,
+) -> bool:
+    """Resolved version satisfies an exact expectation, a semver minimum, an
+    exclusive maximum, or an allowed caret-range alternative set."""
     if resolved is None:
         return False
     parsed = Version.parse(resolved)
@@ -59,10 +67,40 @@ def version_satisfies(resolved: str | None, expected: str | None, *, minimum: st
         return False
     if expected is not None:
         return resolved == expected
+    if allowed_ranges is not None:
+        if not _satisfies_any(parsed, allowed_ranges):
+            return False
+        # When alternatives are authoritative, still enforce minimum/maximum if
+        # provided (defensive; RxJS uses alternatives only, TS uses min/max).
+        if minimum is not None:
+            minimum_parsed = Version.parse(minimum)
+            if minimum_parsed is None or not parsed.at_least(minimum_parsed):
+                return False
+        if exclusive_maximum is not None:
+            max_parsed = Version.parse(exclusive_maximum)
+            if max_parsed is None or parsed.at_least(max_parsed):
+                return False
+        return True
     if minimum is not None:
         minimum_parsed = Version.parse(minimum)
-        return minimum_parsed is not None and parsed.at_least(minimum_parsed)
+        if minimum_parsed is None or not parsed.at_least(minimum_parsed):
+            return False
+    if exclusive_maximum is not None:
+        max_parsed = Version.parse(exclusive_maximum)
+        if max_parsed is None or parsed.at_least(max_parsed):
+            return False
     return True
+
+
+def _satisfies_caret(version: Version, value: str) -> bool:
+    if not value.startswith("^"):
+        return False
+    minimum = Version.parse(value[1:])
+    return bool(minimum and version.at_least(minimum) and version.major == minimum.major)
+
+
+def _satisfies_any(version: Version, ranges: tuple[str, ...]) -> bool:
+    return any(_satisfies_caret(version, v) for v in ranges)
 
 
 def evaluate_lockfile_compatibility(
@@ -72,34 +110,50 @@ def evaluate_lockfile_compatibility(
     target_family: str,
     catalogue_expected: dict[str, str | None],
     catalogue_minimums: dict[str, str],
+    catalogue_exclusive_maximums: dict[str, str] | None = None,
+    catalogue_allowed_ranges: dict[str, tuple[str, ...]] | None = None,
 ) -> LockfileCompatibilityVerdict:
     """Validate the resolved dependency set against catalogue expectations.
 
     ``catalogue_expected`` maps package name -> exact expected version (when the
     catalogue pins one).  ``catalogue_minimums`` maps package name -> minimum
     version for packages the catalogue constrains by a floor.
+    ``catalogue_exclusive_maximums`` maps package -> exclusive upper bound
+    (``<max``).  ``catalogue_allowed_ranges`` maps package -> tuple of caret
+    alternatives (e.g. RxJS ``^6.5.3`` || ``^7.4.0``).
     """
     findings: list[LockfileCompatibilityFinding] = []
     blockers: list[str] = []
-    packages = set(catalogue_expected) | set(catalogue_minimums)
+    catalogue_exclusive_maximums = catalogue_exclusive_maximums or {}
+    catalogue_allowed_ranges = catalogue_allowed_ranges or {}
+    packages = set(catalogue_expected) | set(catalogue_minimums) | set(catalogue_exclusive_maximums) | set(catalogue_allowed_ranges)
     for package in sorted(packages):
         resolved = dependency_set.resolved_version(package)
         expected = catalogue_expected.get(package)
         minimum = catalogue_minimums.get(package)
+        exclusive_maximum = catalogue_exclusive_maximums.get(package)
+        allowed_ranges = catalogue_allowed_ranges.get(package)
         if resolved is None:
             findings.append(
                 LockfileCompatibilityFinding(package=package, expected=expected, resolved=None, status="missing", detail="package not present in lockfile dependency set")
             )
             blockers.append(f"LOCKFILE_DEPENDENCY_MISSING:{package}")
             continue
-        if version_satisfies(resolved, expected, minimum=minimum):
+        if version_satisfies(resolved, expected, minimum=minimum, exclusive_maximum=exclusive_maximum, allowed_ranges=allowed_ranges):
             findings.append(
                 LockfileCompatibilityFinding(package=package, expected=expected, resolved=resolved, status="ok", detail="resolved version satisfies catalogue constraint")
             )
         else:
+            display_expected: str | None = expected
+            if display_expected is None and allowed_ranges:
+                display_expected = " || ".join(allowed_ranges)
+            elif display_expected is None and minimum and exclusive_maximum:
+                display_expected = f">={minimum} <{exclusive_maximum}"
+            elif display_expected is None:
+                display_expected = minimum or exclusive_maximum
             findings.append(
                 LockfileCompatibilityFinding(
-                    package=package, expected=expected or minimum, resolved=resolved,
+                    package=package, expected=display_expected, resolved=resolved,
                     status="mismatch", detail=f"resolved {resolved} does not satisfy catalogue constraint",
                 )
             )

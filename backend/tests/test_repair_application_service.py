@@ -1,5 +1,6 @@
 import hashlib
 import json
+import shutil
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1632,6 +1633,7 @@ def _seed_exhausted_semantic_retry(
     *,
     human_revision: dict | None = None,
     retry_failure_code: str = "REPAIR_REPLACEMENT_MISSING",
+    recovered_proposer: bool = False,
 ):
     store, attempt_id, app_ts, artifacts = _seed_service(
         factory, tmp_path, human_revision=human_revision
@@ -1663,7 +1665,8 @@ def _seed_exhausted_semantic_retry(
     continuation.worker_id = None
     continuation.lease_expires_at = None
 
-    for retry_number, suffix in enumerate(("", ":semantic-retry-1")):
+    suffixes = ("", ":recovery-1") if recovered_proposer else ("", ":semantic-retry-1")
+    for retry_number, suffix in enumerate(suffixes):
         invocation_id = f"{attempt_id}:proposer{suffix}"
         session.add(
             LlmInvocationModel(
@@ -1692,13 +1695,19 @@ def _seed_exhausted_semantic_retry(
                 artifact_checksums={},
                 state_version=1,
                 event_sequence=0,
-                retries=retry_number,
+                retries=0 if recovered_proposer else retry_number,
                 failure_stage="repair_semantics",
                 started_at=NOW,
                 completed_at=NOW,
                 created_at=NOW,
             )
         )
+    if recovered_proposer:
+        session.flush()
+        session.get(
+            LlmInvocationModel, f"{attempt_id}:proposer"
+        ).status = "uncertain_abandoned"
+        attempt.proposer_invocation_id = f"{attempt_id}:proposer:recovery-1"
     session.add(checkpoint)
     session.commit()
     session.close()
@@ -1823,6 +1832,28 @@ def test_recovery_accepts_exhausted_protocol_retry_failure(tmp_path: Path):
         attempt_id=attempt_id,
         expected_state_version=3,
         idempotency_key="semantic-recovery-protocol-failure",
+        actor="operator",
+    )
+
+    assert result["attempt_id"] == "repair-stage-1-2"
+    assert result["status"] == "evidence_frozen"
+    engine.dispose()
+
+
+def test_recovery_accepts_exhausted_retry_after_uncertain_proposer_recovery(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_exhausted_semantic_retry(
+        factory,
+        tmp_path,
+        retry_failure_code="REPAIR_PROPOSAL_SCHEMA_INVALID",
+        recovered_proposer=True,
+    )
+
+    result = _recovery_service(factory).recover_exhausted_semantic_retry(
+        run_id="run-1",
+        attempt_id=attempt_id,
+        expected_state_version=3,
+        idempotency_key="semantic-recovery-after-uncertain-proposer",
         actor="operator",
     )
 
@@ -2095,6 +2126,48 @@ def test_propose_persists_failed_row_for_schema_failure_after_transport(tmp_path
     assert invocation.provider_request_id == "azure-request-schema-1"
     assert invocation.provider_http_status == 200
     assert invocation.response_sha256 is not None
+    session.close()
+    engine.dispose()
+
+
+def test_proposer_bounds_post_bind_schema_failure_with_semantic_retry(tmp_path: Path, monkeypatch):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
+    transport = _RecordingTransport(
+        [
+            _responses_body(json.dumps(_proposal_candidate())),
+            _responses_body(json.dumps(_proposal_candidate())),
+        ]
+    )
+    service = RepairApplicationService(
+        scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
+    )
+
+    original = service._coalesce_operations
+    calls = 0
+
+    def overflow_once(*args, **kwargs):
+        nonlocal calls
+        result = original(*args, **kwargs)
+        if calls == 0:
+            result[0]["provenance"] = [
+                {"key": f"evidence-{index}", "value": "x"} for index in range(33)
+            ]
+        calls += 1
+        return result
+
+    monkeypatch.setattr(service, "_coalesce_operations", overflow_once)
+
+    proposal = service.propose(attempt_id)
+
+    assert proposal["touched_files"] == ["src/app.ts"]
+    assert len(transport.calls) == 2
+    session = factory()
+    invocations = session.query(LlmInvocationModel).all()
+    assert {row.idempotency_key for row in invocations} == {
+        f"{attempt_id}:proposer",
+        f"{attempt_id}:proposer:semantic-retry-1",
+    }
     session.close()
     engine.dispose()
 
@@ -3672,6 +3745,9 @@ def test_uncertain_proposer_recovery_allocates_next_generation_after_prior_recov
     _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
     session = factory()
     attempt = session.get(RepairAttemptModel, attempt_id)
+    # A proposer can be marked proposed before its proposal artifact is durable;
+    # uncertain-invocation recovery must still accept this proposal-less state.
+    attempt.status = "proposed"
     binding = session.get(StageWorkspaceBindingModel, "binding-1")
     continuation = session.get(TransformationContinuationModel, "cont-1")
     checkpoint = StageCheckpointModel(
@@ -3688,6 +3764,9 @@ def test_uncertain_proposer_recovery_allocates_next_generation_after_prior_recov
         state_version=1,
         created_at=NOW,
     )
+    checkpoint_snapshot = tmp_path / "checkpoint-snapshot"
+    shutil.copytree(binding.workspace_path, checkpoint_snapshot)
+    checkpoint.workspace_path = str(checkpoint_snapshot)
     old_key = f"{attempt_id}:proposer"
     session.add(checkpoint)
     session.add(

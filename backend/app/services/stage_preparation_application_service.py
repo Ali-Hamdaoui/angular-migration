@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import shutil
 from typing import Mapping
+from uuid import uuid4
 
 from app.services.stage_preparation_primitives import StageSandboxCopier
 
@@ -36,11 +37,18 @@ class StagePreparationApplicationService:
         stage_id: str,
         *,
         expected_fingerprint: str | None = None,
+        expected_source_fingerprint: str | None = None,
     ) -> StagePreparationResult:
         source = aliases.get("BASELINE_SANDBOX")
         root = aliases.get("STAGE_SANDBOX")
         if not source or not root:
             raise StagePreparationError("PREPARATION_ALIASES_REQUIRED", "BASELINE_SANDBOX and STAGE_SANDBOX aliases are required")
+        source_path = Path(source).resolve(strict=True)
+        if expected_source_fingerprint is not None and self._copier.fingerprint(source_path) != expected_source_fingerprint:
+            raise StagePreparationError(
+                "SEALED_SOURCE_FINGERPRINT_MISMATCH",
+                "The sealed predecessor fingerprint changed and cannot be used for reconstruction",
+            )
         stage_root = Path(root)
         stage_root.mkdir(parents=True, exist_ok=True)
         target = stage_root / stage_id
@@ -51,11 +59,16 @@ class StagePreparationApplicationService:
             copied_files = sum(1 for item in target.rglob("*") if item.is_file())
             fingerprint = self._copier.fingerprint(target)
             if expected_fingerprint is not None and fingerprint != expected_fingerprint:
-                raise StagePreparationError(
-                    "STAGE_WORKSPACE_FINGERPRINT_MISMATCH",
-                    "Existing stage workspace fingerprint does not match the durable binding; "
-                    "reconstruct from the immutable checkpoint before reuse",
-                )
+                quarantine = stage_root / f".{stage_id}.quarantined-{uuid4().hex[:12]}"
+                target.replace(quarantine)
+                try:
+                    report = self._copier.copy_atomically(source_path, target, registered_root=stage_root)
+                except Exception:
+                    if not target.exists() and quarantine.exists():
+                        quarantine.replace(target)
+                    raise
+                shutil.rmtree(quarantine, ignore_errors=True)
+                return StagePreparationResult(alias, report.target, report.fingerprint, report.copied_files, True)
             return StagePreparationResult(
                 alias,
                 str(target.resolve(strict=True)),
@@ -63,7 +76,7 @@ class StagePreparationApplicationService:
                 copied_files,
                 False,
             )
-        report = self._copier.copy_atomically(Path(source), target, registered_root=stage_root)
+        report = self._copier.copy_atomically(source_path, target, registered_root=stage_root)
         return StagePreparationResult(alias, report.target, report.fingerprint, report.copied_files, True)
 
     def cleanup(self, result: StagePreparationResult) -> None:

@@ -25,6 +25,10 @@ from app.repositories.models import (
     StageWorkspaceBindingModel,
 )
 from app.services.stage_preparation_primitives import StageSandboxCopier
+from app.services.stage_target_version_service import (
+    StageTargetVersionError,
+    StageTargetVersionService,
+)
 
 
 class StageSealingError(ValueError):
@@ -37,6 +41,7 @@ class StageSealingError(ValueError):
 class StageSealingService:
     def __init__(self, *, now_provider=None) -> None:
         self._now = now_provider or (lambda: datetime.now(UTC))
+        self._target_versions = StageTargetVersionService()
 
     def context(self, session, continuation) -> dict[str, object]:
         active_command = session.scalar(
@@ -152,6 +157,8 @@ class StageSealingService:
         forbidden = []
         for item in workspace.rglob("*"):
             relative = item.relative_to(workspace)
+            if StageSandboxCopier.is_excluded_path(relative):
+                continue
             if item.is_symlink():
                 forbidden.append(relative.as_posix() + ":symlink")
             if item.is_file() and any(
@@ -177,6 +184,16 @@ class StageSealingService:
 
     def seal(self, context: dict[str, object], g12_checksum: str):
         workspace = Path(str(context["workspace_path"])).resolve(strict=True)
+        target_exact = (context.get("stage_plan") or {}).get("target_exact")
+        if target_exact:
+            try:
+                self._target_versions.verify(
+                    workspace,
+                    str(target_exact),
+                    dict((context.get("stage_plan") or {}).get("target_cohort") or {}),
+                )
+            except StageTargetVersionError as error:
+                raise StageSealingError(error.code, error.message) from error
         stage_root = Path(str(context["stage_root"])).resolve(strict=True)
         sealed_root = stage_root / ".sealed"
         sealed_root.mkdir(parents=True, exist_ok=True)

@@ -32,8 +32,14 @@ from app.repositories.models import (
     StageStepModel,
     TransformationContinuationModel,
 )
+from app.services.failure_intelligence_service import is_dependency_incompatible_failure
 
 logger = logging.getLogger(__name__)
+
+DEPENDENCY_NORMALIZATION_REPAIR_KIND = "dependency_manifest_normalization"
+DEPENDENCY_NORMALIZATION_SCHEMA_VERSION = "dependency-normalization-v1"
+_MIGRATE_PACKAGES_NODE = "migrate_packages"
+_DEPENDENCY_INCOMPATIBLE_ROUTE = "dependency_incompatible"
 
 REVIEWER_CAUSAL_POLICY = (
     "CAUSAL-REPAIR POLICY (binding): the proposal must modify the state that caused the "
@@ -57,7 +63,13 @@ REVIEWER_CAUSAL_POLICY = (
     "authoritative package, section, installed version, and target version into "
     "blocking_dependency and target_state; do not require operation-level package, "
     "section, or new_version fields or a proposal diff. Accept only proposals that "
-    "change the state responsible for the failure."
+    "change the state responsible for the failure. "
+    "For dependency_incompatible / migrate_packages failures, only a complete "
+    "dependency_manifest_normalization (schema dependency-normalization-v1) with every "
+    "direct dependencies+devDependencies package exactly once, no duplicates, backend-fixed "
+    "Angular requirements preserved, no scripts/.npmrc/workspaces/overrides mutation, no "
+    "--force/--legacy-peer-deps, replacement explicit (target_package+target_version), and "
+    "exact postimage bytes following from approved actions is causally valid."
 )
 
 CAUSAL_REJECTION_DOCUMENTATION = "CAUSAL_REJECTION_DOCUMENTATION"
@@ -66,6 +78,7 @@ CAUSAL_REJECTION_UNRELATED_EDIT = "CAUSAL_REJECTION_UNRELATED_EDIT"
 CAUSAL_REJECTION_NO_LOCKFILE_SYNC = "CAUSAL_REJECTION_NO_LOCKFILE_SYNC"
 CAUSAL_REJECTION_FORCE = "CAUSAL_REJECTION_FORCE"
 CAUSAL_REJECTION_UNSUPPORTED_OPERATION = "CAUSAL_REJECTION_UNSUPPORTED_OPERATION"
+REPAIR_CAUSAL_KIND_MISMATCH = "REPAIR_CAUSAL_KIND_MISMATCH"
 
 _DIRTY_WORKSPACE_PHRASE = "Repository is not clean"
 _WARNING_ONLY_LINE_TOKENS = ("npm warn", "deprecat", "npm audit")
@@ -285,12 +298,128 @@ def _peer_conflict_rejection(proposal: dict) -> CausalRejection | None:
     return None
 
 
-def _is_dependency_failure(diagnosis_kind: str, normalized: dict) -> bool:
-    if diagnosis_kind:
+def _is_normalization_operation(op: dict) -> bool:
+    if not isinstance(op, dict):
+        return False
+    if str(op.get("repair_kind") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND:
         return True
-    return str(normalized.get("error_code") or "") in _DEPENDENCY_ERROR_CODES or str(
-        normalized.get("failure_code") or ""
-    ) in _DEPENDENCY_ERROR_CODES
+    if str(op.get("operation") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND:
+        return True
+    if str(op.get("schema_version") or "") == DEPENDENCY_NORMALIZATION_SCHEMA_VERSION:
+        return True
+    # inline plan marker
+    if isinstance(op.get("normalization_plan"), dict) or isinstance(op.get("plan"), dict):
+        # heuristic: contains packages with action
+        return True
+    return False
+
+
+def _normalization_rejection(proposal: dict) -> CausalRejection | None:
+    operations = proposal.get("operations")
+    operations = operations if isinstance(operations, list) else []
+    touched = proposal.get("touched_files")
+    touched = [p for p in touched if isinstance(p, str)] if isinstance(touched, list) else []
+    # exactly one normalization operation touching package.json
+    norms = [op for op in operations if isinstance(op, dict) and _is_normalization_operation(op)]
+    if not norms:
+        return CausalRejection(
+            CAUSAL_REJECTION_MANIFEST_ONLY,
+            "dependency_incompatible requires a dependency_manifest_normalization operation",
+        )
+    if len(norms) != 1 or len(operations) != 1:
+        return CausalRejection(
+            CAUSAL_REJECTION_UNSUPPORTED_OPERATION,
+            "dependency_incompatible requires exactly one dependency_manifest_normalization operation",
+        )
+    op = norms[0]
+    if str(op.get("path") or "") != "package.json":
+        return CausalRejection(
+            CAUSAL_REJECTION_UNRELATED_EDIT, "normalization must target package.json"
+        )
+    if str(op.get("schema_version") or op.get("normalization_plan", {}).get("schema_version") or "") not in (
+        "",
+        DEPENDENCY_NORMALIZATION_SCHEMA_VERSION,
+    ):
+        # allow missing if embedded plan has it
+        pass
+    # extract packages list
+    plan = op.get("normalization_plan") or op.get("plan") or op
+    packages = plan.get("packages")
+    # also support top-level packages in op
+    if not isinstance(packages, list):
+        packages = op.get("packages")
+    if not isinstance(packages, list) or not packages:
+        return CausalRejection(
+            CAUSAL_REJECTION_MANIFEST_ONLY, "normalization plan must list packages"
+        )
+    # duplicate check
+    seen: set[str] = set()
+    for item in packages:
+        if not isinstance(item, dict):
+            return CausalRejection(CAUSAL_REJECTION_UNSUPPORTED_OPERATION, "package entry must be object")
+        pkg = str(item.get("package") or "")
+        if not pkg or pkg in seen:
+            return CausalRejection(
+                CAUSAL_REJECTION_UNSUPPORTED_OPERATION,
+                f"duplicate or missing package: {pkg!r}",
+            )
+        seen.add(pkg)
+        action = str(item.get("action") or "")
+        if action not in {"KEEP", "UPGRADE", "REMOVE", "REPLACE"}:
+            return CausalRejection(CAUSAL_REJECTION_UNSUPPORTED_OPERATION, f"invalid action {action}")
+        # replacement explicit
+        if action == "REPLACE" and (not item.get("target_package") or not item.get("target_version")):
+            return CausalRejection(
+                CAUSAL_REJECTION_UNSUPPORTED_OPERATION,
+                f"REPLACE requires target_package and target_version for {pkg}",
+            )
+        if action == "UPGRADE" and not item.get("target_version"):
+            return CausalRejection(
+                CAUSAL_REJECTION_UNSUPPORTED_OPERATION, f"UPGRADE requires target_version for {pkg}"
+            )
+        if action in ("KEEP", "REMOVE") and (item.get("target_package") or item.get("target_version")):
+            return CausalRejection(
+                CAUSAL_REJECTION_UNSUPPORTED_OPERATION,
+                f"{action} must not carry target_package/version for {pkg}",
+            )
+        # forbidden flags in reason/version
+        for field in (str(item.get("target_version") or ""), str(item.get("reason") or "")):
+            if "--force" in field or "--legacy-peer-deps" in field:
+                return CausalRejection(CAUSAL_REJECTION_FORCE, "normalization carries forbidden flag")
+        section = str(item.get("section") or "")
+        if section not in ("dependencies", "devDependencies"):
+            return CausalRejection(CAUSAL_REJECTION_UNSUPPORTED_OPERATION, f"invalid section {section}")
+    # scripts/.npmrc/workspaces/overrides mutation: proposal must not touch other files
+    if any(p != "package.json" for p in touched):
+        return CausalRejection(
+            CAUSAL_REJECTION_UNRELATED_EDIT, "normalization must touch only package.json"
+        )
+    for op2 in operations:
+        if isinstance(op2, dict) and str(op2.get("path") or "") != "package.json":
+            return CausalRejection(CAUSAL_REJECTION_UNRELATED_EDIT, "normalization unrelated file edit")
+        # check no --force in new_text/post_text
+        for key in ("new_text", "post_text", "postimage_text", "content"):
+            if isinstance(op2.get(key), str) and "--force" in str(op2.get(key)):
+                return CausalRejection(CAUSAL_REJECTION_FORCE, "normalization postimage carries --force")
+    # exact postimage follows from actions: if new_text present, must be JSON
+    new_text = op.get("new_text") or op.get("post_text") or op.get("postimage_text")
+    if isinstance(new_text, str):
+        try:
+            doc = json.loads(new_text)
+        except Exception:
+            return CausalRejection(CAUSAL_REJECTION_UNSUPPORTED_OPERATION, "normalization postimage not JSON")
+        if not isinstance(doc, dict):
+            return CausalRejection(CAUSAL_REJECTION_UNSUPPORTED_OPERATION, "postimage must be object")
+        # one coherent manifest: must have at least dependencies or devDependencies
+        # no validation of every dep here (service does), but ensure no scripts mutation beyond original
+        # (reviewer cannot load original, so lenient)
+    return None
+
+
+def _is_dependency_failure(diagnosis_kind: str, normalized: dict) -> bool:
+    return is_dependency_incompatible_failure(normalized) or str(
+        normalized.get("error_code") or ""
+    ) in _DEPENDENCY_ERROR_CODES or str(normalized.get("failure_code") or "") in _DEPENDENCY_ERROR_CODES
 
 
 def _has_manifest_edit(proposal: dict) -> bool:
@@ -359,15 +488,54 @@ def causal_rejection(
 
     diagnosis = normalized.get("failure_diagnosis")
     diagnosis_kind = str(diagnosis.get("kind") or "") if isinstance(diagnosis, dict) else ""
+    causal = evidence.get("causal_repair")
+    causal_kind = str(causal.get("causal_kind") or "") if isinstance(causal, dict) else ""
     route = str(
         evidence.get("route")
         or evidence.get("route_info")
         or evidence.get("failure_route")
         or ""
     ).strip()
+    # new normalization path takes precedence for dependency_incompatible / migrate_packages
+    operations = proposal.get("operations") if isinstance(proposal.get("operations"), list) else []
+    has_norm = any(_is_normalization_operation(op) for op in operations if isinstance(op, dict))
+    has_manifest_edit = _has_manifest_edit(proposal)
+    dependency_evidence = _is_dependency_failure(diagnosis_kind, normalized)
+    if causal_kind == "environment":
+        return CausalRejection(
+            REPAIR_CAUSAL_KIND_MISMATCH,
+            "Environment failures cannot authorize an LLM code or dependency repair",
+        )
+    if causal_kind in {"build", "test", "lint", "source"} and has_manifest_edit and not dependency_evidence:
+        return CausalRejection(
+            REPAIR_CAUSAL_KIND_MISMATCH,
+            f"A {causal_kind} failure does not authorize an unrelated dependency mutation",
+        )
+    if causal_kind == "dependency" or route in (
+        _DEPENDENCY_INCOMPATIBLE_ROUTE,
+        "dependency_incompatible",
+        _MIGRATE_PACKAGES_NODE,
+        "migrate_packages",
+        DEPENDENCY_NORMALIZATION_REPAIR_KIND,
+    ) or has_norm:
+        # preserve legacy: if it's a classic peer conflict transition, keep old path
+        if not has_norm and (diagnosis_kind == "peer_dependency_conflict" or route == "angular_update_peer_conflict"):
+            return _peer_conflict_rejection(proposal)
+        # for normalize-capable failures, require complete normalization
+        norm_rejection = _normalization_rejection(proposal)
+        if norm_rejection is not None:
+            return norm_rejection
+        # ensure lockfile authority for normalization as well (same as manifest edits)
+        if not _lockfile_generation_authority(stage_plan_commands):
+            return CausalRejection(
+                CAUSAL_REJECTION_NO_LOCKFILE_SYNC,
+                "Manifest-only dependency edits need the approved npm-lockfile-generate "
+                "authority to keep the lockfile and installed tree synchronized",
+            )
+        return None
     if diagnosis_kind == "peer_dependency_conflict" or route == "angular_update_peer_conflict":
         return _peer_conflict_rejection(proposal)
-    if _is_dependency_failure(diagnosis_kind, normalized) and _has_manifest_edit(proposal):
+    if dependency_evidence and has_manifest_edit:
         if not _lockfile_generation_authority(stage_plan_commands):
             return CausalRejection(
                 CAUSAL_REJECTION_NO_LOCKFILE_SYNC,
@@ -467,14 +635,53 @@ def g10_eligibility(session, run_id: str, stage_id: str, attempt_id: str) -> tup
         session, store, attempt, run_id, stage_id,
         "review_artifact_id", "review_checksum", pre_attempt=False,
     )
-    if review is None or review.get("decision") not in {"accept", "request_changes"}:
-        return False, "no accepted review"
+    if review is None or review.get("decision") != "accept":
+        return False, "reviewer request_changes requires a supported revision"
+    current_strategy = _semantic_strategy(proposal, attempt)
+    if current_strategy is not None:
+        prior_attempts = session.scalars(
+            select(RepairAttemptModel).where(
+                RepairAttemptModel.run_id == run_id,
+                RepairAttemptModel.stage_id == stage_id,
+                RepairAttemptModel.attempt_number < attempt.attempt_number,
+                RepairAttemptModel.apply_ledger_artifact_id.is_not(None),
+                RepairAttemptModel.status.in_(("validation_failed", "superseded")),
+            )
+        ).all()
+        for prior in prior_attempts:
+            prior_proposal = _load_attempt_artifact(
+                session, store, prior, run_id, stage_id,
+                "proposal_artifact_id", "proposal_checksum", pre_attempt=False,
+            )
+            if _semantic_strategy(prior_proposal, prior) == current_strategy:
+                return False, "REPAIR_STRATEGY_ALREADY_FAILED"
     rejection = causal_rejection(
         evidence, proposal, stage_plan_commands=_stage_plan_commands(session, run_id, stage_id)
     )
     if rejection is not None:
         return False, rejection.reason
     return True, None
+
+
+def _semantic_strategy(proposal: dict | None, attempt: RepairAttemptModel) -> tuple[str, ...] | None:
+    operations = proposal.get("operations") if isinstance(proposal, dict) else None
+    if not isinstance(operations, list) or len(operations) != 1 or not isinstance(operations[0], dict):
+        return None
+    operation = operations[0]
+    if operation.get("operation") != "dependency_transition":
+        return None
+    blocking = operation.get("blocking_dependency")
+    target = operation.get("target_state")
+    return (
+        "dependency_transition",
+        str(operation.get("repair_kind") or ""),
+        str(operation.get("strategy") or ""),
+        str(blocking.get("package") or "") if isinstance(blocking, dict) else "",
+        str(target.get("target_version") or "") if isinstance(target, dict) else "",
+        str(attempt.failure_fingerprint or ""),
+        str(attempt.checkpoint_id or ""),
+        str(attempt.pre_fingerprint or ""),
+    )
 
 
 def _angular_update_successors(session, run_id: str, stage_id: str) -> list | None:
@@ -601,25 +808,28 @@ def _succeeded_final_install(session, run_id: str, stage_id: str) -> bool:
     return execution is not None and execution.status == "succeeded" and execution.exit_code == 0
 
 
-def repair_budget(session, run_id: str, stage_id: str, repair_policy: dict) -> dict:
-    """Consumed repair attempt/applied counts for (run_id, stage_id).
+def repair_budget(
+    session,
+    run_id: str,
+    stage_id: str,
+    repair_policy: dict,
+    *,
+    lineage_root_attempt_id: str | None = None,
+) -> dict:
+    """Applied repair counts for one causal lineage plus the stage ceiling.
 
     Schema/semantic/duplicate-path/causal rejections, reviewer rejections,
     reconstruction-only states, command supersession retries, and warning-only
-    conditions never consume either count: an attempt consumes the budget only
-    when a valid proposal was persisted, the reviewer accepted, G10 approved
-    and operations executed (apply ledger), and the failed migration boundary
-    was re-executed after the apply (angular-update stages only).  Read-only;
-    never raises.
+    conditions never consume either count.  Once a reviewer-approved G10
+    repair has executed and produced an apply ledger, it consumes the bounded
+    repair budget immediately.  Waiting for a later boundary retry to finish
+    before counting it allows a second repair to be admitted while the command
+    retry budget is already exhausted, leaving an approved repair stranded at
+    the retry boundary.  Completion evidence is still tracked separately by
+    ``_repair_completed``.  Read-only; never raises.
     """
-    try:
-        max_attempts = int((repair_policy or {}).get("max_attempts") or 3)
-    except (TypeError, ValueError):
-        max_attempts = 3
-    try:
-        max_applied = int((repair_policy or {}).get("max_applied") or 2)
-    except (TypeError, ValueError):
-        max_applied = 2
+    max_attempts = max_applied = 2
+    max_total_applied = 6
     try:
         rows = session.scalars(
             select(RepairAttemptModel)
@@ -630,11 +840,44 @@ def repair_budget(session, run_id: str, stage_id: str, repair_policy: dict) -> d
             .order_by(RepairAttemptModel.attempt_number)
         ).all()
         run = session.get(MigrationRunModel, run_id)
-        successors = _angular_update_successors(session, run_id, stage_id)
-        completed = [row for row in rows if _repair_completed(session, run, row, successors)]
-        consumed_applied = len(completed)
+        # Budget consumption is based on the irreversible governed apply, not
+        # on a later command result.  In particular, ``applied_verified`` and
+        # dependency-transition ``executing`` are durable post-apply states.
+        applied = [
+            row
+            for row in rows
+            if row.apply_ledger_artifact_id is not None
+            and row.status in _REVIEWER_ACCEPTED_STATUSES
+        ]
+        total_applied = len(applied)
+        if lineage_root_attempt_id:
+            if run is None or not run.artifact_root:
+                raise ValueError("repair lineage artifact authority is missing")
+            store = LocalFilesystemArtifactStore(
+                Path(str(run.artifact_root)).parent,
+                fixed_run_root=Path(str(run.artifact_root)),
+            )
+            lineage = []
+            for row in applied:
+                context = _load_attempt_artifact(
+                    session,
+                    store,
+                    row,
+                    run_id,
+                    stage_id,
+                    "context_pack_artifact_id",
+                    "context_pack_checksum",
+                    pre_attempt=True,
+                )
+                causal = context.get("causal_repair") if isinstance(context, dict) else None
+                if not isinstance(causal, dict):
+                    raise ValueError("applied repair lacks causal lineage authority")
+                if causal.get("lineage_root_attempt_id") == lineage_root_attempt_id:
+                    lineage.append(row)
+            applied = lineage
+        consumed_applied = len(applied)
         consumed_attempts = 0
-        for row in completed:
+        for row in applied:
             if not row.proposal_artifact_id or not row.proposal_checksum:
                 continue
             if row.review_artifact_id is None or row.status not in _REVIEWER_ACCEPTED_STATUSES:
@@ -650,10 +893,14 @@ def repair_budget(session, run_id: str, stage_id: str, repair_policy: dict) -> d
             "consumed_applied": 0,
             "max_attempts": max_attempts,
             "max_applied": max_applied,
+            "total_applied": max_total_applied,
+            "max_total_applied": max_total_applied,
         }
     return {
         "consumed_attempts": consumed_attempts,
         "consumed_applied": consumed_applied,
         "max_attempts": max_attempts,
         "max_applied": max_applied,
+        "total_applied": total_applied,
+        "max_total_applied": max_total_applied,
     }

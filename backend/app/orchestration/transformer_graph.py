@@ -35,14 +35,19 @@ from app.orchestration.transformer_sealing_flow import TransformerSealingFlow
 from app.repositories.models import (
     ActivePlanVersionModel,
     ArtifactMetadataModel,
+    CommandAuthorizationAuditModel,
     CommandExecutionModel,
     CommandLogChunkModel,
+    CompatibilityCatalogueModel,
+    CompatibilityResolutionModel,
     G06ApprovalModel,
+    FailureIntelligenceModel,
     LlmInvocationModel,
     MigrationPlanModel,
     MigrationRunModel,
     RepairAttemptModel,
     RepairFingerprintRecoveryModel,
+    StageRecoveryOperationModel,
     StageCheckpointModel,
     StageExecutionPlanModel,
     StageGatePackageModel,
@@ -64,7 +69,16 @@ from app.services.dependency_transition_runner import (
     DependencyTransitionError,
     DependencyTransitionRunner,
 )
-from app.services.failure_evidence_service import FailureEvidenceService
+from app.services.failure_evidence_service import (
+    CausalExecutionError,
+    FailureEvidenceService,
+    resolve_causal_failed_execution,
+)
+from app.services.failure_intelligence_service import FailureIntelligenceService
+try:
+    from app.services.dependency_failure_bundle_service import build_dependency_normalization_bundle
+except ImportError:  # fallback for type checking
+    build_dependency_normalization_bundle = None
 from app.services.lockfile_generation_runner import (
     LOCKFILE_GENERATION_ETARGET,
     LOCKFILE_GENERATION_ERESOLVE,
@@ -79,10 +93,25 @@ from app.services.repair_application_service import (
     RepairLlmError,
     RepairProposal,
 )
+from app.services.repair_lifecycle_service import RepairLifecycleService
 from app.services.stage_gate_service import StageGateError, StageGateService
-from app.services.stage_execution_application_service import validation_execution_key
+from app.services.stage_execution_application_service import (
+    bounded_idempotency_key,
+    expected_migrate_execution_idempotency_key,
+    migration_attempt_key,
+    validation_execution_key,
+)
 from app.services.stage_preparation_primitives import StageSandboxCopier
-from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
+from app.services.transformer_stage_service import (
+    ReconstructionMode,
+    TransformerStageError,
+    TransformerStageService,
+)
+from app.services.transformation_replan_recovery_service import (
+    TransformationReplanRecoveryError,
+    TransformationReplanRecoveryRequest,
+    TransformationReplanRecoveryService,
+)
 from app.services.transformation_continuation_service import (
     append_continuation_event,
 )
@@ -96,6 +125,32 @@ from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
 
 logger = logging.getLogger(__name__)
 
+# Frozen V2.2 contracts — code against strings even if sibling files absent (use constants/try imports)
+try:
+    from app.domain.dependency_normalization import DEPENDENCY_NORMALIZATION_REPAIR_KIND as _DN_KIND
+    DEPENDENCY_NORMALIZATION_REPAIR_KIND = _DN_KIND
+except ImportError:
+    DEPENDENCY_NORMALIZATION_REPAIR_KIND = "dependency_manifest_normalization"
+try:
+    from app.domain.dependency_normalization import DEPENDENCY_NORMALIZATION_SCHEMA_VERSION as _DN_VER
+    DEPENDENCY_NORMALIZATION_SCHEMA_VERSION = _DN_VER
+except ImportError:
+    DEPENDENCY_NORMALIZATION_SCHEMA_VERSION = "dependency-normalization-v1"
+try:
+    from app.services.lockfile_generation_runner import DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED as _DNRF
+    DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED = _DNRF
+except ImportError:
+    DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED = "DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED"
+try:
+    from app.domain.transformation import FailureRoute as _FR, TransformationNode as _TN
+    _DEPENDENCY_INCOMPATIBLE = _FR.DEPENDENCY_INCOMPATIBLE
+    _MIGRATE_PACKAGES_NODE = _TN.MIGRATE_PACKAGES.value
+except (ImportError, AttributeError):
+    _DEPENDENCY_INCOMPATIBLE = "dependency_incompatible"
+    _MIGRATE_PACKAGES_NODE = "migrate_packages"
+# angular-migrate-range tpl-angular-migrate-range-v1 => npx ng update <package> --migrate-only --from <from> --to <to>, NG_DISABLE_VERSION_CHECK=true, no --force, no --allow-dirty
+_MIGRATE_RANGE_TEMPLATE = "tpl-angular-migrate-range-v1"
+
 # Checkpoint kinds an Angular-update execution may legitimately be bound to for
 # reconstruction: the initial pre-update tree, or the post-repair tree
 # (post-uninstall / pre-angular-retry). No other kind may authorize Angular
@@ -108,6 +163,25 @@ _ANGULAR_RECOVERY_CHECKPOINT_KINDS = frozenset(
 class TransformerPointer(TypedDict):
     continuation_id: str
     worker_id: str
+
+
+class _Plan2OuterTransactionFailure(Exception):
+    """Fatal Plan-2 transaction boundary failure.
+
+    Raised when an OUTER/pre-SAVEPOINT flush or the begin_nested() automatic
+    pre-SAVEPOINT flush fails: SQLAlchemy then leaves that Session inactive
+    (poisoned) until rollback, so a same-session ``_block()`` would raise
+    PendingRollbackError.  This exception is deliberately NOT a
+    TransformerStageError: it must bypass every same-session ``_block()``
+    handler and escape ``session_scope``, which rolls back and closes the
+    poisoned Session.  The caller then persists the durable block in a fresh
+    transaction.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
 
 
 class TransformerOrchestrator:
@@ -214,6 +288,8 @@ class TransformerOrchestrator:
             self._aggregate_validation(continuation_id, worker_id)
         elif node == "classify_failure":
             self._classify_failure(continuation_id, worker_id)
+        elif node == "deterministic_replan":
+            self._deterministic_replan(continuation_id, worker_id)
         elif node == "propose_repair":
             self._propose_repair(continuation_id, worker_id)
         elif node == "review_repair":
@@ -230,6 +306,8 @@ class TransformerOrchestrator:
             self._dependency_transition(continuation_id, worker_id)
         elif node == "lockfile_generation":
             self._lockfile_generation(continuation_id, worker_id)
+        elif node == _MIGRATE_PACKAGES_NODE or node == "migrate_packages":
+            self._migrate_packages(continuation_id, worker_id)
         elif node == "repair_revalidate":
             self._start_revalidation(continuation_id, worker_id)
         elif node == "create_g11":
@@ -286,7 +364,7 @@ class TransformerOrchestrator:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
             try:
-                self._stage.runtime_binding(session, continuation)
+                self._stage.resolve_stage_runtime(session, continuation)
             except TransformerStageError as error:
                 self._block(session, continuation, error.code, error.message)
                 return
@@ -434,10 +512,18 @@ class TransformerOrchestrator:
                 if execution.status == "succeeded":
                     step.status = "PASSED"
                     step.completed_at = datetime.now(UTC)
-                    attempt = self._latest_repair(session, continuation)
+                    # A first-pass Angular update has no repair attempt. The
+                    # successful command path must continue without requiring
+                    # repair lineage; repair lineage is only mandatory for
+                    # repair-specific nodes.
+                    attempt = self._latest_repair(session, continuation, required=False)
                     if attempt is not None and attempt.status == "applied_verified":
-                        attempt.status = "migration_retried"
-                        attempt.updated_at = datetime.now(UTC)
+                        RepairLifecycleService.transition_in_session(
+                            session,
+                            attempt,
+                            "migration_retried",
+                            reason="post-repair Angular update retry succeeded",
+                        )
                     if self._pending_dependency_transition(session, continuation):
                         self._queue(continuation, "dependency_transition")
                     else:
@@ -484,6 +570,7 @@ class TransformerOrchestrator:
                 binding.workspace_path,
                 (run.workspace_aliases or {})["STAGE_SANDBOX"],
                 checkpoint_fingerprint,
+                run.artifact_root,
             )
             prompt_id = prompt.id
             execution_id = execution.id
@@ -631,20 +718,172 @@ class TransformerOrchestrator:
                 "artifact_root": run.artifact_root,
                 "plan_version": plan.version,
                 "stage_plan_checksum": continuation.stage_plan_checksum,
+                "expected_pre_fingerprint": checkpoint.workspace_fingerprint,
                 "workspace_fingerprint": binding.workspace_fingerprint,
             }
         try:
             context["workspace_fingerprint"] = StageSandboxCopier.fingerprint(
                 Path(context["workspace_path"])
             )
-            versions, ledger = self._evidence.build(
-                context["workspace_path"],
-                context["checkpoint_path"],
-                target_core=context["target_core"],
-                target_cli=context["target_cli"],
-                ng_version_output=context["ng_version_output"],
-                angular_execution_id=context["angular_execution_id"],
-            )
+            context["expected_post_fingerprint"] = context["workspace_fingerprint"]
+            # P0-2: deterministic branch — normal ng update success vs normalized dependency path
+            is_normalized_path = angular_execution.status != "succeeded"
+            # Additional check: ensure a dependency normalization attempt exists for this stage
+            if is_normalized_path:
+                # Check for any dependency normalization repair attempt to confirm lineage
+                try:
+                    norm_attempt_check = session.query(RepairAttemptModel).filter(
+                        RepairAttemptModel.run_id == continuation.run_id,
+                        RepairAttemptModel.stage_id == continuation.current_stage_id,
+                    ).order_by(RepairAttemptModel.attempt_number.desc()).first()
+                    # If no attempt or attempt is not dependency normalization, treat as normal failure not normalized
+                    # For now, if angular failed but no norm attempt yet, we still need to build? But G08 is after normalization+migrate, so by then norm attempt exists
+                    # So we branch based on angular status alone for G08 after migrate
+                    if norm_attempt_check is None or norm_attempt_check.proposal_artifact_id is None:
+                        is_normalized_path = False
+                except Exception:
+                    pass
+            if is_normalized_path:
+                # Normalized path: discover EXPECTED then prove ACTUAL via persisted execution identity validator
+                try:
+                    from app.services.package_migration_service import PackageMigrationService as _PMS_G08, PackageMigrationError as _PME_G08
+
+                    # lineage-bound G08: use current normalization leaf + authoritative checkpoint
+                    _lineage_g08 = self._dependency_normalization_lineage(session, continuation)
+                    _latest_for_g08 = _lineage_g08[-1] if _lineage_g08 else None
+                    _root_for_g08 = _lineage_g08[0] if _lineage_g08 else None
+                    _chk_for_g08 = session.scalar(
+                        select(StageCheckpointModel).where(
+                            StageCheckpointModel.run_id == continuation.run_id,
+                            StageCheckpointModel.stage_id == continuation.current_stage_id,
+                            StageCheckpointModel.kind == "pre_angular_update",
+                        ).order_by(StageCheckpointModel.sequence.desc())
+                    )
+                    _root_id_g08 = _root_for_g08.id if _root_for_g08 else continuation.run_id
+                    _leaf_id_g08 = _latest_for_g08.id if _latest_for_g08 else continuation.run_id
+                    _chk_id_g08 = _chk_for_g08.id if _chk_for_g08 is not None and hasattr(_chk_for_g08, "id") else "no-checkpoint"
+                    # normalization actions for REMOVE/REPLACE
+                    _norm_actions_g08 = None
+                    try:
+                        if _latest_for_g08 is not None and _latest_for_g08.proposal_artifact_id:
+                            _meta_g08 = session.get(ArtifactMetadataModel, "metadata-" + _latest_for_g08.proposal_artifact_id)
+                            if _meta_g08 is not None:
+                                _run_g08 = session.get(MigrationRunModel, _latest_for_g08.run_id)
+                                if _run_g08 and _run_g08.artifact_root:
+                                    from app.artifact_store import LocalFilesystemArtifactStore as _StoreG08
+
+                                    _store_g08 = _StoreG08(Path(_run_g08.artifact_root).parent, fixed_run_root=Path(_run_g08.artifact_root))
+                                    _prop_g08 = json.loads(_store_g08.read_artifact(_latest_for_g08.run_id, _meta_g08.relative_path).content)
+                                    _ops_g08 = _prop_g08.get("operations") if isinstance(_prop_g08, dict) else None
+                                    if isinstance(_ops_g08, list):
+                                        _norm_actions_g08 = {}
+                                        for _op in _ops_g08:
+                                            if isinstance(_op, dict):
+                                                _pkg_g08 = _op.get("package") or _op.get("target_package") or _op.get("name")
+                                                if isinstance(_pkg_g08, str):
+                                                    _norm_actions_g08[_pkg_g08] = _op
+                    except Exception:
+                        _norm_actions_g08 = None
+                    _expected_reqs = _PMS_G08().discover(Path(context["checkpoint_path"]), Path(context["workspace_path"]), _norm_actions_g08)
+                    # Build ACTUAL via persisted execution validator (no timestamp authority)
+                    filtered: list[dict[str, object]] = []
+                    _expected_ids: set[str] = set()
+                    for _req in _expected_reqs:
+                        _ident = self._migration_identity(
+                            continuation.run_id,
+                            continuation.current_stage_id,
+                            _root_id_g08,
+                            _leaf_id_g08,
+                            _chk_id_g08,
+                            _req.package,
+                            _req.from_version,
+                            _req.to_version,
+                        )
+                        _expected_ids.add(_ident)
+                    # ACTUAL is enumerated INDEPENDENTLY from persisted
+                    # executions — never constructed from EXPECTED — so an
+                    # unexpected current-lineage migration cannot hide from G08.
+                    _actual_ids: set[str] = set()
+                    _actual_by_identity: dict[str, dict[str, object]] = {}
+                    _executions_g08 = session.scalars(
+                        select(CommandExecutionModel).where(
+                            CommandExecutionModel.run_id == continuation.run_id,
+                            CommandExecutionModel.stage_id == continuation.current_stage_id,
+                            CommandExecutionModel.command_id == "angular-migrate-range",
+                        )
+                    ).all()
+                    for _ex in _executions_g08:
+                        try:
+                            _ident = self._validated_current_migration_execution_identity(
+                                session,
+                                _ex,
+                                continuation,
+                                _root_for_g08,
+                                _latest_for_g08,
+                                _chk_for_g08,
+                            )
+                        except Exception:
+                            _ident = None
+                        if _ident is None:
+                            continue
+                        if _ident in _actual_ids:
+                            raise AngularTransformationEvidenceError(
+                                "MIGRATION_EVIDENCE_DUPLICATE",
+                                f"Multiple successful current-lineage executions for migration identity {_ident}",
+                            )
+                        _actual_ids.add(_ident)
+                        _actual_by_identity[_ident] = {
+                            "package": str(_ex.arguments[2]),
+                            "from_exact": str(_ex.arguments[5]),
+                            "to_exact": str(_ex.arguments[7]),
+                            "declares_migrations": True,
+                            "migration_collection": None,
+                            "command_execution_id": _ex.id,
+                            "command_status": _ex.status,
+                            "output_artifact_refs": [_ex.result_artifact_id, _ex.command_log_artifact_id],
+                            "status": _ex.status,
+                            "execution_id": _ex.id,
+                            "exit_code": _ex.exit_code,
+                        }
+                    filtered = [
+                        _actual_by_identity[_ident]
+                        for _ident in sorted(_expected_ids & _actual_ids, key=lambda _id: str(_actual_by_identity[_id].get("package")))
+                    ]
+                    if _expected_ids != _actual_ids:
+                        _missing = _expected_ids - _actual_ids
+                        _extra = _actual_ids - _expected_ids
+                        if _missing:
+                            raise AngularTransformationEvidenceError("MIGRATION_EVIDENCE_INCOMPLETE", f"Missing expected migrations: {sorted(_missing)}")
+                        if _extra:
+                            raise AngularTransformationEvidenceError("MIGRATION_EVIDENCE_UNEXPECTED", f"Unexpected migrations: {sorted(_extra)}")
+                    versions, ledger = self._evidence.build_multi(
+                        context["workspace_path"],
+                        context["checkpoint_path"],
+                        target_core=context["target_core"],
+                        target_cli=context["target_cli"],
+                        ng_version_output=context["ng_version_output"],
+                        migration_executions=tuple(filtered),
+                        expected_pre_fingerprint=context["expected_pre_fingerprint"],
+                        expected_post_fingerprint=context["expected_post_fingerprint"],
+                    )
+                except AngularTransformationEvidenceError:
+                    raise
+                except Exception as ex2:
+                    # Preserve PackageMigrationError codes if present
+                    if hasattr(ex2, "code") and hasattr(ex2, "message"):
+                        raise AngularTransformationEvidenceError(ex2.code, ex2.message) from ex2
+                    raise AngularTransformationEvidenceError("MIGRATION_EVIDENCE_COLLECTION_FAILED", str(ex2)) from ex2
+            else:
+                versions, ledger = self._evidence.build(
+                    context["workspace_path"],
+                    context["checkpoint_path"],
+                    target_core=context["target_core"],
+                    target_cli=context["target_cli"],
+                    ng_version_output=context["ng_version_output"],
+                    angular_execution_id=context["angular_execution_id"],
+                    expected_pre_fingerprint=context["expected_pre_fingerprint"],
+                    expected_post_fingerprint=context["expected_post_fingerprint"],
+                )
         except AngularTransformationEvidenceError as error:
             with self._scope() as session:
                 self._block(session, self._owned(session, continuation_id, worker_id), error.code, error.message)
@@ -662,6 +901,8 @@ class TransformerOrchestrator:
             "stage_id": context["stage_id"],
             "plan_version": context["plan_version"],
             "stage_plan_checksum": context["stage_plan_checksum"],
+            "expected_pre_fingerprint": context["expected_pre_fingerprint"],
+            "expected_post_fingerprint": context["expected_post_fingerprint"],
             "workspace_fingerprint": context["workspace_fingerprint"],
             "version_evidence_artifact_id": version_artifact.ref.artifact_id,
             "version_evidence_checksum": version_artifact.ref.checksum,
@@ -809,7 +1050,8 @@ class TransformerOrchestrator:
                 .order_by(RepairAttemptModel.attempt_number.desc())
                 .first()
             )
-            gate_id = "G11"
+            # aggregate: no repair→G09, repair revalidated→G11 (conditional, not unconditional)
+            gate_id = "G11" if repair is not None else "G09"
             if repair is not None:
                 binding = self._stage._binding(session, continuation)
                 reports = self._verify_dependency_add_post_state(
@@ -1056,13 +1298,353 @@ class TransformerOrchestrator:
             )
         )
 
+    def _persist_dependency_failure_bundle_before_reconstruction(
+        self,
+        session,
+        continuation,
+        execution,
+        evidence: dict[str, object],
+    ) -> StoredArtifact | None:
+        """P0-1: capture post-failure workspace BEFORE reconstruction, build bundle, persist immutably.
+
+        Invariant: for proven dependency-related angular-update failure, freeze
+        package.json/package-lock/direct versions/logs BEFORE ANY reconstruction,
+        then reconstruct. Fail closed if checkpoint/post workspace/bundle cannot be
+        proven.
+        """
+        if build_dependency_normalization_bundle is None:
+            self._block(session, continuation, "DEPENDENCY_BUNDLE_UNAVAILABLE", "Dependency failure bundle builder is unavailable")
+            return None
+        if execution is None or execution.status != "failed":
+            self._block(session, continuation, "DEPENDENCY_BUNDLE_EXECUTION_MISSING", "Failed angular-update execution is missing")
+            return None
+        # checkpoint is immutable pre-ng-update copy
+        checkpoint = self._angular_update_reconstruction_checkpoint(session, continuation)
+        if checkpoint is None:
+            # fallback to latest pre_angular_update checkpoint
+            checkpoint = session.scalar(
+                select(StageCheckpointModel)
+                .where(
+                    StageCheckpointModel.run_id == continuation.run_id,
+                    StageCheckpointModel.stage_id == continuation.current_stage_id,
+                    StageCheckpointModel.kind == "pre_angular_update",
+                )
+                .order_by(StageCheckpointModel.sequence.desc())
+                .limit(1)
+            )
+        if checkpoint is None:
+            self._block(session, continuation, "DEPENDENCY_BUNDLE_CHECKPOINT_MISSING", "Pre-update checkpoint cannot be resolved")
+            return None
+        # fail closed if execution/run/stage identity does not match
+        if execution.run_id != continuation.run_id or execution.stage_id != continuation.current_stage_id:
+            self._block(session, continuation, "DEPENDENCY_BUNDLE_IDENTITY_MISMATCH", "Bundle execution/run/stage identity mismatch")
+            return None
+        if checkpoint.run_id != continuation.run_id or checkpoint.stage_id != continuation.current_stage_id:
+            self._block(session, continuation, "DEPENDENCY_BUNDLE_CHECKPOINT_MISMATCH", "Checkpoint identity mismatch")
+            return None
+        # read pre/post states — fail closed if post cannot be read
+        binding = self._stage._binding(session, continuation)
+        try:
+            # pre-update from checkpoint (immutable)
+            pre_pkg_text = (Path(checkpoint.workspace_path) / "package.json").read_text(encoding="utf-8")
+            pre_pkg = json.loads(pre_pkg_text) if pre_pkg_text.strip() else None
+        except Exception as error:
+            self._block(session, continuation, "DEPENDENCY_BUNDLE_PRE_READ_FAILED", f"Pre-update package.json cannot be read: {error}")
+            return None
+        try:
+            pre_lock_text = (Path(checkpoint.workspace_path) / "package-lock.json").read_text(encoding="utf-8")
+            pre_lock = json.loads(pre_lock_text) if pre_lock_text.strip() else None
+            if pre_lock is None:
+                # keep raw text for checksum even if not json
+                pre_lock = pre_lock_text
+        except Exception:
+            pre_lock = None
+        try:
+            post_pkg_text = (Path(binding.workspace_path) / "package.json").read_text(encoding="utf-8")
+            post_pkg = json.loads(post_pkg_text) if post_pkg_text.strip() else None
+            if post_pkg is None:
+                raise ValueError("post package.json empty")
+        except Exception as error:
+            self._block(session, continuation, "DEPENDENCY_BUNDLE_POST_READ_FAILED", f"Post-failure package.json cannot be read: {error}")
+            return None
+        try:
+            post_lock_path = Path(binding.workspace_path) / "package-lock.json"
+            if post_lock_path.is_file():
+                post_lock_text = post_lock_path.read_text(encoding="utf-8")
+                try:
+                    post_lock = json.loads(post_lock_text) if post_lock_text.strip() else None
+                except json.JSONDecodeError:
+                    post_lock = post_lock_text
+            else:
+                post_lock = None
+        except Exception:
+            post_lock = None
+        # command evidence
+        run = session.get(MigrationRunModel, continuation.run_id)
+        stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+        stage_data = (stage_plan.stage_plan or {}) if stage_plan else {}
+        source_exact = stage_data.get("source_exact") or stage_data.get("source_angular_exact")
+        target_exact = stage_data.get("target_exact")
+        target_cli_exact = stage_data.get("target_cli_exact") or target_exact
+        # effective npm settings: parse .npmrc for relevant non-secret whitelist
+        effective_npm_settings: dict[str, str] = {}
+        try:
+            npmrc = Path(binding.workspace_path) / ".npmrc"
+            if npmrc.is_file():
+                # Parse .npmrc deterministically: key=value, ignore # comments and secrets handled by bundle whitelist
+                try:
+                    raw_text = npmrc.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    raw_text = ""
+                for line in raw_text.splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or line.startswith(";"):
+                        continue
+                    if "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    key = key.strip().lower()
+                    value = value.strip()
+                    # Only keep whitelist-relevant keys; bundle service will sanitize secrets again
+                    if key in {
+                        "registry",
+                        "strict-peer-deps",
+                        "legacy-peer-deps",
+                        "engine-strict",
+                        "save-exact",
+                        "package-lock",
+                        "audit",
+                        "fund",
+                        "ignore-scripts",
+                    }:
+                        effective_npm_settings[key] = value
+        except Exception:
+            effective_npm_settings = {}
+        # node/npm exact from durable G07 stage runtime binding (not PATH)
+        node_exact = None
+        npm_exact = None
+        try:
+            node_row = session.scalar(
+                select(StageRuntimeBindingModel).where(
+                    StageRuntimeBindingModel.run_id == continuation.run_id,
+                    StageRuntimeBindingModel.stage_id == continuation.current_stage_id,
+                    StageRuntimeBindingModel.kind == "node",
+                )
+            )
+            npm_row = session.scalar(
+                select(StageRuntimeBindingModel).where(
+                    StageRuntimeBindingModel.run_id == continuation.run_id,
+                    StageRuntimeBindingModel.stage_id == continuation.current_stage_id,
+                    StageRuntimeBindingModel.kind == "npm",
+                )
+            )
+            if node_row is not None and getattr(node_row, "version_exact", None):
+                node_exact = str(node_row.version_exact).strip()
+            if npm_row is not None and getattr(npm_row, "version_exact", None):
+                npm_exact = str(npm_row.version_exact).strip()
+            # fallback to G07 gate runtime binding if direct row not found
+            if node_exact is None or npm_exact is None:
+                try:
+                    runtime_info = self._stage.runtime_binding(session, continuation)
+                    if isinstance(runtime_info, dict):
+                        # runtime_binding returns profile info, not version; try to extract from stage_runtime rows
+                        pass
+                except Exception:
+                    pass
+        except Exception:
+            node_exact = None
+            npm_exact = None
+        # prior normalization null first attempt
+        prior = None
+        try:
+            prior_attempt = session.query(RepairAttemptModel).filter(
+                RepairAttemptModel.run_id == continuation.run_id,
+                RepairAttemptModel.stage_id == continuation.current_stage_id,
+            ).order_by(RepairAttemptModel.attempt_number.desc()).first()
+            if prior_attempt is not None and prior_attempt.attempt_number > 1:
+                prior = {"attempt_number": prior_attempt.attempt_number, "status": prior_attempt.status}
+        except Exception:
+            prior = None
+        # build bundle — fail closed if cannot
+        try:
+            bundle = build_dependency_normalization_bundle(
+                run_id=continuation.run_id,
+                stage_id=continuation.current_stage_id,
+                execution_id=execution.id,
+                source_angular_exact=source_exact,
+                target_angular_exact=target_exact,
+                target_cli_exact=target_cli_exact,
+                node_exact=node_exact,
+                npm_exact=npm_exact,
+                pre_update={"package_json": pre_pkg, "package_lock": pre_lock},
+                post_failure={"package_json": post_pkg, "package_lock": post_lock},
+                command={
+                    "command_id": execution.command_id,
+                    "exit_code": execution.exit_code,
+                    "failure_code": execution.failure_code,
+                    "normalized_failure": evidence.get("normalized_failure") if isinstance(evidence.get("normalized_failure"), dict) else {},
+                    "stdout_artifact_ref": getattr(execution, "stdout_artifact_id", None),
+                    "stderr_artifact_ref": getattr(execution, "stderr_artifact_id", None),
+                    "command_log_artifact_ref": getattr(execution, "command_log_artifact_id", None),
+                    "result_artifact_ref": getattr(execution, "result_artifact_id", None),
+                },
+                effective_npm_settings=effective_npm_settings,
+                prior_normalization=prior,
+                pre_package_json=pre_pkg,
+                pre_package_lock=pre_lock,
+                post_package_json=post_pkg,
+                post_package_lock=post_lock,
+            )
+        except Exception as error:
+            self._block(session, continuation, "DEPENDENCY_BUNDLE_BUILD_FAILED", f"Dependency failure bundle cannot be built: {error}")
+            return None
+        # persist immutably — fail closed if cannot
+        if run is None or not run.artifact_root:
+            self._block(session, continuation, "DEPENDENCY_BUNDLE_ROOT_MISSING", "Run artifact root missing for bundle")
+            return None
+        try:
+            # bundle identity must match execution
+            if bundle.get("run_id") != continuation.run_id or bundle.get("stage_id") != continuation.current_stage_id or bundle.get("execution_id") != execution.id:
+                self._block(session, continuation, "DEPENDENCY_BUNDLE_IDENTITY_MISMATCH", "Bundle identity does not match failed command")
+                return None
+            content = json.dumps(bundle, sort_keys=True, indent=2)
+            checksum = "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+            relative = f"04_workflow_state/stages/{continuation.current_stage_id}/dependency-failure-bundles/{execution.id}-{checksum[7:15]}.json"
+            store = LocalFilesystemArtifactStore(Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root))
+            stored = store.write_text_artifact(
+                continuation.run_id,
+                relative,
+                content,
+                ArtifactType.JSON,
+                stage_id=continuation.current_stage_id,
+                attempt_id=None,
+                created_by="dependency-failure-bundle",
+                created_at=datetime.now(UTC),
+                input_hashes={
+                    "execution": execution.id,
+                    "pre_package_json": hashlib.sha256(json.dumps(pre_pkg, sort_keys=True).encode()).hexdigest()[:16] if isinstance(pre_pkg, dict) else "missing",
+                    "post_package_json": hashlib.sha256(json.dumps(post_pkg, sort_keys=True).encode()).hexdigest()[:16] if isinstance(post_pkg, dict) else "missing",
+                    "failure_message": hashlib.sha256(str(execution.failure_message or "").encode()).hexdigest()[:16],
+                },
+                policy_version="dependency-failure-bundle-v1",
+            )
+            # register metadata immutably
+            metadata_id = "metadata-" + stored.ref.artifact_id
+            if session.get(ArtifactMetadataModel, metadata_id) is None:
+                session.add(
+                    ArtifactMetadataModel(
+                        id=metadata_id,
+                        run_id=continuation.run_id,
+                        stage_id=continuation.current_stage_id,
+                        artifact_type=stored.ref.artifact_type.value,
+                        relative_path=stored.ref.relative_path,
+                        checksum=stored.ref.checksum,
+                        schema_version=stored.envelope.schema_version,
+                        created_at=stored.ref.created_at,
+                        finalized_at=stored.ref.created_at,
+                        immutable=True,
+                        execution_id=execution.id,
+                        owner_reference=f"{execution.id}:dependency-failure-bundle",
+                        correlation_id=execution.correlation_id,
+                        safe_metadata={
+                            "schema_version": "dependency-failure-bundle-v1",
+                            "execution_id": execution.id,
+                            "run_id": continuation.run_id,
+                            "stage_id": continuation.current_stage_id,
+                            "immutable": True,
+                        },
+                    )
+                )
+                session.flush()
+            return stored
+        except Exception as error:
+            self._block(session, continuation, "DEPENDENCY_BUNDLE_PERSIST_FAILED", f"Dependency failure bundle cannot be persisted: {error}")
+            return None
+
+    def _load_dependency_failure_bundle(self, session, continuation, execution) -> StoredArtifact | None:
+        """Load durable bundle artifact for an execution, if present."""
+        if execution is None:
+            return None
+        run = session.get(MigrationRunModel, continuation.run_id)
+        if run is None or not run.artifact_root:
+            return None
+        # Find metadata with owner_reference == f"{execution.id}:dependency-failure-bundle"
+        row = session.scalar(
+            select(ArtifactMetadataModel).where(
+                ArtifactMetadataModel.run_id == continuation.run_id,
+                ArtifactMetadataModel.stage_id == continuation.current_stage_id,
+                ArtifactMetadataModel.owner_reference == f"{execution.id}:dependency-failure-bundle",
+            )
+        )
+        if row is None:
+            # also try execution_id field
+            row = session.scalar(
+                select(ArtifactMetadataModel).where(
+                    ArtifactMetadataModel.execution_id == execution.id,
+                    ArtifactMetadataModel.run_id == continuation.run_id,
+                ).where(ArtifactMetadataModel.relative_path.like("%dependency-failure-bundle%"))
+            )
+        if row is None:
+            return None
+        try:
+            store = LocalFilesystemArtifactStore(Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root))
+            stored = store.read_artifact(continuation.run_id, row.relative_path)
+            if stored.ref.checksum != row.checksum:
+                return None
+            return stored
+        except Exception:
+            return None
+
     def _classify_failure(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
             if self._resume_stale_g08_validation(session, continuation):
                 return
+            if self._recover_unmaterialized_dependency_repair(session, continuation):
+                return
             if self._recover_pre_materialization_revalidation(session, continuation):
                 return
+            if self._resume_known_baseline_validation(session, continuation):
+                return
+            try:
+                execution, causal_step_name = resolve_causal_failed_execution(
+                    session, continuation
+                )
+            except CausalExecutionError as error:
+                self._block(session, continuation, error.code, error.message)
+                return
+            binding = self._stage._binding(session, continuation)
+            artifacts = (
+                execution.stdout_artifact_id if execution else None,
+                execution.stderr_artifact_id if execution else None,
+                execution.command_log_artifact_id if execution else None,
+                execution.result_artifact_id if execution else None,
+                execution.manifest_artifact_id if execution else None,
+            )
+            if (
+                execution is not None
+                and execution.status == "failed"
+                and execution.operation_kind == "mutating"
+                and all(artifacts)
+                and all(
+                    session.get(ArtifactMetadataModel, "metadata-" + str(item))
+                    is not None
+                    for item in artifacts
+                )
+                and (
+                    (execution.start_fingerprint or {}).get("binding_fingerprint")
+                    or (execution.start_fingerprint or {}).get(
+                        "post_apply_pre_command_binding_fingerprint"
+                    )
+                )
+                == binding.workspace_fingerprint
+            ):
+                live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+                execution.end_fingerprint = {"canonical_source": live}
+                binding.workspace_fingerprint = live
+                binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
+                binding.last_verified_fingerprint = live
+                binding.last_verified_at = datetime.now(UTC)
             prior = [
                 item.failure_fingerprint
                 for item in session.query(RepairAttemptModel)
@@ -1073,9 +1655,17 @@ class TransformerOrchestrator:
                 .all()
                 if item.failure_fingerprint
             ]
-            evidence = self._failures.collect(
-                session, continuation, prior_fingerprints=prior
-            )
+            try:
+                evidence = self._failures.collect(
+                    session,
+                    continuation,
+                    causal_execution=execution,
+                    causal_step_name=causal_step_name,
+                    prior_fingerprints=prior,
+                )
+            except CausalExecutionError as error:
+                self._block(session, continuation, error.code, error.message)
+                return
             fingerprint = str(evidence["failure_fingerprint"])
             replayed = self._committed_evidence(session, continuation, fingerprint)
             reuse_checkpoint = None
@@ -1097,12 +1687,41 @@ class TransformerOrchestrator:
         ):
             with self._scope() as session:
                 continuation = self._owned(session, continuation_id, worker_id)
-                attempt = session.query(RepairAttemptModel).filter_by(
-                    run_id=continuation.run_id,
-                    stage_id=continuation.current_stage_id,
-                ).order_by(RepairAttemptModel.attempt_number.desc()).first()
+                attempt = self._failure_repair_attempt(
+                    session, continuation, execution
+                )
                 binding = self._stage._binding(session, continuation)
                 live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+                angular_recovery_checkpoint = (
+                    self._angular_update_recovery_checkpoint(
+                        session, continuation, attempt
+                    )
+                    if self._is_angular_update_failure(session, continuation)
+                    else None
+                )
+
+                # P0-1 FIX: capture dependency failure bundle BEFORE ANY reconstruction for DEPENDENCY_INCOMPATIBLE
+                # Invariant: failed angular-update → bundle → reconstruction → normalization
+                is_dep_bundle_route = False
+                try:
+                    route_val = getattr(route, "value", str(route))
+                    is_dep_bundle_route = route_val == _DEPENDENCY_INCOMPATIBLE or str(route_val) == "dependency_incompatible"
+                    if not is_dep_bundle_route:
+                        is_dep_bundle_route = str(route).lower() == "dependency_incompatible"
+                except Exception:
+                    is_dep_bundle_route = False
+                if is_dep_bundle_route and self._is_angular_update_failure(session, continuation):
+                    # Re-fetch execution in this session to ensure attached instance
+                    exec_for_bundle = session.get(CommandExecutionModel, execution.id) if execution is not None and getattr(execution, "id", None) else None
+                    if exec_for_bundle is None:
+                        self._block(session, continuation, "CAUSAL_EXECUTION_MISSING", "Dependency bundle causal execution is missing")
+                        return
+                    stored_bundle = self._persist_dependency_failure_bundle_before_reconstruction(
+                        session, continuation, exec_for_bundle, evidence
+                    )
+                    if stored_bundle is None:
+                        return
+
                 if live != binding.workspace_fingerprint:
                     # A workspace that diverged from its governed binding must
                     # never feed failure evidence or a repair attempt: a
@@ -1113,10 +1732,7 @@ class TransformerOrchestrator:
                     # before any evidence is frozen.
                     if (
                         not self._is_angular_update_failure(session, continuation)
-                        or self._angular_update_reconstruction_checkpoint(
-                            session, continuation
-                        )
-                        is None
+                        or angular_recovery_checkpoint is None
                     ):
                         self._block(
                             session,
@@ -1126,7 +1742,9 @@ class TransformerOrchestrator:
                         )
                         return
                     try:
-                        self._restore_angular_update_checkpoint(session, continuation)
+                        self._restore_angular_update_checkpoint(
+                            session, continuation, attempt
+                        )
                     except TransformerStageError as error:
                         self._block(session, continuation, error.code, error.message)
                         return
@@ -1147,35 +1765,100 @@ class TransformerOrchestrator:
                 elif (
                     self._is_angular_update_failure(session, continuation)
                     and (
-                        (
-                            attempt is not None
-                            and attempt.status in {"applied", "applied_verified"}
-                        )
-                        or self._angular_update_reconstruction_checkpoint(session, continuation) is not None
+                        angular_recovery_checkpoint is not None
                     )
                 ):
                     # Restore before freezing failure/context evidence so the
                     # attempt and governed checkpoint share one authoritative
                     # workspace fingerprint.
                     try:
-                        self._restore_angular_update_checkpoint(session, continuation)
+                        self._restore_angular_update_checkpoint(
+                            session, continuation, attempt
+                        )
                     except TransformerStageError as error:
                         self._block(session, continuation, error.code, error.message)
                         return
         evidence["workspace_fingerprint"] = StageSandboxCopier.fingerprint(
             Path(str(evidence["workspace_path"]))
         )
+        causal_repair = evidence["causal_repair"]
+        if causal_repair["workspace_fingerprint"] != evidence["workspace_fingerprint"]:
+            causal_repair["workspace_fingerprint"] = evidence["workspace_fingerprint"]
+            causal_repair.pop("causal_state_identity", None)
+            causal_repair["causal_state_identity"] = "sha256:" + hashlib.sha256(
+                json.dumps(causal_repair, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            evidence["failure_fingerprint"] = causal_repair["causal_state_identity"]
+            replayed = reuse_checkpoint = None
         attempt_artifacts: list[StoredArtifact] = []
         if replayed is None:
             failure, route_artifact = self._failures.write(evidence, route)
             attempt_artifacts.extend((failure, route_artifact))
-            context = (
-                self._failures.write_context_pack(evidence, failure.ref.checksum)
-                if self._repairable_route(route)
-                else None
-            )
-            if context is not None:
+            # P0-1: for DEPENDENCY_INCOMPATIBLE, hydrate validated bundle into context
+            try:
+                route_val_for_ctx = getattr(route, "value", str(route))
+                is_dep_ctx = route_val_for_ctx == _DEPENDENCY_INCOMPATIBLE or str(route_val_for_ctx) == "dependency_incompatible"
+            except Exception:
+                is_dep_ctx = False
+            if is_dep_ctx and self._repairable_route(route) and execution is not None:
+                bundle_content = None
+                bundle_artifact_id = None
+                bundle_checksum = None
+                try:
+                    with self._scope() as _tmp_sess2:
+                        _exec_for_ctx = _tmp_sess2.get(
+                            CommandExecutionModel, evidence["execution_id"]
+                        )
+                        if _exec_for_ctx is not None:
+                            _row = _tmp_sess2.scalar(
+                                select(ArtifactMetadataModel).where(
+                                    ArtifactMetadataModel.run_id == evidence["run_id"],
+                                    ArtifactMetadataModel.stage_id == evidence["stage_id"],
+                                    ArtifactMetadataModel.owner_reference == f"{_exec_for_ctx.id}:dependency-failure-bundle",
+                                )
+                            )
+                            if _row is None:
+                                _row = _tmp_sess2.scalar(
+                                    select(ArtifactMetadataModel).where(
+                                        ArtifactMetadataModel.execution_id == _exec_for_ctx.id,
+                                        ArtifactMetadataModel.run_id == evidence["run_id"],
+                                    ).where(ArtifactMetadataModel.relative_path.like("%dependency-failure-bundle%"))
+                                )
+                            if _row is not None:
+                                _run_for_ctx = _tmp_sess2.get(MigrationRunModel, evidence["run_id"])
+                                if _run_for_ctx is not None and _run_for_ctx.artifact_root:
+                                    _store_ctx = LocalFilesystemArtifactStore(Path(_run_for_ctx.artifact_root).parent, fixed_run_root=Path(_run_for_ctx.artifact_root))
+                                    _stored_ctx = _store_ctx.read_artifact(str(evidence["run_id"]), _row.relative_path)
+                                    if _stored_ctx.ref.checksum == _row.checksum:
+                                        _candidate = json.loads(_stored_ctx.content)
+                                        if _candidate.get("schema_version") == "dependency-failure-bundle-v1" and _candidate.get("run_id") == evidence["run_id"] and _candidate.get("stage_id") == evidence["stage_id"] and _candidate.get("execution_id") == _exec_for_ctx.id:
+                                            bundle_content = _candidate
+                                            bundle_artifact_id = _stored_ctx.ref.artifact_id
+                                            bundle_checksum = _stored_ctx.ref.checksum
+                except Exception:
+                    bundle_content = None
+                if bundle_content is None:
+                    with self._scope() as _blk2:
+                        _any_cont = _blk2.scalar(select(TransformationContinuationModel).where(TransformationContinuationModel.run_id == evidence["run_id"]).limit(1))
+                        if _any_cont is not None:
+                            self._block(_blk2, _any_cont, "DEPENDENCY_BUNDLE_MISSING_FOR_CONTEXT", "Dependency bundle not available for LLM context")
+                    return
+                context = self._failures.write_context_pack(
+                    evidence,
+                    failure.ref.checksum,
+                    dependency_bundle=bundle_content,
+                    dependency_bundle_artifact_id=bundle_artifact_id,
+                    dependency_bundle_checksum=bundle_checksum,
+                )
                 attempt_artifacts.append(context)
+            else:
+                context = (
+                    self._failures.write_context_pack(evidence, failure.ref.checksum)
+                    if self._repairable_route(route)
+                    else None
+                )
+                if context is not None:
+                    attempt_artifacts.append(context)
         else:
             failure, route_artifact, context = replayed
         snapshot = None
@@ -1208,6 +1891,40 @@ class TransformerOrchestrator:
                         "Checkpoint snapshot sealing failed",
                     )
                 return
+        # P0-1: ensure bundle durable for dependency failures and referenced in repair context
+        bundle_for_context = None
+        try:
+            route_val_check = getattr(route, "value", str(route))
+            is_dep_for_bundle = route_val_check == _DEPENDENCY_INCOMPATIBLE or str(route_val_check) == "dependency_incompatible"
+        except Exception:
+            is_dep_for_bundle = False
+        if is_dep_for_bundle and replayed is None and execution is not None:
+            # Bundle should have been persisted before reconstruction in the inner scope above.
+            # If not found, fail closed here as well.
+            try:
+                with self._scope() as _sess:
+                    _cont = _sess.get(TransformationContinuationModel, continuation_id)
+                    if _cont is not None:
+                        _exec = _sess.get(CommandExecutionModel, execution.id) if getattr(execution, "id", None) else None
+                        if _exec is None:
+                            raise CausalExecutionError(
+                                "CAUSAL_EXECUTION_MISSING",
+                                "Dependency failure bundle lost its causal execution binding",
+                            )
+                        if _exec is not None:
+                            _bundle = self._load_dependency_failure_bundle(_sess, _cont, _exec)
+                            if _bundle is not None:
+                                bundle_for_context = _bundle
+                            else:
+                                # Fail closed: bundle must exist for dependency route
+                                with self._scope() as _blk_sess:
+                                    _blk_cont = _blk_sess.get(TransformationContinuationModel, continuation_id)
+                                    if _blk_cont is not None:
+                                        self._block(_blk_sess, _blk_cont, "DEPENDENCY_BUNDLE_MISSING", "Dependency failure bundle not found for normalization")
+                                return
+            except Exception:
+                pass
+
         try:
             with self._scope() as session:
                 continuation = self._owned(session, continuation_id, worker_id)
@@ -1215,6 +1932,42 @@ class TransformerOrchestrator:
                 for artifact in (failure, route_artifact, context):
                     if artifact is not None:
                         self._stage.register_artifact(session, artifact, continuation)
+                # Register bundle artifact as well for dependency route so repair context references it
+                if bundle_for_context is not None:
+                    # Need to re-load in this session to register correctly (store is same, but metadata needs re-check)
+                    # Instead, directly register the stored artifact's metadata if not already present
+                    try:
+                        # bundle_for_context was loaded in previous session; re-fetch metadata in this session
+                        b_row = session.scalar(
+                            select(ArtifactMetadataModel).where(
+                                ArtifactMetadataModel.run_id == continuation.run_id,
+                                ArtifactMetadataModel.stage_id == continuation.current_stage_id,
+                                ArtifactMetadataModel.owner_reference == f"{execution.id}:dependency-failure-bundle" if execution else "",
+                            )
+                        )
+                        if b_row is None:
+                            # Try alternative lookup by execution_id
+                            b_row = session.scalar(
+                                select(ArtifactMetadataModel).where(
+                                    ArtifactMetadataModel.execution_id == (execution.id if execution else ""),
+                                    ArtifactMetadataModel.run_id == continuation.run_id,
+                                ).where(ArtifactMetadataModel.relative_path.like("%dependency-failure-bundle%"))
+                            )
+                        if b_row is not None:
+                            # Ensure bundle is considered registered (already persisted, but ensure metadata exists in this tx)
+                            pass
+                        # Also ensure bundle content is available for LLM context: embed reference in context pack
+                        # If context exists and is dependency route, augment it with bundle reference
+                        if context is not None and hasattr(context, "ref"):
+                            # The context artifact already written does not contain bundle reference;
+                            # we will rely on the separate bundle artifact being present alongside context
+                            # for the repair LLM to reference. No rewrite needed for P0.
+                            pass
+                    except Exception:
+                        pass
+                attempt = self._failure_repair_attempt(
+                    session, continuation, execution
+                )
                 if self._is_angular_update_failure(session, continuation):
                     if route.value == "angular_update_command_policy":
                         attempt = session.query(RepairAttemptModel).filter(
@@ -1300,7 +2053,9 @@ class TransformerOrchestrator:
                             self._block(session, continuation, error.code, error.message)
                         return
                     if route.value == "environment_transient" and continuation.attempt < continuation.max_attempts:
-                        self._restore_angular_update_checkpoint(session, continuation)
+                        self._restore_angular_update_checkpoint(
+                            session, continuation, attempt
+                        )
                         continuation.attempt += 1
                         continuation.status = "queued"
                         continuation.current_node = "angular_update"
@@ -1360,10 +2115,14 @@ class TransformerOrchestrator:
                     continuation.run_id,
                     continuation.current_stage_id,
                     repair_policy,
+                    lineage_root_attempt_id=str(
+                        evidence["causal_repair"]["lineage_root_attempt_id"]
+                    ),
                 )
                 if (
                     budget["consumed_attempts"] >= budget["max_attempts"]
                     or budget["consumed_applied"] >= budget["max_applied"]
+                    or budget["total_applied"] >= budget["max_total_applied"]
                 ):
                     self._block(
                         session,
@@ -1375,6 +2134,16 @@ class TransformerOrchestrator:
                 attempts = session.query(RepairAttemptModel).filter_by(
                     run_id=continuation.run_id, stage_id=continuation.current_stage_id
                 ).count()
+                parent_attempt_id = evidence["causal_repair"].get("parent_attempt_id")
+                parent_attempt = (
+                    session.get(RepairAttemptModel, parent_attempt_id)
+                    if parent_attempt_id
+                    else None
+                )
+                validation_correction = bool(
+                    parent_attempt is not None
+                    and parent_attempt.apply_ledger_artifact_id is not None
+                )
                 if reuse_checkpoint is None and snapshot is None:
                     self._block(
                         session,
@@ -1397,7 +2166,11 @@ class TransformerOrchestrator:
                     attempt_number=attempts + 1,
                     status="evidence_frozen",
                     risk_level="unknown",
-                    diagnosis=f"{route.value}; checkpoint={checkpoint.id}",
+                    diagnosis=(
+                        f"validation correction; {route.value}; checkpoint={checkpoint.id}"
+                        if validation_correction
+                        else f"{route.value}; checkpoint={checkpoint.id}"
+                    ),
                     checkpoint_id=checkpoint.id,
                     failure_evidence_artifact_id=failure.ref.artifact_id,
                     failure_evidence_checksum=failure.ref.checksum,
@@ -1407,11 +2180,18 @@ class TransformerOrchestrator:
                     context_pack_checksum=context.ref.checksum,
                     pre_fingerprint=str(evidence["workspace_fingerprint"]),
                     failure_fingerprint=str(evidence["failure_fingerprint"]),
+                    parent_attempt_id=parent_attempt_id,
                     created_at=datetime.now(UTC),
                     updated_at=datetime.now(UTC),
                 )
                 session.add(attempt)
-                self._queue(continuation, "propose_repair")
+                next_node = (
+                    "deterministic_replan"
+                    if route.value == "dependency_incompatible"
+                    and self._has_deterministic_replan_intelligence(session, continuation, evidence)
+                    else "propose_repair"
+                )
+                self._queue(continuation, next_node)
         except (IntegrityError, TransformerStageError) as error:
             if isinstance(error, TransformerStageError) and error.code != "ARTIFACT_METADATA_IDENTITY_CONFLICT":
                 raise
@@ -1431,6 +2211,158 @@ class TransformerOrchestrator:
                     continuation_id,
                     cleanup_error,
                 )
+
+    @staticmethod
+    def _failure_repair_attempt(session, continuation, execution):
+        recovery = (
+            session.scalar(
+                select(StageRecoveryOperationModel)
+                .where(
+                    StageRecoveryOperationModel.run_id == continuation.run_id,
+                    StageRecoveryOperationModel.stage_id
+                    == continuation.current_stage_id,
+                    StageRecoveryOperationModel.command_execution_id
+                    == execution.id,
+                    StageRecoveryOperationModel.status == "FAILED",
+                )
+                .order_by(StageRecoveryOperationModel.updated_at.desc())
+                .limit(1)
+            )
+            if execution is not None
+            else None
+        )
+        if recovery is not None and recovery.repair_attempt_id:
+            return session.get(RepairAttemptModel, recovery.repair_attempt_id)
+        return (
+            session.query(RepairAttemptModel)
+            .filter_by(
+                run_id=continuation.run_id,
+                stage_id=continuation.current_stage_id,
+            )
+            .order_by(RepairAttemptModel.attempt_number.desc())
+            .first()
+        )
+
+    @staticmethod
+    def _has_deterministic_replan_intelligence(session, continuation, evidence) -> bool:
+        intelligence = session.scalar(
+            select(FailureIntelligenceModel)
+            .where(FailureIntelligenceModel.run_id == continuation.run_id)
+            .order_by(FailureIntelligenceModel.created_at.desc())
+            .limit(1)
+        )
+        group_key = TransformerOrchestrator._deterministic_replan_group_key(evidence)
+        root = (intelligence.root_causes or {}).get(group_key) if intelligence else None
+        return bool(root and root.get("taxonomy") == "dependency")
+
+    @staticmethod
+    def _deterministic_replan_group_key(evidence) -> str:
+        normalized = evidence.get("normalized_failure") or {}
+        code = str(normalized.get("error_code") or "UNKNOWN")
+        message = str(normalized.get("failure_message") or "")
+        return FailureIntelligenceService.stable_group_key(code, "dependency", message)
+
+    def _deterministic_replan(self, continuation_id: str, worker_id: str) -> None:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            attempt = self._latest_repair(session, continuation)
+            checkpoint = session.get(StageCheckpointModel, attempt.checkpoint_id) if attempt else None
+            stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+            plan = session.get(MigrationPlanModel, continuation.plan_id)
+            binding = self._stage._binding(session, continuation)
+            try:
+                execution, _ = resolve_causal_failed_execution(session, continuation)
+            except CausalExecutionError:
+                execution = None
+            intelligence = session.scalar(
+                select(FailureIntelligenceModel)
+                .where(FailureIntelligenceModel.run_id == continuation.run_id)
+                .order_by(FailureIntelligenceModel.created_at.desc())
+                .limit(1)
+            )
+            normalized_code = (execution.failure_code if execution else None) or continuation.last_error_code or "UNKNOWN"
+            message = (execution.failure_message if execution else None) or continuation.last_error_message or ""
+            group_key = FailureIntelligenceService.stable_group_key(normalized_code, "dependency", message)
+            root = (intelligence.root_causes or {}).get(group_key) if intelligence else None
+            resolution = session.scalar(
+                select(CompatibilityResolutionModel)
+                .where(CompatibilityResolutionModel.run_id == continuation.run_id)
+                .order_by(CompatibilityResolutionModel.created_at.desc())
+                .limit(1)
+            )
+            catalogue_version = (plan.plan or {}).get("catalogue_version") if plan else None
+            catalogue = session.scalar(
+                select(CompatibilityCatalogueModel).where(CompatibilityCatalogueModel.version == catalogue_version)
+            )
+            if not all((attempt, checkpoint, stage_plan, plan, binding, execution, root, resolution, catalogue)):
+                self._queue(continuation, "propose_repair")
+                return
+
+            request = TransformationReplanRecoveryRequest(
+                run_id=continuation.run_id,
+                stage_id=continuation.current_stage_id,
+                failed_execution_id=execution.id,
+                failed_execution_result_checksum=TransformationReplanRecoveryService.execution_result_checksum(execution),
+                failure_group_key=group_key,
+                root_cause_code=root["root_cause_code"],
+                continuation_state_version=continuation.state_version,
+                current_plan_id=plan.id,
+                current_plan_checksum=plan.checksum,
+                current_stage_plan_id=stage_plan.id,
+                current_stage_plan_checksum=stage_plan.checksum,
+                safe_checkpoint_id=checkpoint.id,
+                safe_checkpoint_checksum=TransformationReplanRecoveryService.checkpoint_checksum(checkpoint),
+                safe_checkpoint_fingerprint=checkpoint.workspace_fingerprint,
+                workspace_fingerprint=binding.workspace_fingerprint,
+                catalogue_version=catalogue.version,
+                catalogue_checksum=catalogue.checksum,
+                compatibility_resolution_checksum=TransformationReplanRecoveryService.compatibility_resolution_checksum(resolution),
+                idempotency_key=f"transformer-replan:{execution.id}",
+            )
+        try:
+            TransformationReplanRecoveryService(
+                session_scope_factory=self._scope
+            ).recover(request)
+        except TransformationReplanRecoveryError:
+            with self._scope() as session:
+                continuation = self._owned(session, continuation_id, worker_id)
+                self._queue(continuation, "propose_repair")
+
+    def _resume_known_baseline_validation(self, session, continuation) -> bool:
+        """Resume repair validation when lint exactly matches approved G03 evidence."""
+        if not self._validation.resume_known_baseline_failures(
+            session, continuation
+        ):
+            return False
+        attempt = self._latest_repair(session, continuation, required=False)
+        if attempt is not None and attempt.status not in {
+            "superseded",
+            "completed",
+            "rejected",
+        }:
+            RepairLifecycleService.transition_in_session(
+                session,
+                attempt,
+                "revalidating_affected",
+                reason="known baseline validation resumed",
+            )
+        expected_state_version = continuation.state_version
+        continuation.last_error_code = None
+        continuation.last_error_message = None
+        self._queue(continuation, "repair_revalidate")
+        session.flush()
+        append_continuation_event(
+            session,
+            continuation,
+            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_WAITING,
+            key=f"known-baseline-validation:{expected_state_version}",
+            reason="Approved baseline lint failures preserved during repair validation",
+            payload={
+                "expected_state_version": expected_state_version,
+                "validation_status": "passed_with_known_baseline_failure",
+            },
+        )
+        return True
 
     @staticmethod
     def _deterministic_failure_code(error: Exception) -> str:
@@ -1537,6 +2469,82 @@ class TransformerOrchestrator:
                         path,
                         error,
                     )
+
+    def _recover_unmaterialized_dependency_repair(self, session, continuation) -> bool:
+        """Resume a dependency repair whose lockfile phase was skipped.
+
+        A dependency repair must materialize its package graph before any
+        Angular-update retry.  Older workers could route directly to the
+        retry node, leaving the approved repair applied while the governed
+        lockfile step remained pending.  Reconcile that durable state before
+        failure classification so it cannot consume another repair attempt.
+        """
+        attempt = (
+            session.query(RepairAttemptModel)
+            .filter(
+                RepairAttemptModel.run_id == continuation.run_id,
+                RepairAttemptModel.stage_id == continuation.current_stage_id,
+                RepairAttemptModel.status.in_(
+                    ("applied", "applied_verified", "migration_retried")
+                ),
+            )
+            .order_by(RepairAttemptModel.attempt_number.desc())
+            .first()
+        )
+        if attempt is None or self._successful_materialization_exists(
+            session, continuation, attempt
+        ):
+            return False
+        try:
+            proposal = self._load_bound_repair_proposal(
+                session,
+                continuation,
+                attempt,
+                session.get(MigrationRunModel, continuation.run_id),
+            )
+        except (
+            ArtifactNotFoundError,
+            ArtifactStoreError,
+            OSError,
+            ValueError,
+            RepairApplicationError,
+        ):
+            return False
+        lockfile_step = session.scalar(
+            select(StageStepModel).where(
+                StageStepModel.run_id == continuation.run_id,
+                StageStepModel.stage_id == continuation.current_stage_id,
+                StageStepModel.name == "lockfile_generation-0",
+            )
+        )
+        if not self._needs_dependency_materialization_recovery(
+            proposal,
+            attempt.status,
+            lockfile_step.status if lockfile_step is not None else None,
+            materialization_succeeded=False,
+        ):
+            return False
+        continuation.last_error_code = None
+        continuation.last_error_message = None
+        self._queue(continuation, "lockfile_generation")
+        return True
+
+    @staticmethod
+    def _needs_dependency_materialization_recovery(
+        proposal: dict[str, object],
+        attempt_status: str,
+        lockfile_step_status: str | None,
+        *,
+        materialization_succeeded: bool,
+    ) -> bool:
+        return (
+            attempt_status in {"applied", "applied_verified", "migration_retried"}
+            and TransformerOrchestrator._proposal_requires_install_materialization(
+                proposal
+            )
+            and lockfile_step_status == "PENDING"
+            and not materialization_succeeded
+        )
 
     def _recover_pre_materialization_revalidation(self, session, continuation) -> bool:
         attempt = (
@@ -1678,9 +2686,13 @@ class TransformerOrchestrator:
         version_step.updated_at = now
         attempt = self._latest_repair(session, continuation)
         if attempt is not None and attempt.status == "evidence_frozen" and not attempt.proposal_artifact_id:
-            attempt.status = "superseded"
+            RepairLifecycleService.transition_in_session(
+                session,
+                attempt,
+                "superseded",
+                reason="empty repair evidence attempt superseded",
+            )
             attempt.completed_at = now
-            attempt.updated_at = now
         continuation.last_error_code = None
         continuation.last_error_message = None
         self._queue(continuation, "final_install")
@@ -1736,7 +2748,13 @@ class TransformerOrchestrator:
                         "Persisted request-changes review is missing",
                     )
                     return
-                self._queue(continuation, "create_g10")
+                continuation.status = "waiting_repair_revision"
+                continuation.current_node = "review_repair"
+                continuation.worker_id = None
+                continuation.lease_expires_at = None
+                continuation.wake_sequence += 1
+                continuation.state_version += 1
+                continuation.updated_at = datetime.now(UTC)
                 return
             attempt_id = attempt.id
         try:
@@ -1766,7 +2784,13 @@ class TransformerOrchestrator:
                 self._queue(continuation, "create_g10")
                 return
             if review["decision"] == "request_changes":
-                self._queue(continuation, "create_g10")
+                continuation.status = "waiting_repair_revision"
+                continuation.current_node = "review_repair"
+                continuation.worker_id = None
+                continuation.lease_expires_at = None
+                continuation.wake_sequence += 1
+                continuation.state_version += 1
+                continuation.updated_at = datetime.now(UTC)
                 return
             self._block(
                 session,
@@ -1805,14 +2829,20 @@ class TransformerOrchestrator:
                         self._block(
                             session,
                             continuation,
-                            "REPAIR_CAUSAL_REJECTION",
+                            "REPAIR_REVIEW_NOT_ACCEPTED"
+                            if reason and "request_changes" in reason
+                            else "REPAIR_CAUSAL_REJECTION",
                             reason or "Repair candidate is not causally eligible for G10",
                         )
                         return
                 if gate_id == "G10":
                     attempt.g10_gate_package_id = existing.id
-                    attempt.status = "waiting_g10"
-                    attempt.updated_at = datetime.now(UTC)
+                    RepairLifecycleService.transition_in_session(
+                        session,
+                        attempt,
+                        "waiting_g10",
+                        reason="repair G10 package reused after accepted review",
+                    )
                 continuation.status = "waiting_gate"
                 continuation.current_node = f"wait_{gate_id.lower()}"
                 continuation.worker_id = None
@@ -1830,7 +2860,9 @@ class TransformerOrchestrator:
                     self._block(
                         session,
                         continuation,
-                        "REPAIR_CAUSAL_REJECTION",
+                        "REPAIR_REVIEW_NOT_ACCEPTED"
+                        if reason and "request_changes" in reason
+                        else "REPAIR_CAUSAL_REJECTION",
                         reason or "Repair candidate is not causally eligible for G10",
                     )
                     return
@@ -1899,12 +2931,12 @@ class TransformerOrchestrator:
                 review = json.loads(
                     store.read_artifact(continuation.run_id, review_metadata.relative_path).content
                 )
-                if review.get("decision") not in {"accept", "request_changes"}:
+                if review.get("decision") != "accept":
                     raise TransformerStageError(
-                        "REPAIR_REVIEW_INVALID",
-                        "Repair review decision is not eligible for G10",
+                        "REPAIR_REVIEW_NOT_ACCEPTED",
+                        "Reviewer request_changes must be resolved before G10",
                     )
-                payload["review_override_required"] = review["decision"] == "request_changes"
+                payload["review_override_required"] = False
                 diff_metadata = session.scalar(
                     select(ArtifactMetadataModel).where(
                         ArtifactMetadataModel.run_id == continuation.run_id,
@@ -2005,8 +3037,12 @@ class TransformerOrchestrator:
             )
             if gate_id == "G10":
                 attempt.g10_gate_package_id = package.id
-                attempt.status = "waiting_g10"
-                attempt.updated_at = datetime.now(UTC)
+                RepairLifecycleService.transition_in_session(
+                    session,
+                    attempt,
+                    "waiting_g10",
+                    reason="repair G10 package created after accepted review",
+                )
 
     def _apply_repair(self, continuation_id: str, worker_id: str) -> None:
         mutation_state = {"started": False, "claimed": False}
@@ -2090,6 +3126,7 @@ class TransformerOrchestrator:
                 workspace_path,
                 stage_root,
                 source_fingerprint,
+                run.artifact_root,
             )
             self._mark_apply_recovery_required(
                 continuation_id,
@@ -2140,10 +3177,14 @@ class TransformerOrchestrator:
                         "Recovery attempt belongs to a different run or stage",
                     )
                 if attempt is not None:
-                    attempt.status = "apply_recovery_required"
+                    RepairLifecycleService.transition_in_session(
+                        session,
+                        attempt,
+                        "apply_recovery_required",
+                        reason=reason or "repair apply requires durable recovery",
+                    )
                     if fingerprint is not None:
                         attempt.post_fingerprint = fingerprint
-                    attempt.updated_at = datetime.now(UTC)
                 if continuation is not None:
                     if fingerprint is not None:
                         binding = session.scalar(
@@ -2327,7 +3368,12 @@ class TransformerOrchestrator:
             )
             if (
                 checkpoint_fingerprint is None
-                or checkpoint_fingerprint != live
+                or (
+                    checkpoint_fingerprint != live
+                    and not self._rebind_child_authority_recovered(
+                        session, current_attempt, checkpoint, live
+                    )
+                )
                 or (
                     current_attempt.pre_fingerprint != live
                     and not self._legacy_authority_recovered(session, current_attempt, checkpoint)
@@ -2416,6 +3462,7 @@ class TransformerOrchestrator:
                     context["workspace_path"],
                     context["stage_root"],
                     context["checkpoint_fingerprint"],
+                    context["artifact_root"],
                 )
                 session.expire_all()
                 current = session.get(TransformationContinuationModel, continuation_id)
@@ -2457,11 +3504,21 @@ class TransformerOrchestrator:
                 )
                 if (
                     checkpoint_fingerprint is None
-                    or checkpoint_fingerprint != live
+                    or (
+                        checkpoint_fingerprint != live
+                        and not self._rebind_child_authority_recovered(
+                            session, current_attempt, checkpoint, live
+                        )
+                    )
                     or (
                         current_attempt.pre_fingerprint != live
-                        and not self._legacy_authority_recovered(
-                            session, current_attempt, checkpoint
+                        and not (
+                            self._legacy_authority_recovered(
+                                session, current_attempt, checkpoint
+                            )
+                            or self._rebind_child_authority_recovered(
+                                session, current_attempt, checkpoint, live
+                            )
                         )
                     )
                 ):
@@ -2522,8 +3579,12 @@ class TransformerOrchestrator:
             error = apply_error
             with self._scope() as session:
                 attempt = session.get(RepairAttemptModel, context["attempt_id"])
-                attempt.status = "apply_failed"
-                attempt.updated_at = datetime.now(UTC)
+                RepairLifecycleService.transition_in_session(
+                    session,
+                    attempt,
+                    "apply_failed",
+                    reason=f"repair application failed: {error.code}",
+                )
                 self._block(
                     session,
                     self._owned(session, continuation_id, worker_id),
@@ -2547,6 +3608,12 @@ class TransformerOrchestrator:
             binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
             binding.last_verified_fingerprint = fingerprint
             binding.last_verified_at = datetime.now(UTC)
+            attempt.apply_ledger_artifact_id = ledger.ref.artifact_id
+            attempt.apply_ledger_checksum = ledger.ref.checksum
+            attempt.post_fingerprint = fingerprint
+            # The checkpoint manifest is lineage-bound to the attempt's
+            # post-image. Update the attempt first so the immutable manifest
+            # cannot capture the pre-repair fingerprint.
             self._stage.persist_post_repair_checkpoint(
                 session,
                 continuation,
@@ -2558,17 +3625,18 @@ class TransformerOrchestrator:
                 apply_ledger_checksum=ledger.ref.checksum,
                 post_fingerprint=fingerprint,
             )
-            attempt.apply_ledger_artifact_id = ledger.ref.artifact_id
-            attempt.apply_ledger_checksum = ledger.ref.checksum
-            attempt.post_fingerprint = fingerprint
-            attempt.status = "executing" if is_dependency_transition else "applied_verified"
-            attempt.updated_at = datetime.now(UTC)
-            post_apply_node = self._post_apply_node(proposal)
-            if (
-                post_apply_node != "dependency_transition"
-                and self._angular_update_retry_eligible(session, continuation)
-            ):
-                post_apply_node = "angular_update_retry"
+            RepairLifecycleService.transition_in_session(
+                session,
+                attempt,
+                "executing" if is_dependency_transition else "applied_verified",
+                reason="repair application committed immutable apply ledger",
+            )
+            post_apply_node = self._post_apply_node(
+                proposal,
+                angular_update_retry_eligible=self._angular_update_retry_eligible(
+                    session, continuation
+                ),
+            )
             reset_groups = (
                 StageStepModel.name.like("final_install-%")
                 | StageStepModel.name.like("builds-%")
@@ -2589,51 +3657,1532 @@ class TransformerOrchestrator:
             self._queue(continuation, post_apply_node)
 
     @staticmethod
-    def _post_apply_node(proposal: dict[str, object]) -> str:
+    def _post_apply_node(
+        proposal: dict[str, object], *, angular_update_retry_eligible: bool = False
+    ) -> str:
         operations = proposal.get("operations") or []
+        # preserve DependencyTransitionRunner for legacy only
         if any(
-            item.get("operation") == "dependency_transition" for item in operations
+            item.get("operation") == "dependency_transition"
+            and str(item.get("repair_kind") or "") != DEPENDENCY_NORMALIZATION_REPAIR_KIND
+            and str(item.get("schema_version") or "") != DEPENDENCY_NORMALIZATION_SCHEMA_VERSION
+            for item in operations
         ):
             return "dependency_transition"
-        return (
-            "lockfile_generation"
-            if any(
-                item.get("operation") in {"dependency_change", "dependency_add"}
-                for item in operations
-            )
-            else "repair_revalidate"
+        # V2.2 P3: dependency_manifest_normalization → lockfile (P4) → final_install → migrate_packages (P5)
+        if any(
+            str(item.get("operation") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+            or str(item.get("repair_kind") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+            or str(item.get("schema_version") or "") == DEPENDENCY_NORMALIZATION_SCHEMA_VERSION
+            or item.get("operation") in {"dependency_change", "dependency_add"}
+            for item in operations
+        ):
+            return "lockfile_generation"
+        node = "repair_revalidate"
+        if node == "repair_revalidate" and angular_update_retry_eligible:
+            return "angular_update_retry"
+        return node
+
+    @staticmethod
+    def _migration_identity(
+        run_id: str,
+        stage_id: str,
+        normalization_root_id: str,
+        normalization_attempt_id: str,
+        checkpoint_id: str,
+        package: str,
+        from_exact: str,
+        to_exact: str,
+    ) -> str:
+        """Canonical migration identity for lineage-bound matching."""
+        payload = {
+            "run_id": run_id,
+            "stage_id": stage_id,
+            "normalization_root_id": normalization_root_id,
+            "normalization_attempt_id": normalization_attempt_id,
+            "checkpoint_id": checkpoint_id,
+            "package": package,
+            "from_exact": from_exact,
+            "to_exact": to_exact,
+        }
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+
+    @staticmethod
+    def _migration_attempt_key(identity: str) -> str:
+        """Central migration attempt key: migrate:<canonical_migration_identity>."""
+        return migration_attempt_key(identity)
+
+    @staticmethod
+    def _expected_migrate_execution_idempotency_key(
+        continuation,
+        stage_id: str,
+        migration_identity: str,
+        package: str,
+        from_exact: str,
+        to_exact: str,
+    ) -> str:
+        """Derive exact persisted CommandExecution.idempotency_key using SAME helper as queue path."""
+        cont_id = continuation.id if hasattr(continuation, "id") else str(continuation)
+        return expected_migrate_execution_idempotency_key(
+            cont_id, stage_id, migration_identity, package, from_exact, to_exact
         )
 
+    @staticmethod
+    def _verified_execution_artifact(session, execution, artifact_id) -> bool:
+        """Fail-closed read-back proof of one immutable command artifact.
+
+        Requires the ArtifactMetadata row AND the physical artifact file:
+        the store re-reads the bytes, recomputes their checksum against the
+        artifact sidecar, and the resulting ``stored.ref.checksum`` must equal
+        the persisted ArtifactMetadata checksum and the artifact id must match.
+        Any read failure, missing file, or checksum drift returns False.
+        """
+        if execution is None or not artifact_id:
+            return False
+        meta = session.get(ArtifactMetadataModel, "metadata-" + str(artifact_id))
+        if meta is None:
+            return False
+        if not meta.immutable:
+            return False
+        if meta.run_id != execution.run_id or meta.stage_id != execution.stage_id:
+            return False
+        if meta.execution_id != execution.id:
+            return False
+        if not meta.checksum or not meta.relative_path:
+            return False
+        run = session.get(MigrationRunModel, execution.run_id)
+        if run is None or not run.artifact_root:
+            return False
+        try:
+            store = LocalFilesystemArtifactStore(
+                Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+            )
+            stored = store.read_artifact(execution.run_id, meta.relative_path)
+            if stored.ref.checksum != meta.checksum:
+                return False
+            if stored.ref.artifact_id and str(stored.ref.artifact_id) != str(artifact_id):
+                return False
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _dependency_normalization_resolution_failure(
+        session,
+        execution,
+        *,
+        run_id: str,
+        stage_id: str,
+    ) -> bool:
+        """Authoritative Plan-2 eligibility proof.
+
+        ONE validator shared by Plan-2 child creation and child-lineage proof.
+        A failed ``npm-lockfile-generate`` is eligible for dependency
+        normalization ONLY when every durable fact holds and the failure is a
+        proven dependency-resolution failure (ERESOLVE / ETARGET /
+        DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED) — never an operational or
+        environmental failure, and never without immutable result + command-log
+        artifact evidence.
+        """
+        from app.services.lockfile_generation_runner import (
+            is_npm_eresolve_failure,
+            is_npm_etarget_failure,
+        )
+        from app.services.failure_intelligence_service import is_environment_failure
+
+        if execution is None:
+            return False
+        if execution.run_id != run_id or execution.stage_id != stage_id:
+            return False
+        if execution.command_id != "npm-lockfile-generate":
+            return False
+        if execution.status != "failed":
+            return False
+        if execution.exit_code in (None, 0):
+            return False
+        code = str(execution.failure_code or "")
+        if code not in (
+            DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED,
+            "DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED",
+        ):
+            if not (is_npm_eresolve_failure(execution) or is_npm_etarget_failure(execution)):
+                return False
+        # Operational/environmental failures (ENOSPC, network, DNS, permissions,
+        # registry auth, native build, process interruption, ...) are NEVER
+        # dependency-resolution failures.
+        env_evidence = {
+            "failure_message": execution.failure_message,
+            "failure_code": execution.failure_code,
+            "command_id": execution.command_id,
+        }
+        if is_environment_failure(env_evidence):
+            return False
+        # Immutable evidence contract: result + command-log artifacts must exist
+        # AND be physically read back with checksums proven against the persisted
+        # ArtifactMetadata and the artifact sidecar.
+        if not execution.result_artifact_id or not execution.command_log_artifact_id:
+            return False
+        if execution.result_artifact_id == execution.command_log_artifact_id:
+            return False
+        for artifact_id in (execution.result_artifact_id, execution.command_log_artifact_id):
+            if not TransformerOrchestrator._verified_execution_artifact(session, execution, artifact_id):
+                return False
+        return True
+
+    @staticmethod
+    def _dependency_resolution_failure_fingerprint(execution) -> str:
+        """One deterministic fingerprint for a failed npm-lockfile-generate execution."""
+        if execution is None:
+            return "sha256:" + hashlib.sha256(b"missing").hexdigest()
+        try:
+            norm = {
+                "command_id": execution.command_id,
+                "failure_code": execution.failure_code,
+                "failure_message": execution.failure_message,
+                "exit_code": execution.exit_code,
+            }
+            diag = None
+            try:
+                from app.services.failure_evidence_service import FailureEvidenceService as _FES
+
+                diag = _FES.diagnose_npm_eresolve_failure(norm) or _FES.diagnose_angular_update_failure(norm)
+            except Exception:
+                diag = None
+            payload: dict[str, object] = {
+                "failure_code": norm.get("failure_code"),
+                "command_id": norm.get("command_id"),
+                "exit_code": norm.get("exit_code"),
+            }
+            if isinstance(diag, dict) and diag:
+                for _k in ("kind", "package", "package_version", "blocking_dependency", "required_ranges", "required_peer_range"):
+                    if _k in diag:
+                        payload[_k] = diag[_k]
+                # ETARGET relevant if present
+                for _k in ("package", "package_version"):
+                    if _k in diag and _k not in payload:
+                        payload[_k] = diag[_k]
+            else:
+                msg = " ".join((execution.failure_message or "").split()).lower()[:1000]
+                payload["failure_message_normalized"] = msg
+            canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+        except Exception:
+            return "sha256:" + hashlib.sha256(str(execution.failure_message or "").encode()).hexdigest()
+
+    @staticmethod
+    def _validated_migrate_range_arguments(execution):
+        """ONE shared validator of the COMPLETE rendered migrate command.
+
+        Requires ``angular-migrate-range`` on the correct template with the full
+        argument vector EXACTLY equal to ``ANGULAR_MIGRATE_RANGE_RENDERER``
+        output for the values it carries.  No missing, extra, reordered, or
+        force/allow-dirty/legacy-peer-deps flags can pass merely by holding
+        plausible values at positional slots.  Returns
+        ``(package, from_exact, to_exact)`` or None on any anomaly.
+        """
+        if execution is None:
+            return None
+        if execution.command_id != "angular-migrate-range":
+            return None
+        if execution.template_id != "tpl-angular-migrate-range-v1":
+            return None
+        if not execution.arguments or len(execution.arguments) != 8:
+            return None
+        package = str(execution.arguments[2])
+        from_exact = str(execution.arguments[5])
+        to_exact = str(execution.arguments[7])
+        if not package or not from_exact or not to_exact:
+            return None
+        try:
+            from app.domain.command import ANGULAR_MIGRATE_RANGE_RENDERER
+
+            expected_args = list(
+                ANGULAR_MIGRATE_RANGE_RENDERER.render_arguments(
+                    {"package": package, "from_version": from_exact, "to_version": to_exact}
+                )
+            )
+        except Exception:
+            return None
+        if list(execution.arguments or []) != expected_args:
+            return None
+        return (package, from_exact, to_exact)
+
+    @staticmethod
+    def _current_migration_execution_matches(
+        session,
+        *,
+        execution,
+        continuation,
+        normalization_root,
+        normalization_leaf,
+        checkpoint,
+        request,
+    ) -> bool:
+        """Prove a CommandExecution was originally authorized for CURRENT lineage."""
+        if execution is None or continuation is None or checkpoint is None or request is None:
+            return False
+        if execution.run_id != continuation.run_id:
+            return False
+        if execution.stage_id != continuation.current_stage_id:
+            return False
+        if execution.command_id != "angular-migrate-range":
+            return False
+        if execution.template_id != "tpl-angular-migrate-range-v1":
+            return False
+        if execution.status != "succeeded":
+            return False
+        if execution.exit_code != 0:
+            return False
+        # exact rendered arguments via shared full-vector validator
+        parsed = TransformerOrchestrator._validated_migrate_range_arguments(execution)
+        if parsed is None:
+            return False
+        package, from_exact, to_exact = parsed
+        if package != request.package or from_exact != request.from_version or to_exact != request.to_version:
+            return False
+        # canonical migration identity from EXPECTED current lineage
+        try:
+            expected_identity = TransformerOrchestrator._migration_identity(
+                continuation.run_id,
+                continuation.current_stage_id,
+                normalization_root.id if normalization_root is not None else continuation.run_id,
+                normalization_leaf.id if normalization_leaf is not None else continuation.run_id,
+                checkpoint.id,
+                request.package,
+                request.from_version,
+                request.to_version,
+            )
+        except Exception:
+            return False
+        # expected persisted execution idempotency key via SAME helper as queue path
+        try:
+            expected_key = TransformerOrchestrator._expected_migrate_execution_idempotency_key(
+                continuation,
+                continuation.current_stage_id,
+                expected_identity,
+                request.package,
+                request.from_version,
+                request.to_version,
+            )
+        except Exception:
+            return False
+        if execution.idempotency_key != expected_key:
+            return False
+        if execution.checkpoint_id != checkpoint.id:
+            return False
+        if not execution.result_artifact_id or not execution.command_log_artifact_id:
+            return False
+        if not TransformerOrchestrator._verified_execution_artifact(session, execution, execution.result_artifact_id):
+            return False
+        if not TransformerOrchestrator._verified_execution_artifact(session, execution, execution.command_log_artifact_id):
+            return False
+        # V2.2: current migrate commands REQUIRE real persisted authorization;
+        # a missing authorization_id or an unverifiable one is fail-closed.
+        if execution.authorization_id is None:
+            return False
+        auth = session.get(CommandAuthorizationAuditModel, execution.authorization_id)
+        if not TransformerOrchestrator._authorization_matches_execution(auth, execution):
+            return False
+        # runtime/profile authority remains G07-bound — existence check
+        if not execution.template_id:
+            return False
+        return True
+
+    @staticmethod
+    def _authorization_matches_execution(auth, execution) -> bool:
+        """Fail-closed proof that the persisted authorization governs the execution.
+
+        Never swallows exceptions: any anomaly makes the binding invalid.
+        """
+        if auth is None or execution is None:
+            return False
+        if execution.authorization_id is None or auth.id != execution.authorization_id:
+            return False
+        if auth.run_id != execution.run_id:
+            return False
+        if auth.stage_id != execution.stage_id:
+            return False
+        if auth.command_id != execution.command_id:
+            return False
+        if auth.template_id != execution.template_id:
+            return False
+        if auth.decision != "accepted":
+            return False
+        if auth.idempotency_key != execution.idempotency_key:
+            return False
+        if list(auth.arguments or []) != list(execution.arguments or []):
+            return False
+        if auth.correlation_id and execution.correlation_id and auth.correlation_id != execution.correlation_id:
+            return False
+        return True
+
+    @staticmethod
+    def _validated_current_migration_execution_identity(
+        session,
+        execution,
+        continuation,
+        normalization_root,
+        normalization_leaf,
+        checkpoint,
+    ) -> str | None:
+        """Independent ACTUAL-enumeration proof for one migrate execution.
+
+        Validates an ``angular-migrate-range`` execution FROM ITS OWN persisted
+        arguments and idempotency key against the CURRENT lineage, returning the
+        canonical migration identity only when every durable fact holds.  Returns
+        None for any invalid, historical, or unauthorized execution, so G08 can
+        build ACTUAL without deriving it from EXPECTED.
+        """
+        if execution is None or continuation is None or checkpoint is None:
+            return None
+        if execution.run_id != continuation.run_id:
+            return None
+        if execution.stage_id != continuation.current_stage_id:
+            return None
+        if execution.command_id != "angular-migrate-range":
+            return None
+        if execution.template_id != "tpl-angular-migrate-range-v1":
+            return None
+        if execution.status != "succeeded":
+            return None
+        if execution.exit_code != 0:
+            return None
+        # COMPLETE renderer-validated migrate vector — never accept positional
+        # slots that merely hold plausible values.
+        parsed = TransformerOrchestrator._validated_migrate_range_arguments(execution)
+        if parsed is None:
+            return None
+        package, from_exact, to_exact = parsed
+        if not execution.result_artifact_id or not execution.command_log_artifact_id:
+            return None
+        if execution.result_artifact_id == execution.command_log_artifact_id:
+            return None
+        if not TransformerOrchestrator._verified_execution_artifact(session, execution, execution.result_artifact_id):
+            return None
+        if not TransformerOrchestrator._verified_execution_artifact(session, execution, execution.command_log_artifact_id):
+            return None
+        # current migrate commands require real persisted authorization
+        if execution.authorization_id is None:
+            return None
+        auth = session.get(CommandAuthorizationAuditModel, execution.authorization_id)
+        if not TransformerOrchestrator._authorization_matches_execution(auth, execution):
+            return None
+        if not execution.checkpoint_id or execution.checkpoint_id != checkpoint.id:
+            return None
+        identity = TransformerOrchestrator._migration_identity(
+            continuation.run_id,
+            continuation.current_stage_id,
+            normalization_root.id if normalization_root is not None else continuation.run_id,
+            normalization_leaf.id if normalization_leaf is not None else continuation.run_id,
+            checkpoint.id,
+            package,
+            from_exact,
+            to_exact,
+        )
+        expected_key = TransformerOrchestrator._expected_migrate_execution_idempotency_key(
+            continuation,
+            continuation.current_stage_id,
+            identity,
+            package,
+            from_exact,
+            to_exact,
+        )
+        if execution.idempotency_key != expected_key:
+            return None
+        return identity
+
+    @staticmethod
+    def _dependency_normalization_resolver_fingerprints(session, lineage) -> set[str]:
+        """Current-lineage-only resolver fingerprints from verified contexts."""
+        fps: set[str] = set()
+        for attempt in lineage or []:
+            if not attempt.context_pack_artifact_id or not attempt.context_pack_checksum:
+                continue
+            meta = session.get(ArtifactMetadataModel, "metadata-" + attempt.context_pack_artifact_id)
+            if meta is None or meta.checksum != attempt.context_pack_checksum:
+                continue
+            try:
+                run = session.get(MigrationRunModel, attempt.run_id)
+                if run is None or not run.artifact_root:
+                    continue
+                from app.artifact_store import LocalFilesystemArtifactStore
+
+                store = LocalFilesystemArtifactStore(Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root))
+                stored = store.read_artifact(attempt.run_id, meta.relative_path)
+                if stored.ref.checksum != attempt.context_pack_checksum:
+                    continue
+                content = json.loads(stored.content)
+                dep_norm = content.get("dependency_normalization") if isinstance(content, dict) else None
+                if not isinstance(dep_norm, dict):
+                    continue
+                resolver = dep_norm.get("resolver_failure")
+                if isinstance(resolver, dict) and isinstance(resolver.get("fingerprint"), str):
+                    fp = str(resolver.get("fingerprint"))
+                    if fp.startswith("sha256:") and len(fp) == 71:
+                        fps.add(fp)
+            except Exception:
+                continue
+        return fps
+
+    def _is_dependency_normalization_attempt(session, attempt: RepairAttemptModel) -> bool:
+        # Strict V2.2: only proven by proposal artifact containing dependency_manifest_normalization
+        if attempt.proposal_artifact_id and attempt.proposal_checksum:
+            meta = session.get(ArtifactMetadataModel, "metadata-" + attempt.proposal_artifact_id)
+            if meta is not None:
+                try:
+                    run = session.get(MigrationRunModel, attempt.run_id)
+                    if run and run.artifact_root:
+                        from app.artifact_store import LocalFilesystemArtifactStore
+
+                        store = LocalFilesystemArtifactStore(Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root))
+                        stored = store.read_artifact(attempt.run_id, meta.relative_path)
+                        if stored.ref.checksum == attempt.proposal_checksum:
+                            prop = json.loads(stored.content)
+                            ops = prop.get("operations") if isinstance(prop, dict) else None
+                            if isinstance(ops, list) and any(
+                                str(op.get("operation") or op.get("repair_kind") or op.get("schema_version")) in (DEPENDENCY_NORMALIZATION_REPAIR_KIND, DEPENDENCY_NORMALIZATION_SCHEMA_VERSION)
+                                for op in ops if isinstance(op, dict)
+                            ):
+                                return True
+                except Exception:
+                    pass
+        # Strict child: parent proven AND child context is checksum-valid and explicitly says dependency_normalization, ordinal 2, parent/root IDs, fingerprint
+        if attempt.parent_attempt_id:
+            parent = session.get(RepairAttemptModel, attempt.parent_attempt_id)
+            if parent is not None and TransformerOrchestrator._is_dependency_normalization_attempt(session, parent):
+                if not attempt.context_pack_artifact_id or not attempt.context_pack_checksum:
+                    return False
+                if attempt.context_pack_artifact_id == parent.context_pack_artifact_id:
+                    return False
+                meta = session.get(ArtifactMetadataModel, "metadata-" + attempt.context_pack_artifact_id)
+                if meta is None or meta.checksum != attempt.context_pack_checksum:
+                    return False
+                try:
+                    run = session.get(MigrationRunModel, attempt.run_id)
+                    if run is None or not run.artifact_root:
+                        return False
+                    from app.artifact_store import LocalFilesystemArtifactStore
+
+                    store = LocalFilesystemArtifactStore(Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root))
+                    stored = store.read_artifact(attempt.run_id, meta.relative_path)
+                    if stored.ref.checksum != attempt.context_pack_checksum:
+                        return False
+                    content = json.loads(stored.content)
+                    dep_norm = content.get("dependency_normalization") if isinstance(content, dict) else None
+                    if not isinstance(dep_norm, dict):
+                        return False
+                    # Explicit ordinal must be 2
+                    ord_val = dep_norm.get("normalization_ordinal")
+                    if ord_val != 2:
+                        return False
+                    parent_id_val = dep_norm.get("normalization_parent_attempt_id")
+                    if parent_id_val != parent.id:
+                        return False
+                    # root must match proven parent's root
+                    root_id_val = dep_norm.get("normalization_root_attempt_id")
+                    # derive parent root via walking parent chain
+                    _cur = parent
+                    _root = parent
+                    for _ in range(10):
+                        if _cur.parent_attempt_id:
+                            _par = session.get(RepairAttemptModel, _cur.parent_attempt_id)
+                            if _par is not None and TransformerOrchestrator._is_dependency_normalization_attempt(session, _par):
+                                _root = _par
+                                _cur = _par
+                                continue
+                        break
+                    expected_root = _root.id
+                    if root_id_val != expected_root:
+                        return False
+                    prior = dep_norm.get("prior_normalization")
+                    resolver = dep_norm.get("resolver_failure")
+                    if not isinstance(prior, dict) or prior.get("attempt_id") != parent.id:
+                        return False
+                    if prior.get("ordinal") != 1:
+                        return False
+                    if not isinstance(resolver, dict) or not resolver.get("command_execution_id"):
+                        return False
+                    fp = resolver.get("fingerprint")
+                    if not isinstance(fp, str) or not fp.startswith("sha256:") or len(fp) != 71:
+                        return False
+                    # canonical fingerprint must match the resolver execution AND
+                    # the resolver execution must really exist as a proven
+                    # dependency-resolution failure bound to THIS attempt.
+                    exec_obj = session.get(
+                        CommandExecutionModel, str(resolver.get("command_execution_id"))
+                    )
+                    if (
+                        exec_obj is None
+                        or exec_obj.run_id != attempt.run_id
+                        or exec_obj.stage_id != attempt.stage_id
+                        or exec_obj.command_id != "npm-lockfile-generate"
+                        or exec_obj.status != "failed"
+                        or not TransformerOrchestrator._dependency_normalization_resolution_failure(
+                            session,
+                            exec_obj,
+                            run_id=attempt.run_id,
+                            stage_id=attempt.stage_id,
+                        )
+                        or TransformerOrchestrator._dependency_resolution_failure_fingerprint(exec_obj) != fp
+                    ):
+                        return False
+                    # original dependency-failure-bundle evidence must be preserved
+                    if not TransformerOrchestrator._preserved_original_failure_bundle(
+                        session, dep_norm, attempt
+                    ):
+                        return False
+                    # checkpoint binding
+                    try:
+                        chk = session.scalar(
+                            select(StageCheckpointModel).where(
+                                StageCheckpointModel.run_id == attempt.run_id,
+                                StageCheckpointModel.stage_id == attempt.stage_id,
+                                StageCheckpointModel.kind == "pre_angular_update",
+                            ).order_by(StageCheckpointModel.sequence.desc()).limit(1)
+                        )
+                        if chk is None or attempt.checkpoint_id != chk.id:
+                            return False
+                    except Exception:
+                        return False
+                    return True
+                except Exception:
+                    return False
+        return False
+
+    @staticmethod
+    def _dependency_normalization_lineage(session, continuation) -> list:
+        """Current dependency normalization lineage rooted at current failure, ordered root→leaf."""
+        # Find latest normalization attempt for this stage
+        all_norm = []
+        for cand in session.query(RepairAttemptModel).filter(
+            RepairAttemptModel.run_id == continuation.run_id,
+            RepairAttemptModel.stage_id == continuation.current_stage_id,
+        ).order_by(RepairAttemptModel.attempt_number.desc()).all():
+            if TransformerOrchestrator._is_dependency_normalization_attempt(session, cand):
+                all_norm.append(cand)
+        if not all_norm:
+            return []
+        # Latest is most recent normalization attempt
+        latest = all_norm[0]
+        # Walk parent chain to root to get lineage for current failure
+        lineage: list[RepairAttemptModel] = []
+        cur: RepairAttemptModel | None = latest
+        # To avoid infinite loop, limit depth
+        for _ in range(10):
+            if cur is None:
+                break
+            # Only include if it's still a normalization attempt (for child before proposal, parent check ensures)
+            if TransformerOrchestrator._is_dependency_normalization_attempt(session, cur):
+                lineage.append(cur)
+                cur = session.get(RepairAttemptModel, cur.parent_attempt_id) if cur.parent_attempt_id else None
+            else:
+                break
+        lineage.reverse()
+        # If lineage is empty due to parent not proven, fallback to single root
+        if not lineage and latest is not None:
+            # Check if latest itself is root (no parent or parent not normalization)
+            lineage = [latest]
+        return lineage
+
+    @staticmethod
+    def _dependency_normalization_ordinal(session, continuation, attempt: RepairAttemptModel | None) -> int:
+        """Ordinal 1..n within normalization lineage, not global attempt_number."""
+        if attempt is None:
+            return 0
+        lineage = TransformerOrchestrator._dependency_normalization_lineage(session, continuation)
+        for idx, item in enumerate(lineage, start=1):
+            if item.id == attempt.id:
+                return idx
+        return 0
+
+    @staticmethod
+    def _preserved_original_failure_bundle(session, dep_norm, attempt) -> bool:
+        """Fail-closed proof that ``attempt``'s dependency_normalization context
+        preserves the original immutable ``dependency-failure-bundle-v1``.
+
+        Verifies schema version, bundle artifact id + checksum, pre/post
+        evidence, and — when the artifact metadata exists — loads the immutable
+        bundle artifact and verifies checksum + run/stage identity + schema.
+        """
+        if not isinstance(dep_norm, dict):
+            return False
+        if dep_norm.get("failure_bundle_schema_version") != "dependency-failure-bundle-v1":
+            return False
+        artifact_id = dep_norm.get("failure_bundle_artifact_id")
+        checksum = dep_norm.get("failure_bundle_checksum")
+        if not isinstance(artifact_id, str) or not artifact_id:
+            return False
+        if not isinstance(checksum, str) or not checksum.startswith("sha256:"):
+            return False
+        if not isinstance(dep_norm.get("pre_update"), dict):
+            return False
+        if not isinstance(dep_norm.get("post_failure"), dict):
+            return False
+        try:
+            meta = session.get(ArtifactMetadataModel, "metadata-" + artifact_id)
+            if meta is None or not meta.immutable:
+                return False
+            if meta.run_id != attempt.run_id or meta.stage_id != attempt.stage_id:
+                return False
+            if meta.checksum != checksum:
+                return False
+            run = session.get(MigrationRunModel, attempt.run_id)
+            if run is None or not run.artifact_root:
+                return False
+            from app.artifact_store import LocalFilesystemArtifactStore as _StoreBundle
+
+            stored = _StoreBundle(
+                Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+            ).read_artifact(attempt.run_id, meta.relative_path)
+            if stored.ref.checksum != checksum:
+                return False
+            content = json.loads(stored.content)
+            if not isinstance(content, dict):
+                return False
+            if content.get("schema_version") != "dependency-failure-bundle-v1":
+                return False
+            if content.get("run_id") != attempt.run_id or content.get("stage_id") != attempt.stage_id:
+                return False
+            if meta.execution_id is not None and content.get("execution_id") != meta.execution_id:
+                return False
+            return True
+        except Exception:
+            return False
+
+    def _create_dependency_normalization_child_attempt(
+        self, session, continuation, parent_attempt: RepairAttemptModel, lock_exec: CommandExecutionModel | None
+    ) -> RepairAttemptModel:
+        """Fail-atomic creation of Plan-2 child RepairAttempt with NEW context."""
+        # ---- 2A. VALIDATE BEFORE MUTATION ----
+        try:
+            # parent validation
+            if parent_attempt is None:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent attempt missing")
+            if parent_attempt.run_id != continuation.run_id or parent_attempt.stage_id != continuation.current_stage_id:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent run/stage mismatch")
+            if not TransformerOrchestrator._is_dependency_normalization_attempt(session, parent_attempt):
+                # For root, it must be proven via proposal; for legacy fallback, also accept if proposal looks like normalization
+                # but _is_dependency_normalization_attempt already covers root case
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent is not a proven dependency normalization attempt")
+            # current leaf check
+            lineage = TransformerOrchestrator._dependency_normalization_lineage(session, continuation)
+            leaf = lineage[-1] if lineage else None
+            if leaf is None or leaf.id != parent_attempt.id:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent is not current normalization leaf")
+            ordinal = TransformerOrchestrator._dependency_normalization_ordinal(session, continuation, parent_attempt)
+            if ordinal != 1:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", f"Parent ordinal must be 1, got {ordinal}")
+            if not parent_attempt.proposal_artifact_id or not parent_attempt.proposal_checksum:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent proposal missing")
+            meta_prop = session.get(ArtifactMetadataModel, "metadata-" + parent_attempt.proposal_artifact_id)
+            if meta_prop is None or meta_prop.checksum != parent_attempt.proposal_checksum:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent proposal checksum mismatch")
+            try:
+                run_for_parent = session.get(MigrationRunModel, parent_attempt.run_id)
+                if run_for_parent is None or not run_for_parent.artifact_root:
+                    raise ValueError("run missing")
+                from app.artifact_store import LocalFilesystemArtifactStore as _StoreParent
+
+                _store_parent = _StoreParent(Path(run_for_parent.artifact_root).parent, fixed_run_root=Path(run_for_parent.artifact_root))
+                _stored_parent = _store_parent.read_artifact(parent_attempt.run_id, meta_prop.relative_path)
+                if _stored_parent.ref.checksum != parent_attempt.proposal_checksum:
+                    raise ValueError("proposal checksum drift")
+                _p_content = json.loads(_stored_parent.content)
+                _ops = _p_content.get("operations") if isinstance(_p_content, dict) else None
+                if not isinstance(_ops, list) or not any(
+                    str(op.get("operation") or op.get("repair_kind") or op.get("schema_version")) in (DEPENDENCY_NORMALIZATION_REPAIR_KIND, DEPENDENCY_NORMALIZATION_SCHEMA_VERSION)
+                    for op in _ops if isinstance(op, dict)
+                ):
+                    raise ValueError("proposal not normalization")
+            except TransformerStageError:
+                raise
+            except Exception as e:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", f"Parent proposal validation failed: {e}") from e
+
+            # parent context validation
+            if not parent_attempt.context_pack_artifact_id or not parent_attempt.context_pack_checksum:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent context missing")
+            meta_ctx = session.get(ArtifactMetadataModel, "metadata-" + parent_attempt.context_pack_artifact_id)
+            if meta_ctx is None or meta_ctx.checksum != parent_attempt.context_pack_checksum:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent context checksum mismatch")
+            try:
+                run_for_ctx = session.get(MigrationRunModel, parent_attempt.run_id)
+                if run_for_ctx is None or not run_for_ctx.artifact_root:
+                    raise ValueError("run missing for context")
+                from app.artifact_store import LocalFilesystemArtifactStore as _StoreCtx
+
+                _store_ctx = _StoreCtx(Path(run_for_ctx.artifact_root).parent, fixed_run_root=Path(run_for_ctx.artifact_root))
+                _stored_ctx = _store_ctx.read_artifact(parent_attempt.run_id, meta_ctx.relative_path)
+                if _stored_ctx.ref.checksum != parent_attempt.context_pack_checksum:
+                    raise ValueError("context checksum drift")
+                _c_content = json.loads(_stored_ctx.content)
+                dep_norm = _c_content.get("dependency_normalization") if isinstance(_c_content, dict) else None
+                if not isinstance(dep_norm, dict):
+                    raise ValueError("parent context missing dependency_normalization")
+                # Plan-1 parent MUST preserve the original immutable
+                # dependency-failure-bundle-v1 artifact — field presence is
+                # never enough when the artifact metadata can be validated.
+                if not TransformerOrchestrator._preserved_original_failure_bundle(
+                    session, dep_norm, parent_attempt
+                ):
+                    raise ValueError("original dependency failure bundle evidence is missing or unverified")
+            except TransformerStageError:
+                raise
+            except Exception as e:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", f"Parent context validation failed: {e}") from e
+
+            # lock_exec validation — strict Plan-2 eligibility via ONE shared validator
+            if lock_exec is None:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Lock execution missing")
+            if lock_exec.run_id != continuation.run_id or lock_exec.stage_id != continuation.current_stage_id:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Lock execution run/stage mismatch")
+            if lock_exec.command_id != "npm-lockfile-generate":
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Lock execution command_id mismatch")
+            if lock_exec.status != "failed":
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Lock execution must be failed")
+            if not TransformerOrchestrator._dependency_normalization_resolution_failure(
+                session,
+                lock_exec,
+                run_id=continuation.run_id,
+                stage_id=continuation.current_stage_id,
+            ):
+                raise TransformerStageError(
+                    "CHILD_ATTEMPT_CREATION_FAILED",
+                    "Lock execution is not a proven dependency-resolution failure with immutable evidence",
+                )
+            # checkpoint validation
+            checkpoint = session.scalar(
+                select(StageCheckpointModel).where(
+                    StageCheckpointModel.run_id == continuation.run_id,
+                    StageCheckpointModel.stage_id == continuation.current_stage_id,
+                    StageCheckpointModel.kind == "pre_angular_update",
+                ).order_by(StageCheckpointModel.sequence.desc()).limit(1)
+            )
+            if checkpoint is None:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Pre-update checkpoint missing")
+            if checkpoint.run_id != continuation.run_id or checkpoint.stage_id != continuation.current_stage_id:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Checkpoint run/stage mismatch")
+            if checkpoint.kind != "pre_angular_update":
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Checkpoint kind mismatch")
+            # ensure authoritative (fingerprint check)
+            try:
+                from app.services.transformer_stage_service import TransformerStageService as _TSS
+
+                auth_fp = _TSS().authoritative_checkpoint_fingerprint(session, checkpoint)
+                if auth_fp is None:
+                    raise ValueError("checkpoint not authoritative")
+            except Exception as e:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", f"Checkpoint not authoritative: {e}") from e
+
+        except TransformerStageError:
+            raise
+        except Exception as error:
+            raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", str(error)[:500]) from error
+
+        # ---- 2B/C. BUILD PLAN-2 CONTEXT IN MEMORY ----
+        try:
+            # Re-read parent context for cloning
+            run = session.get(MigrationRunModel, parent_attempt.run_id)
+            if run is None or not run.artifact_root:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Run artifact root missing for context")
+            from app.artifact_store import LocalFilesystemArtifactStore
+
+            store = LocalFilesystemArtifactStore(Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root))
+            parent_meta = session.get(ArtifactMetadataModel, "metadata-" + parent_attempt.context_pack_artifact_id)
+            if parent_meta is None:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent context metadata missing")
+            parent_stored = store.read_artifact(parent_attempt.run_id, parent_meta.relative_path)
+            if parent_stored.ref.checksum != parent_attempt.context_pack_checksum:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent context checksum drift on read")
+            parent_content = json.loads(parent_stored.content)
+            if not isinstance(parent_content, dict):
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Parent context not JSON object")
+
+            # Load parent proposal for prior
+            parent_proposal = None
+            pm = session.get(ArtifactMetadataModel, "metadata-" + parent_attempt.proposal_artifact_id)
+            if pm is not None:
+                try:
+                    ps = store.read_artifact(parent_attempt.run_id, pm.relative_path)
+                    if ps.ref.checksum == parent_attempt.proposal_checksum:
+                        parent_proposal = json.loads(ps.content)
+                except Exception:
+                    parent_proposal = None
+
+            # Canonical fingerprint
+            fingerprint = TransformerOrchestrator._dependency_resolution_failure_fingerprint(lock_exec)
+
+            # Diagnosis
+            diagnosis = None
+            try:
+                from app.services.failure_evidence_service import FailureEvidenceService as _FES
+
+                norm_diag = {
+                    "command_id": lock_exec.command_id,
+                    "failure_code": lock_exec.failure_code,
+                    "failure_message": lock_exec.failure_message,
+                    "exit_code": lock_exec.exit_code,
+                }
+                diagnosis = _FES.diagnose_npm_eresolve_failure(norm_diag) or _FES.diagnose_angular_update_failure(norm_diag)
+            except Exception:
+                diagnosis = None
+
+            # Build new dependency_normalization
+            orig_dep_norm = parent_content.get("dependency_normalization") if isinstance(parent_content.get("dependency_normalization"), dict) else {}
+            new_dep_norm = dict(orig_dep_norm) if isinstance(orig_dep_norm, dict) else {}
+            # Find root id via lineage
+            lineage = TransformerOrchestrator._dependency_normalization_lineage(session, continuation)
+            root = lineage[0] if lineage else parent_attempt
+            root_id = root.id if root else parent_attempt.id
+
+            new_dep_norm["normalization_root_attempt_id"] = root_id
+            new_dep_norm["normalization_parent_attempt_id"] = parent_attempt.id
+            new_dep_norm["normalization_ordinal"] = 2
+            new_dep_norm["prior_normalization"] = {
+                "attempt_id": parent_attempt.id,
+                "ordinal": 1,
+                "proposal_artifact_id": parent_attempt.proposal_artifact_id,
+                "proposal_checksum": parent_attempt.proposal_checksum,
+                "parent_proposal": parent_proposal,
+            }
+            new_dep_norm["resolver_failure"] = {
+                "schema_version": "dependency-normalization-resolver-failure-v1",
+                "command_execution_id": lock_exec.id,
+                "command_id": "npm-lockfile-generate",
+                "exit_code": lock_exec.exit_code,
+                "failure_code": lock_exec.failure_code,
+                "normalized_failure": (lock_exec.failure_message or "")[:2000].strip().lower(),
+                "diagnosis": diagnosis if isinstance(diagnosis, dict) else None,
+                "fingerprint": fingerprint,
+                "result_artifact_id": lock_exec.result_artifact_id,
+                "command_log_artifact_id": lock_exec.command_log_artifact_id,
+            }
+            # Clone safe structure
+            new_content = dict(parent_content)
+            new_content["dependency_normalization"] = new_dep_norm
+
+            # Plan-2 ADDS prior_normalization + resolver_failure; it must NEVER
+            # replace or delete the original dependency-failure-bundle evidence.
+            if new_dep_norm.get("failure_bundle_artifact_id") != orig_dep_norm.get("failure_bundle_artifact_id"):
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Child context dropped the original failure bundle artifact")
+            if new_dep_norm.get("failure_bundle_checksum") != orig_dep_norm.get("failure_bundle_checksum"):
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Child context dropped the original failure bundle checksum")
+
+            # Validate new_content has required bundle preservation
+            if not isinstance(new_content.get("dependency_normalization"), dict):
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "New context missing dependency_normalization")
+
+        except TransformerStageError:
+            raise
+        except Exception as error:
+            raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", f"Context build failed: {error}"[:500]) from error
+
+        # ---- 2D. WRITE ARTIFACT BEFORE CHILD ROW ----
+        try:
+            # find next global number for child id without yet persisting
+            max_attempt = session.query(RepairAttemptModel).filter(
+                RepairAttemptModel.run_id == continuation.run_id,
+                RepairAttemptModel.stage_id == continuation.current_stage_id,
+            ).order_by(RepairAttemptModel.attempt_number.desc()).first()
+            next_number = (max_attempt.attempt_number + 1) if max_attempt else 1
+            child_id = f"repair-{continuation.current_stage_id}-{next_number}"
+            # Also need checkpoint for child (already validated above)
+            # Re-fetch checkpoint to ensure fresh
+            checkpoint = session.scalar(
+                select(StageCheckpointModel).where(
+                    StageCheckpointModel.run_id == continuation.run_id,
+                    StageCheckpointModel.stage_id == continuation.current_stage_id,
+                    StageCheckpointModel.kind == "pre_angular_update",
+                ).order_by(StageCheckpointModel.sequence.desc()).limit(1)
+            )
+            if checkpoint is None:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Checkpoint missing before artifact write")
+            fingerprint = TransformerOrchestrator._dependency_resolution_failure_fingerprint(lock_exec)
+            new_relative = f"05_repairs/{continuation.current_stage_id}/{child_id}-context.json"
+            content_str = json.dumps(new_content, sort_keys=True, indent=2)
+            checksum = "sha256:" + hashlib.sha256(content_str.encode("utf-8")).hexdigest()
+            new_stored = store.write_text_artifact(
+                continuation.run_id,
+                new_relative,
+                content_str,
+                ArtifactType.JSON,
+                stage_id=continuation.current_stage_id,
+                created_by="dependency-normalization-child",
+                created_at=datetime.now(UTC),
+                input_hashes={"parent_context": parent_attempt.context_pack_checksum or "", "resolver_failure": lock_exec.id if lock_exec else ""},
+                policy_version="repair-context-pack-v1",
+            )
+            # read-back verification
+            stored_back = store.read_artifact(continuation.run_id, new_stored.ref.relative_path)
+            if stored_back.ref.checksum != new_stored.ref.checksum:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Artifact read-back checksum mismatch")
+            if stored_back.ref.checksum != checksum:
+                # stored checksum should equal computed
+                if stored_back.ref.checksum != checksum and new_stored.ref.checksum != checksum:
+                    raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Stored checksum does not match computed")
+            back_content = json.loads(stored_back.content)
+            if not isinstance(back_content, dict):
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Read-back not JSON object")
+            dep_norm_back = back_content.get("dependency_normalization")
+            if not isinstance(dep_norm_back, dict):
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Read-back missing dependency_normalization")
+            if dep_norm_back.get("normalization_root_attempt_id") != root_id:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Read-back root mismatch")
+            if dep_norm_back.get("normalization_parent_attempt_id") != parent_attempt.id:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Read-back parent mismatch")
+            if dep_norm_back.get("normalization_ordinal") != 2:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Read-back ordinal mismatch")
+            prior_back = dep_norm_back.get("prior_normalization")
+            if not isinstance(prior_back, dict) or prior_back.get("attempt_id") != parent_attempt.id:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Read-back prior attempt mismatch")
+            if prior_back.get("ordinal") != 1:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Read-back prior ordinal mismatch")
+            resolver_back = dep_norm_back.get("resolver_failure")
+            if not isinstance(resolver_back, dict) or resolver_back.get("command_execution_id") != lock_exec.id:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Read-back resolver execution mismatch")
+            if resolver_back.get("fingerprint") != fingerprint:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Read-back fingerprint mismatch")
+            parent_dep_norm_back = parent_content.get("dependency_normalization") if isinstance(parent_content.get("dependency_normalization"), dict) else {}
+            if dep_norm_back.get("failure_bundle_artifact_id") != parent_dep_norm_back.get("failure_bundle_artifact_id"):
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Read-back lost the original failure bundle artifact")
+            if dep_norm_back.get("failure_bundle_checksum") != parent_dep_norm_back.get("failure_bundle_checksum"):
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Read-back lost the original failure bundle checksum")
+        except TransformerStageError:
+            raise
+        except Exception as error:
+            raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", f"Artifact write failed: {error}"[:500]) from error
+
+        # ---- 2E. DB TRANSACTION BINDING ----
+        try:
+            child = RepairAttemptModel(
+                id=child_id,
+                run_id=continuation.run_id,
+                stage_id=continuation.current_stage_id,
+                attempt_number=next_number,
+                status="evidence_frozen",
+                risk_level=parent_attempt.risk_level or "unknown",
+                diagnosis=f"dependency_normalization_ordinal_2; parent={parent_attempt.id}",
+                checkpoint_id=checkpoint.id,
+                failure_evidence_artifact_id=parent_attempt.failure_evidence_artifact_id,
+                failure_evidence_checksum=parent_attempt.failure_evidence_checksum,
+                failure_route_artifact_id=parent_attempt.failure_route_artifact_id,
+                failure_route_checksum=parent_attempt.failure_route_checksum,
+                context_pack_artifact_id=new_stored.ref.artifact_id,
+                context_pack_checksum=new_stored.ref.checksum,
+                proposal_artifact_id=None,
+                proposal_checksum=None,
+                parent_attempt_id=parent_attempt.id,
+                parent_review_artifact_id=parent_attempt.review_artifact_id,
+                parent_review_checksum=parent_attempt.review_checksum,
+                pre_fingerprint=checkpoint.workspace_fingerprint if hasattr(checkpoint, "workspace_fingerprint") else None,
+                failure_fingerprint=parent_attempt.failure_fingerprint,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            metadata = ArtifactMetadataModel(
+                id="metadata-" + new_stored.ref.artifact_id,
+                run_id=child.run_id,
+                stage_id=child.stage_id,
+                artifact_type=new_stored.ref.artifact_type.value,
+                relative_path=new_stored.ref.relative_path,
+                checksum=new_stored.ref.checksum,
+                schema_version=new_stored.envelope.schema_version,
+                created_at=new_stored.ref.created_at,
+                finalized_at=new_stored.ref.created_at,
+                immutable=True,
+                execution_id=lock_exec.id if lock_exec else None,
+                owner_reference=child.id,
+                correlation_id=lock_exec.correlation_id if lock_exec and hasattr(lock_exec, "correlation_id") else None,
+                safe_metadata={"schema_version": "repair-context-pack-v1", "child_of": parent_attempt.id},
+            )
+            # Check metadata not already exists (idempotency)
+            if session.get(ArtifactMetadataModel, metadata.id) is not None:
+                raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", "Context metadata already exists")
+            # ---- PHASE A: OUTER FLUSH ----
+            # Seal already-known-safe outer session mutations (recovery-operation
+            # rows, workspace-binding fingerprint updates) into the OUTER
+            # transaction BEFORE the child savepoint.  A failure here POISONS the
+            # Session: SQLAlchemy leaves it inactive until rollback, so it must
+            # escape session_scope via _Plan2OuterTransactionFailure — never be
+            # converted into a same-session blocker.
+            try:
+                session.flush()
+            except Exception as error:
+                raise _Plan2OuterTransactionFailure(
+                    "CHILD_ATTEMPT_CREATION_FAILED",
+                    f"DB outer flush failed: {error}"[:500],
+                ) from error
+            # ---- PHASE B: CHILD SAVEPOINT ----
+            # Child + metadata rows land in a SAVEPOINT established via
+            # begin_nested().  begin_nested() automatically flushes pending state
+            # BEFORE creating the savepoint; after PHASE A there is none, so the
+            # savepoint is created cleanly.  The savepoint_active flag is set by
+            # control flow AFTER the with-body begins, distinguishing a failure
+            # establishing the SAVEPOINT (poisoned session -> fatal boundary
+            # failure) from a failure flushing child+metadata INSIDE an
+            # established SAVEPOINT (nested rollback -> outer Session stays
+            # usable -> same-session typed block allowed).
+            savepoint_active = False
+            try:
+                with session.begin_nested():
+                    savepoint_active = True
+                    session.add(metadata)
+                    session.add(child)
+                    session.flush()
+            except _Plan2OuterTransactionFailure:
+                raise
+            except TransformerStageError:
+                raise
+            except Exception as error:
+                if savepoint_active:
+                    raise TransformerStageError(
+                        "CHILD_ATTEMPT_CREATION_FAILED",
+                        f"DB binding failed: {error}"[:500],
+                    ) from error
+                raise _Plan2OuterTransactionFailure(
+                    "CHILD_ATTEMPT_CREATION_FAILED",
+                    f"DB savepoint establishment failed: {error}"[:500],
+                ) from error
+            return child
+        except _Plan2OuterTransactionFailure:
+            raise
+        except TransformerStageError:
+            raise
+        except Exception as error:
+            raise TransformerStageError("CHILD_ATTEMPT_CREATION_FAILED", f"DB binding failed: {error}"[:500]) from error
+
     def _lockfile_generation(self, continuation_id: str, worker_id: str) -> None:
+        try:
+            with self._scope() as session:
+                continuation = self._owned(session, continuation_id, worker_id)
+                try:
+                    # P4 lock generation must run after package.json once (APPLY_REPAIR); next is final_install via repair_revalidate stub
+                    # but _start_revalidation will handle final_install→migrate_packages→target_inspection flow
+                    self._lockfiles.advance(
+                        session, continuation, next_node="repair_revalidate"
+                    )
+                except LockfileGenerationError as error:
+                    if error.code == DEPENDENCY_NORMALIZATION_RESOLUTION_FAILED:
+                        # P0-3: real attempt 1/2 with lineage + materially new fingerprint (not workspace fingerprint)
+                        # Use RepairAttemptModel lineage, not MigrationPlanModel.version
+                        try:
+                            # Find latest dependency normalization attempt for this stage
+                            latest_norm = None
+                            for cand in session.query(RepairAttemptModel).filter(
+                                RepairAttemptModel.run_id == continuation.run_id,
+                                RepairAttemptModel.stage_id == continuation.current_stage_id,
+                            ).order_by(RepairAttemptModel.attempt_number.desc()).all():
+                                # Check if this attempt's proposal is dependency normalization
+                                if cand.proposal_artifact_id and cand.proposal_checksum:
+                                    meta = session.get(ArtifactMetadataModel, "metadata-" + cand.proposal_artifact_id)
+                                    if meta is not None:
+                                        try:
+                                            run_for_norm = session.get(MigrationRunModel, continuation.run_id)
+                                            if run_for_norm and run_for_norm.artifact_root:
+                                                store_norm = LocalFilesystemArtifactStore(Path(run_for_norm.artifact_root).parent, fixed_run_root=Path(run_for_norm.artifact_root))
+                                                stored_norm = store_norm.read_artifact(continuation.run_id, meta.relative_path)
+                                                prop = json.loads(stored_norm.content)
+                                                ops = prop.get("operations") if isinstance(prop, dict) else None
+                                                if isinstance(ops, list) and any(
+                                                    str(op.get("operation") or op.get("repair_kind") or op.get("schema_version")) in (DEPENDENCY_NORMALIZATION_REPAIR_KIND, DEPENDENCY_NORMALIZATION_SCHEMA_VERSION)
+                                                    for op in ops if isinstance(op, dict)
+                                                ):
+                                                    latest_norm = cand
+                                                    break
+                                        except Exception:
+                                            continue
+                            if latest_norm is None:
+                                self._block(session, continuation, error.code, error.message)
+                                return
+                            # Fix 1/2: use strict ordinal, not global attempt_number
+                            current_ordinal = self._dependency_normalization_ordinal(session, continuation, latest_norm)
+                            if current_ordinal == 0:
+                                # Fallback: if ordinal is 0 but latest_norm exists, treat as 1 (root)
+                                current_ordinal = 1
+                            # Compute fingerprint for current lock failure execution via ONE helper
+                            lock_exec = None
+                            lock_step_tmp = session.scalar(
+                                select(StageStepModel).where(
+                                    StageStepModel.stage_id == continuation.current_stage_id,
+                                    StageStepModel.name == "lockfile_generation-0",
+                                )
+                            )
+                            if lock_step_tmp is not None and lock_step_tmp.execution_id:
+                                lock_exec = session.get(CommandExecutionModel, lock_step_tmp.execution_id)
+                            if lock_exec is None:
+                                self._block(session, continuation, "CAUSAL_EXECUTION_MISSING", "Lockfile failure is not bound to its stage step")
+                                return
+                            current_fp = TransformerOrchestrator._dependency_resolution_failure_fingerprint(lock_exec)
+                            if current_ordinal == 1:
+                                # Lineage-scoped NO_PROGRESS: only fingerprints from CURRENT lineage
+                                lineage = TransformerOrchestrator._dependency_normalization_lineage(session, continuation)
+                                prev_fps = TransformerOrchestrator._dependency_normalization_resolver_fingerprints(session, lineage)
+                                if current_fp in prev_fps:
+                                    self._block(session, continuation, "DEPENDENCY_NORMALIZATION_NO_PROGRESS", "Identical npm constraint failure — no progress")
+                                    return
+                                # Reconstruct checkpoint for plan 2
+                                try:
+                                    self._restore_angular_update_checkpoint(session, continuation)
+                                except TransformerStageError as e:
+                                    self._block(session, continuation, e.code, e.message)
+                                    return
+                                lineage2 = TransformerOrchestrator._dependency_normalization_lineage(session, continuation)
+                                next_ordinal = len(lineage2) + 1
+                                if next_ordinal > 2:
+                                    self._block(session, continuation, "DEPENDENCY_NORMALIZATION_ATTEMPTS_EXHAUSTED", "No third normalization attempt")
+                                    return
+                                try:
+                                    child = self._create_dependency_normalization_child_attempt(session, continuation, latest_norm, lock_exec)
+                                except _Plan2OuterTransactionFailure:
+                                    raise
+                                except TransformerStageError as e:
+                                    self._block(session, continuation, e.code, e.message)
+                                    return
+                                except Exception as e:
+                                    self._block(session, continuation, "CHILD_ATTEMPT_CREATION_FAILED", str(e))
+                                    return
+                                self._queue(continuation, "propose_repair")
+                                return
+                            elif current_ordinal >= 2:
+                                self._block(session, continuation, "DEPENDENCY_NORMALIZATION_ATTEMPTS_EXHAUSTED", "Dependency normalization attempts exhausted (max 2)")
+                                return
+                            else:
+                                self._block(session, continuation, error.code, error.message)
+                                return
+                        except _Plan2OuterTransactionFailure:
+                            raise
+                        except Exception as inner_e:
+                            # If helper fails, fallback to block
+                            if isinstance(inner_e, TransformerStageError):
+                                self._block(session, continuation, inner_e.code, inner_e.message)
+                            else:
+                                self._block(session, continuation, "DEPENDENCY_NORMALIZATION_RETRY_FAILED", str(inner_e))
+                            return
+                        self._block(session, continuation, error.code, error.message)
+                        return
+                    if error.code == LOCKFILE_GENERATION_ETARGET:
+                        self._validation_failure(
+                            session,
+                            continuation,
+                            error,
+                            event_reason=(
+                                "lockfile-generation command failed with ETARGET; "
+                                "failure classification queued"
+                            ),
+                        )
+                    elif error.code == LOCKFILE_GENERATION_ERESOLVE:
+                        self._validation_failure(
+                            session,
+                            continuation,
+                            error,
+                            event_reason=(
+                                "lockfile-generation command failed with ERESOLVE; "
+                                "failure classification queued"
+                            ),
+                        )
+                    else:
+                        self._block(session, continuation, error.code, error.message)
+
+        except _Plan2OuterTransactionFailure as failure:
+            # The old session_scope has already rolled back and closed the
+            # poisoned Session.  Persist the durable block in a FRESH healthy
+            # transaction: reload the continuation under the same ownership and
+            # write CHILD_ATTEMPT_CREATION_FAILED after the old transaction is gone.
+            with self._scope() as fresh_session:
+                fresh_continuation = self._owned(fresh_session, continuation_id, worker_id)
+                self._block(fresh_session, fresh_continuation, failure.code, failure.message)
+            return
+
+    @staticmethod
+    def _npm_evidence_materially_changed(session, continuation) -> bool:
+        # max 2 plans: plan2 only when npm evidence materially changed (package.json/lockfile)
+        # ponytail: check lockfile or package.json fingerprint vs checkpoint
+        try:
+            binding = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == continuation.run_id,
+                    StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            if binding is None:
+                return False
+            # any pending package.json diff vs pre_angular_update checkpoint is material
+            checkpoint = session.scalar(
+                select(StageCheckpointModel)
+                .where(
+                    StageCheckpointModel.run_id == continuation.run_id,
+                    StageCheckpointModel.stage_id == continuation.current_stage_id,
+                    StageCheckpointModel.kind == "pre_angular_update",
+                )
+                .order_by(StageCheckpointModel.sequence.desc())
+            )
+            if checkpoint is None:
+                return False
+            return binding.workspace_fingerprint != checkpoint.workspace_fingerprint
+        except Exception:
+            return False
+
+    def _migrate_packages(self, continuation_id: str, worker_id: str) -> None:
+        # P5 migrate-only: discovery then one migrate per package via tpl-angular-migrate-range-v1
+        # P0-2: sequential execution, P0-3: exact resolved versions via PackageMigrationService
+        # NG_DISABLE_VERSION_CHECK=true, no --force, no --allow-dirty enforced by renderer
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
-            try:
-                self._lockfiles.advance(
-                    session, continuation, next_node="repair_revalidate"
+            binding = self._stage._binding(session, continuation)
+            # Handle already-running or recently queued migration: wait for terminal
+            step = session.scalar(
+                select(StageStepModel).where(
+                    StageStepModel.stage_id == continuation.current_stage_id,
+                    StageStepModel.name == "migrate_packages-0",
                 )
-            except LockfileGenerationError as error:
-                if error.code == LOCKFILE_GENERATION_ETARGET:
-                    self._validation_failure(
+            )
+            execution = session.get(CommandExecutionModel, step.execution_id) if step and step.execution_id else None
+            if step is not None and execution is not None and execution.status in {"pending", "running", "queued"}:
+                # Still in flight — wait for terminal via normal command polling
+                self._stage._wait_for_command(session, continuation, execution.id)
+                return
+            if execution is not None and execution.status != "succeeded":
+                if execution.status in {"failed", "timed_out", "cancelled", "interrupted"}:
+                    # Migration failure → classify/repair path (fail closed for now as BLOCK)
+                    self._block(session, continuation, execution.failure_code or "MIGRATE_PACKAGE_FAILED", execution.failure_message or "Package migration failed")
+                    return
+            # Discover all required migrations using exact resolved versions (P0-3, P0-4)
+            try:
+                from app.services.package_migration_service import PackageMigrationService, PackageMigrationError
+
+                chk = self._angular_update_recovery_checkpoint(session, continuation) or session.scalar(
+                    select(StageCheckpointModel)
+                    .where(
+                        StageCheckpointModel.run_id == continuation.run_id,
+                        StageCheckpointModel.stage_id == continuation.current_stage_id,
+                        StageCheckpointModel.kind == "pre_angular_update",
+                    )
+                    .order_by(StageCheckpointModel.sequence.desc())
+                )
+                chk_path = Path(chk.workspace_path) if chk is not None else Path(binding.workspace_path)
+                # P0-4: pass normalization actions for REMOVE/REPLACE ambiguity check
+                _norm_actions = None
+                try:
+                    _lineage_for_actions = self._dependency_normalization_lineage(session, continuation)
+                    _leaf_for_actions = _lineage_for_actions[-1] if _lineage_for_actions else None
+                    if _leaf_for_actions is not None and _leaf_for_actions.proposal_artifact_id:
+                        _meta_act = session.get(ArtifactMetadataModel, "metadata-" + _leaf_for_actions.proposal_artifact_id)
+                        if _meta_act is not None:
+                            _run_act = session.get(MigrationRunModel, _leaf_for_actions.run_id)
+                            if _run_act and _run_act.artifact_root:
+                                from app.artifact_store import LocalFilesystemArtifactStore as _StoreAct
+
+                                _store_act = _StoreAct(Path(_run_act.artifact_root).parent, fixed_run_root=Path(_run_act.artifact_root))
+                                _prop_act = json.loads(_store_act.read_artifact(_leaf_for_actions.run_id, _meta_act.relative_path).content)
+                                _ops_act = _prop_act.get("operations") if isinstance(_prop_act, dict) else None
+                                if isinstance(_ops_act, list):
+                                    _norm_actions = {}
+                                    for _op in _ops_act:
+                                        if isinstance(_op, dict):
+                                            _pkg = _op.get("package") or _op.get("target_package") or _op.get("name")
+                                            if isinstance(_pkg, str):
+                                                _norm_actions[_pkg] = _op
+                except Exception:
+                    _norm_actions = None
+                discovered = PackageMigrationService().discover(chk_path, Path(binding.workspace_path), _norm_actions)
+            except PackageMigrationError as error:
+                self._block(session, continuation, error.code, error.message)
+                return
+            except Exception as error:
+                # Any discovery exception beyond PackageMigrationError is unexpected — fail closed
+                self._block(session, continuation, "PACKAGE_MIGRATION_DISCOVERY_FAILED", str(error))
+                return
+            if not discovered:
+                # No migrations — handle post-migration successor lock if needed, else target inspection
+                if step is not None and step.status == "PASSED" and execution is not None and execution.status == "succeeded":
+                    live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+                    if live != binding.workspace_fingerprint:
+                        binding.workspace_fingerprint = live
+                        binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
+                        binding.last_verified_fingerprint = live
+                        binding.last_verified_at = datetime.now(UTC)
+                    chk2 = session.scalar(
+                        select(StageCheckpointModel)
+                        .where(
+                            StageCheckpointModel.run_id == continuation.run_id,
+                            StageCheckpointModel.stage_id == continuation.current_stage_id,
+                            StageCheckpointModel.kind == "pre_angular_update",
+                        )
+                        .order_by(StageCheckpointModel.sequence.desc())
+                    )
+                    if chk2 is not None and live != chk2.workspace_fingerprint:
+                        lock_step = session.scalar(
+                            select(StageStepModel).where(
+                                StageStepModel.stage_id == continuation.current_stage_id,
+                                StageStepModel.name == "lockfile_generation-0",
+                            )
+                        )
+                        if lock_step is None or lock_step.status != "PASSED":
+                            self._stage.queue_lockfile_generation(session, continuation, attempt_key="post-migrate:lock")
+                            return
+                self._queue(continuation, "target_inspection")
+                return
+            # P0-5: lineage-proven migration execution via persisted idempotency + checkpoint
+            _lineage_for_migrate = self._dependency_normalization_lineage(session, continuation)
+            _root_for_migrate = _lineage_for_migrate[0] if _lineage_for_migrate else None
+            _leaf_for_migrate = _lineage_for_migrate[-1] if _lineage_for_migrate else None
+            if _leaf_for_migrate is None:
+                try:
+                    _leaf_for_migrate = session.query(RepairAttemptModel).filter(
+                        RepairAttemptModel.run_id == continuation.run_id,
+                        RepairAttemptModel.stage_id == continuation.current_stage_id,
+                    ).order_by(RepairAttemptModel.attempt_number.desc()).first()
+                    if _leaf_for_migrate is not None and not self._is_dependency_normalization_attempt(session, _leaf_for_migrate):
+                        _leaf_for_migrate = None
+                except Exception:
+                    _leaf_for_migrate = None
+                if _leaf_for_migrate is not None and _root_for_migrate is None:
+                    _root_for_migrate = _leaf_for_migrate
+            _root_id_m = _root_for_migrate.id if _root_for_migrate else continuation.run_id
+            _attempt_id_m = _leaf_for_migrate.id if _leaf_for_migrate else continuation.run_id
+            _checkpoint_id_m = chk.id if chk is not None and hasattr(chk, "id") else "no-checkpoint"
+            # Build succeeded set via PERSISTED execution identity validator (no timestamp authority)
+            succeeded_identities: set[str] = set()
+            for _req in discovered:
+                try:
+                    _req_ident = self._migration_identity(
+                        continuation.run_id,
+                        continuation.current_stage_id,
+                        _root_id_m,
+                        _attempt_id_m,
+                        _checkpoint_id_m,
+                        _req.package,
+                        _req.from_version,
+                        _req.to_version,
+                    )
+                    _expected_key = self._expected_migrate_execution_idempotency_key(
+                        continuation,
+                        continuation.current_stage_id,
+                        _req_ident,
+                        _req.package,
+                        _req.from_version,
+                        _req.to_version,
+                    )
+                    _ex = session.scalar(
+                        select(CommandExecutionModel).where(
+                            CommandExecutionModel.run_id == continuation.run_id,
+                            CommandExecutionModel.stage_id == continuation.current_stage_id,
+                            CommandExecutionModel.idempotency_key == _expected_key,
+                        )
+                    )
+                    if _ex is not None and self._current_migration_execution_matches(
+                        session,
+                        execution=_ex,
+                        continuation=continuation,
+                        normalization_root=_root_for_migrate,
+                        normalization_leaf=_leaf_for_migrate,
+                        checkpoint=chk,
+                        request=_req,
+                    ):
+                        succeeded_identities.add(_req_ident)
+                except Exception:
+                    continue
+            def _is_succeeded(req) -> bool:
+                try:
+                    _req_ident = self._migration_identity(
+                        continuation.run_id,
+                        continuation.current_stage_id,
+                        _root_id_m,
+                        _attempt_id_m,
+                        _checkpoint_id_m,
+                        req.package,
+                        req.from_version,
+                        req.to_version,
+                    )
+                    return _req_ident in succeeded_identities
+                except Exception:
+                    return False
+            # Post-migration handling after at least one success: check if all discovered done
+            if step is not None and step.status == "PASSED" and execution is not None and execution.status == "succeeded":
+                remaining = [p for p in discovered if not _is_succeeded(p)]
+                if not remaining:
+                    live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+                    if live != binding.workspace_fingerprint:
+                        binding.workspace_fingerprint = live
+                        binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
+                        binding.last_verified_fingerprint = live
+                        binding.last_verified_at = datetime.now(UTC)
+                    chk3 = session.scalar(
+                        select(StageCheckpointModel)
+                        .where(
+                            StageCheckpointModel.run_id == continuation.run_id,
+                            StageCheckpointModel.stage_id == continuation.current_stage_id,
+                            StageCheckpointModel.kind == "pre_angular_update",
+                        )
+                        .order_by(StageCheckpointModel.sequence.desc())
+                    )
+                    if chk3 is not None and live != chk3.workspace_fingerprint:
+                        lock_step = session.scalar(
+                            select(StageStepModel).where(
+                                StageStepModel.stage_id == continuation.current_stage_id,
+                                StageStepModel.name == "lockfile_generation-0",
+                            )
+                        )
+                        if lock_step is None or lock_step.status != "PASSED":
+                            self._stage.queue_lockfile_generation(session, continuation, attempt_key="post-migrate:lock")
+                            return
+                    self._queue(continuation, "target_inspection")
+                    return
+                # Remaining migrations exist — queue next with persisted checkpoint binding
+                pkg = remaining[0]
+                try:
+                    _mig_ident_r = self._migration_identity(
+                        continuation.run_id,
+                        continuation.current_stage_id,
+                        _root_id_m,
+                        _attempt_id_m,
+                        _checkpoint_id_m,
+                        pkg.package,
+                        pkg.from_version,
+                        pkg.to_version,
+                    )
+                    self._stage.queue_migrate_packages(
                         session,
                         continuation,
-                        error,
-                        event_reason=(
-                            "lockfile-generation command failed with ETARGET; "
-                            "failure classification queued"
-                        ),
+                        attempt_key=f"migrate:{_mig_ident_r}",
+                        package=pkg.package,
+                        from_version=pkg.from_version,
+                        to_version=pkg.to_version,
+                        checkpoint_id=chk.id if chk is not None else None,
                     )
-                elif error.code == LOCKFILE_GENERATION_ERESOLVE:
-                    self._validation_failure(
-                        session,
-                        continuation,
-                        error,
-                        event_reason=(
-                            "lockfile-generation command failed with ERESOLVE; "
-                            "failure classification queued"
-                        ),
-                    )
-                else:
+                except TransformerStageError as error:
                     self._block(session, continuation, error.code, error.message)
+                    return
+                return
+            # No prior success or first entry — queue first remaining (persist checkpoint)
+            remaining_initial = [p for p in discovered if not _is_succeeded(p)]
+            pkg = remaining_initial[0] if remaining_initial else discovered[0]
+            try:
+                _mig_ident_i = self._migration_identity(
+                    continuation.run_id,
+                    continuation.current_stage_id,
+                    _root_id_m,
+                    _attempt_id_m,
+                    _checkpoint_id_m,
+                    pkg.package,
+                    pkg.from_version,
+                    pkg.to_version,
+                )
+                self._stage.queue_migrate_packages(
+                    session,
+                    continuation,
+                    attempt_key=f"migrate:{_mig_ident_i}",
+                    package=pkg.package,
+                    from_version=pkg.from_version,
+                    to_version=pkg.to_version,
+                    checkpoint_id=chk.id if chk is not None else None,
+                )
+            except TransformerStageError as error:
+                self._block(session, continuation, error.code, error.message)
+                return
+            return
 
     @staticmethod
     def _claim_current_continuation_for_apply(
@@ -2731,8 +5280,12 @@ class TransformerOrchestrator:
                             step.status = "PENDING"
                             step.execution_id = None
                             step.completed_at = None
-                    attempt.status = "revalidating_affected"
-                    attempt.updated_at = datetime.now(UTC)
+                    RepairLifecycleService.transition_in_session(
+                        session,
+                        attempt,
+                        "revalidating_affected",
+                        reason="repair validation restarted affected checks",
+                    )
                 if dependency_repair and attempt.status == "revalidating_affected":
                     if not self._successful_materialization_exists(
                         session, continuation, attempt
@@ -2750,6 +5303,17 @@ class TransformerOrchestrator:
                             return
                         if outcome != "passed":
                             return
+                        # V2.2 P5: after P4 lock + final_install materialization, run migrate-only before validation
+                        if self._is_normalization_proposal(proposal):
+                            step = session.scalar(
+                                select(StageStepModel).where(
+                                    StageStepModel.stage_id == continuation.current_stage_id,
+                                    StageStepModel.name == "migrate_packages-0",
+                                )
+                            )
+                            if step is None or step.status != "PASSED":
+                                self._queue(continuation, "migrate_packages")
+                                return
                 affected_attempt_key = (
                     f"{attempt.id}:affected:materialized"
                     if dependency_repair
@@ -2780,18 +5344,53 @@ class TransformerOrchestrator:
                 | StageStepModel.name.like("tests-%")
                 | StageStepModel.name.like("lint-%"),
             ):
+                execution = (
+                    session.get(CommandExecutionModel, step.execution_id)
+                    if step.execution_id
+                    else None
+                )
+                if (
+                    step.name.startswith("lint-")
+                    and step.status == "PASSED"
+                    and execution is not None
+                    and self._validation._is_known_baseline_failure(
+                        session, continuation, execution
+                    )
+                ):
+                    continue
                 step.status = "PENDING"
                 step.execution_id = None
                 step.completed_at = None
-            attempt.status = "revalidating"
-            attempt.updated_at = datetime.now(UTC)
+            RepairLifecycleService.transition_in_session(
+                session,
+                attempt,
+                "revalidating",
+                reason="repair validation restarted complete check set",
+            )
             self._queue(continuation, "final_install")
 
     @staticmethod
     def _proposal_requires_install_materialization(proposal: dict[str, object]) -> bool:
         return any(
             isinstance(item, dict)
-            and item.get("operation") in {"dependency_add", "dependency_change"}
+            and (
+                item.get("operation") in {"dependency_add", "dependency_change"}
+                or str(item.get("repair_kind") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+                or str(item.get("operation") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+                or str(item.get("schema_version") or "") == DEPENDENCY_NORMALIZATION_SCHEMA_VERSION
+            )
+            for item in (proposal.get("operations") or [])
+        )
+
+    @staticmethod
+    def _is_normalization_proposal(proposal: dict[str, object]) -> bool:
+        return any(
+            isinstance(item, dict)
+            and (
+                str(item.get("repair_kind") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+                or str(item.get("operation") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+                or str(item.get("schema_version") or "") == DEPENDENCY_NORMALIZATION_SCHEMA_VERSION
+            )
             for item in (proposal.get("operations") or [])
         )
 
@@ -3038,7 +5637,9 @@ class TransformerOrchestrator:
 
     @staticmethod
     def _repairable_route(route) -> bool:
-        return route.value in {"repairable_source", "angular_update_peer_conflict"}
+        # V2.2: dependency_incompatible is repairable via manifest normalization (P3); preserve legacy routes
+        val = route.value if hasattr(route, "value") else str(route)
+        return val in {"repairable_source", "angular_update_peer_conflict", "dependency_incompatible"}
 
     @staticmethod
     def _is_angular_update_failure(session, continuation) -> bool:
@@ -3053,8 +5654,13 @@ class TransformerOrchestrator:
         if step is None or not step.execution_id:
             return False
         execution = session.get(CommandExecutionModel, step.execution_id)
+        try:
+            causal, _ = resolve_causal_failed_execution(session, continuation)
+        except CausalExecutionError:
+            return False
         return (
             execution is not None
+            and causal.id == execution.id
             and execution.command_id == "angular-update-exact"
         )
 
@@ -3134,23 +5740,64 @@ class TransformerOrchestrator:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
             attempt = self._latest_repair(session, continuation)
-            uninstall = session.scalar(
-                select(CommandExecutionModel).where(
-                    CommandExecutionModel.run_id == continuation.run_id,
-                    CommandExecutionModel.idempotency_key
-                    == f"{attempt.id}:transition:uninstall",
+            # Preserve DependencyTransitionRunner for legacy only, new V2.2 failures must NOT route there
+            try:
+                _run = session.get(MigrationRunModel, continuation.run_id)
+                _prop = self._load_bound_repair_proposal(session, continuation, attempt, _run)
+                if any(
+                    str(item.get("repair_kind") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+                    or str(item.get("operation") or "") == DEPENDENCY_NORMALIZATION_REPAIR_KIND
+                    or str(item.get("schema_version") or "") == DEPENDENCY_NORMALIZATION_SCHEMA_VERSION
+                    for item in (_prop.get("operations") or [])
+                    if isinstance(item, dict)
+                ):
+                    self._block(session, continuation, "DEPENDENCY_TRANSITION_NOT_ALLOWED", "V2.2 manifest normalization must not use legacy DependencyTransitionRunner")
+                    return
+            except Exception:
+                pass
+            try:
+                restore_required = self._dependency_transitions.requires_safe_restore(
+                    session, continuation
                 )
-            )
-            if uninstall is None and attempt.status == "approved_pending_execution":
+            except DependencyTransitionError as error:
+                self._block(session, continuation, error.code, error.message)
+                return
+            if restore_required:
                 try:
-                    self._restore_angular_update_checkpoint(session, continuation)
+                    self._restore_dependency_transition_checkpoint(
+                        session, continuation, attempt
+                    )
                 except TransformerStageError as error:
                     self._block(session, continuation, error.code, error.message)
                     return
             try:
                 self._dependency_transitions.advance(session, continuation)
             except DependencyTransitionError as error:
-                self._block(session, continuation, error.code, error.message)
+                if error.code in {
+                    "COMMAND_EXIT_NONZERO",
+                    "DEPENDENCY_TRANSITION_ANGULAR_UPDATE_FAILED",
+                    "DEPENDENCY_TRANSITION_FRESH_BLOCKER_CHANGED",
+                    "DEPENDENCY_TRANSITION_LOCKFILE_FAILED",
+                }:
+                    attempt = self._latest_repair(session, continuation)
+                    if attempt is not None and attempt.apply_ledger_artifact_id:
+                        RepairLifecycleService.transition_in_session(
+                            session,
+                            attempt,
+                            "validation_failed",
+                            reason="dependency-transition command failed after repair application",
+                        )
+                    self._validation_failure(
+                        session,
+                        continuation,
+                        error,
+                        event_reason=(
+                            "dependency-transition command failed; "
+                            "failure classification queued"
+                        ),
+                    )
+                else:
+                    self._block(session, continuation, error.code, error.message)
 
     def _verify_repair(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
@@ -3171,8 +5818,12 @@ class TransformerOrchestrator:
                     "Applied repair post-state is incomplete or no longer canonical",
                 )
                 return
-            attempt.status = "migration_retried"
-            attempt.updated_at = datetime.now(UTC)
+            RepairLifecycleService.transition_in_session(
+                session,
+                attempt,
+                "migration_retried",
+                reason="applied repair verification succeeded",
+            )
             self._queue(continuation, "target_inspection")
 
     @staticmethod
@@ -3273,6 +5924,11 @@ class TransformerOrchestrator:
                 .order_by(StageCheckpointModel.sequence.desc())
             ).all()
             for checkpoint in checkpoints:
+                if Path(checkpoint.workspace_path).resolve() == Path(binding.workspace_path).resolve():
+                    # Legacy post-repair rows pointed at the mutable stage
+                    # workspace. They cannot be used for recovery because a
+                    # later failed command may already have changed it.
+                    continue
                 execution = (
                     session.get(CommandExecutionModel, checkpoint.created_from_execution_id)
                     if checkpoint.created_from_execution_id
@@ -3598,25 +6254,16 @@ class TransformerOrchestrator:
             return None
         return checkpoint
 
-    def _restore_angular_update_checkpoint(self, session, continuation):
-        attempt = session.query(RepairAttemptModel).filter_by(
+    def _restore_angular_update_checkpoint(
+        self, session, continuation, attempt=None
+    ):
+        attempt = attempt or session.query(RepairAttemptModel).filter_by(
             run_id=continuation.run_id,
             stage_id=continuation.current_stage_id,
         ).order_by(RepairAttemptModel.attempt_number.desc()).first()
-        if attempt is not None and attempt.status in {
-            "approved_pending_execution",
-            "executing",
-            "uninstall",
-            "angular_update",
-            "reinstall",
-            "npm_ci",
-            "dependency_closure",
-            "applied",
-            "applied_verified",
-        }:
-            checkpoint = self._ensure_post_repair_checkpoint(session, continuation, attempt)
-        else:
-            checkpoint = self._angular_update_reconstruction_checkpoint(session, continuation)
+        checkpoint = self._angular_update_recovery_checkpoint(
+            session, continuation, attempt
+        )
         if checkpoint is None:
             raise TransformerStageError(
                 "CHECKPOINT_MISSING",
@@ -3639,12 +6286,14 @@ class TransformerOrchestrator:
             continuation,
             checkpoint=checkpoint,
             reason="angular_update_recovery",
+            attempt_id=attempt.id if attempt is not None else None,
         )
         new_fingerprint = self._stage.reconstruct_workspace(
             checkpoint.workspace_path,
             binding.workspace_path,
             (run.workspace_aliases or {})["STAGE_SANDBOX"],
             checkpoint_fingerprint,
+            run.artifact_root,
         )
         if StageSandboxCopier.fingerprint(Path(binding.workspace_path)) != new_fingerprint:
             raise TransformerStageError(
@@ -3665,8 +6314,188 @@ class TransformerOrchestrator:
         binding.last_verified_at = datetime.now(UTC)
         return checkpoint.id, new_fingerprint
 
+    def _restore_dependency_transition_checkpoint(self, session, continuation, attempt):
+        """Restore the immutable pre-update tree before dependency materialization."""
+        checkpoint, authority_execution_id = self._dependency_transition_checkpoint(
+            session, continuation
+        )
+        if checkpoint is None:
+            raise TransformerStageError(
+                "CHECKPOINT_MISSING",
+                "No authoritative pre_angular_update checkpoint can materialize the dependency transition",
+            )
+        binding = self._stage._binding(session, continuation)
+        run = session.get(MigrationRunModel, continuation.run_id)
+        fingerprint = self._stage.authoritative_checkpoint_fingerprint(session, checkpoint)
+        if run is None or fingerprint is None:
+            raise TransformerStageError(
+                "CHECKPOINT_INTEGRITY_FAILED",
+                "The dependency-transition pre-update checkpoint is not authoritative",
+            )
+        materialization_prefix = f"{attempt.id}:transition:v2:materialize:initial"
+        latest_materialization = session.scalar(
+            select(CommandExecutionModel)
+            .where(
+                CommandExecutionModel.run_id == continuation.run_id,
+                CommandExecutionModel.idempotency_key.startswith(materialization_prefix),
+            )
+            .order_by(CommandExecutionModel.requested_at.desc(), CommandExecutionModel.id.desc())
+        )
+        runtime = self._stage.runtime_binding(session, continuation)
+        force_restore = bool(
+            latest_materialization is not None
+            and latest_materialization.status in {"succeeded", "failed", "timed_out", "cancelled"}
+            and (
+                latest_materialization.runtime_checksum != runtime["checksum"]
+                or (latest_materialization.start_fingerprint or {}).get("runtime_checksum")
+                != runtime["checksum"]
+                or (latest_materialization.start_fingerprint or {}).get("runtime_profile_id")
+                != runtime["profile_id"]
+            )
+        )
+        if (
+            StageSandboxCopier.fingerprint(Path(binding.workspace_path)) == fingerprint
+            and binding.workspace_fingerprint == fingerprint
+            and binding.fingerprint_profile_id == STAGE_FINGERPRINT_PROFILE.profile_id
+            and not force_restore
+        ):
+            return checkpoint.id, fingerprint
+        self._stage.begin_reconstruction(
+            session,
+            continuation,
+            checkpoint=checkpoint,
+            reason="dependency_transition_materialization",
+            execution_id=authority_execution_id,
+            attempt_id=attempt.id,
+            mode=ReconstructionMode.AUTHORIZED_ROLLBACK,
+        )
+        restored = self._stage.reconstruct_workspace(
+            checkpoint.workspace_path,
+            binding.workspace_path,
+            (run.workspace_aliases or {})["STAGE_SANDBOX"],
+            fingerprint,
+            run.artifact_root,
+        )
+        if (
+            restored != fingerprint
+            or StageSandboxCopier.fingerprint(Path(binding.workspace_path)) != fingerprint
+        ):
+            raise TransformerStageError(
+                "CHECKPOINT_INTEGRITY_FAILED",
+                "Dependency-transition restoration changed before materialization",
+            )
+        self._stage.record_reconstruction(
+            session,
+            continuation,
+            checkpoint=checkpoint,
+            reason="dependency_transition_materialization",
+            restored_fingerprint=restored,
+            execution_id=authority_execution_id,
+            attempt_id=attempt.id,
+            mode=ReconstructionMode.AUTHORIZED_ROLLBACK,
+        )
+        binding.workspace_fingerprint = restored
+        binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
+        binding.last_verified_fingerprint = restored
+        binding.last_verified_at = datetime.now(UTC)
+        return checkpoint.id, restored
+
+    def _dependency_transition_checkpoint(self, session, continuation):
+        """Resolve only an execution-bound immutable pre_angular_update checkpoint."""
+        step = session.scalar(
+            select(StageStepModel).where(
+                StageStepModel.run_id == continuation.run_id,
+                StageStepModel.stage_id == continuation.current_stage_id,
+                StageStepModel.name == "angular_update-0",
+            )
+        )
+        execution = (
+            session.get(CommandExecutionModel, step.execution_id)
+            if step is not None and step.execution_id
+            else None
+        )
+        seen: set[str] = set()
+        while execution is not None and execution.id not in seen:
+            seen.add(execution.id)
+            checkpoint = (
+                session.get(StageCheckpointModel, execution.checkpoint_id)
+                if execution.checkpoint_id
+                else None
+            )
+            if (
+                checkpoint is not None
+                and checkpoint.run_id == continuation.run_id
+                and checkpoint.stage_id == continuation.current_stage_id
+                and checkpoint.kind == "pre_angular_update"
+                and checkpoint.safe_for_resume
+                and self._stage.authoritative_checkpoint_fingerprint(session, checkpoint)
+                is not None
+            ):
+                return checkpoint, execution.id
+            execution = (
+                session.get(CommandExecutionModel, execution.parent_execution_id)
+                if execution.parent_execution_id
+                else None
+            )
+        return None, None
+
+    def _angular_update_recovery_checkpoint(self, session, continuation, attempt=None):
+        """Resolve an authorized checkpoint after a mutating update failure.
+
+        A post-repair checkpoint is preferred when its complete lineage is
+        valid. If a repair attempt has already mutated the workspace but its
+        post-repair checkpoint is stale or incomplete, restart from the
+        attempt's immutable pre-repair checkpoint instead of blocking a
+        recoverable run or trusting a partially mutated workspace.
+        """
+        checkpoint = self._angular_update_reconstruction_checkpoint(
+            session, continuation
+        )
+        if checkpoint is not None:
+            return checkpoint
+        attempt = attempt or self._latest_repair(session, continuation, required=False)
+        active_statuses = {
+            "approved_pending_execution",
+            "executing",
+            "uninstall",
+            "angular_update",
+            "reinstall",
+            "npm_ci",
+            "dependency_closure",
+            "applied",
+            "applied_verified",
+        }
+        if attempt is None or attempt.status not in active_statuses:
+            return None
+        try:
+            return self._ensure_post_repair_checkpoint(session, continuation, attempt)
+        except TransformerStageError as error:
+            if error.code not in {
+                "POST_REPAIR_CHECKPOINT_MISSING",
+                "POST_REPAIR_CHECKPOINT_STALE",
+                "POST_REPAIR_LINEAGE_MISMATCH",
+            }:
+                raise
+        pre_repair = (
+            session.get(StageCheckpointModel, attempt.checkpoint_id)
+            if attempt.checkpoint_id
+            else None
+        )
+        if (
+            pre_repair is None
+            or pre_repair.run_id != continuation.run_id
+            or pre_repair.stage_id != continuation.current_stage_id
+            or pre_repair.kind != "pre_repair"
+            or not pre_repair.safe_for_resume
+            or not attempt.pre_fingerprint
+            or self._stage.authoritative_checkpoint_fingerprint(session, pre_repair)
+            != attempt.pre_fingerprint
+        ):
+            return None
+        return pre_repair
+
     @staticmethod
-    def _latest_repair(session, continuation, *, statuses=None, exclude_statuses=None):
+    def _latest_repair(session, continuation, *, statuses=None, exclude_statuses=None, required=True):
         query = session.query(RepairAttemptModel).filter_by(
             run_id=continuation.run_id,
             stage_id=continuation.current_stage_id,
@@ -3678,7 +6507,7 @@ class TransformerOrchestrator:
         if exclude_statuses:
             query = query.filter(~RepairAttemptModel.status.in_(exclude_statuses))
         attempt = query.order_by(RepairAttemptModel.attempt_number.desc()).first()
-        if attempt is None:
+        if attempt is None and required:
             raise TransformerStageError("REPAIR_ATTEMPT_MISSING", "Repair attempt is missing")
         return attempt
 
@@ -3703,6 +6532,37 @@ class TransformerOrchestrator:
             )
             is not None
         )
+
+    @staticmethod
+    def _rebind_child_authority_recovered(session, attempt, checkpoint, live) -> bool:
+        """Accept a deterministic child on its parent's verified post-repair tree."""
+        if not str(attempt.diagnosis or "").startswith(
+            (
+                "deterministic ",
+                "human revision;",
+                "semantic retry recovery;",
+                "validation correction;",
+            )
+        ):
+            return False
+        seen: set[str] = set()
+        parent_id = attempt.parent_attempt_id
+        for _ in range(32):
+            if not isinstance(parent_id, str) or parent_id in seen:
+                return False
+            seen.add(parent_id)
+            parent = session.get(RepairAttemptModel, parent_id)
+            if parent is None:
+                return False
+            if (
+                parent.checkpoint_id == checkpoint.id
+                and parent.post_fingerprint == live
+                and parent.apply_ledger_artifact_id
+                and parent.status in {"applied", "applied_verified", "superseded"}
+            ):
+                return True
+            parent_id = parent.parent_attempt_id
+        return False
 
     @staticmethod
     def _validation_failure(

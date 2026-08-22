@@ -5,15 +5,20 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
+import hashlib
+import json
+from pathlib import Path
 
 from sqlalchemy import select
 
 from app.domain.compatibility import CompatibilityCatalogueEntry
 from app.domain.runtime_execution import (
+    RuntimeExecutableDescriptor,
     RuntimeExecutableKind,
     RuntimeRequirement,
     RuntimeRequirementBinding,
 )
+from app.domain.execution_profile import Version
 from app.domain.stage_runtime import StageRuntimeBinding, StageRuntimeRequirement
 from app.repositories.models import ExecutionProfileModel, MigrationRunModel, MigrationStageModel, StageRuntimeBindingModel
 from app.repositories.session import session_scope
@@ -28,6 +33,53 @@ class StageRuntimeError(ValueError):
         self.code = code
         self.message = message
         self.details = details or {}
+
+
+def canonical_stage_runtime_identity(rows: list[StageRuntimeBindingModel], stage_id: str) -> dict[str, object]:
+    """Build the one checksum-bound executable identity used after G07."""
+    expected = {kind.value for kind in RuntimeExecutableKind}
+    if {row.kind for row in rows} != expected or any(row.status != "bound" for row in rows):
+        raise ValueError("The durable stage runtime binding is incomplete or blocked")
+    if len({row.runtime_id for row in rows}) != 1:
+        raise ValueError("Stage Node/npm/npx bindings do not share one installation")
+    descriptors: dict[str, RuntimeExecutableDescriptor] = {}
+    for row in rows:
+        if not row.resolved_path or not row.version_exact or not row.sha256 or not row.runtime_id:
+            raise ValueError("The durable stage runtime binding is incomplete")
+        try:
+            kind = RuntimeExecutableKind(row.kind)
+            descriptors[row.kind] = RuntimeExecutableDescriptor(
+                kind=kind,
+                executable_name=Path(row.resolved_path).name,
+                resolved_path=row.resolved_path,
+                version_exact=row.version_exact,
+                sha256=row.sha256,
+                installation_root=str(Path(row.resolved_path).parent),
+                source=row.source or "stage-runtime-binding",
+                runtime_id=row.runtime_id,
+                probed_at=row.created_at,
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError("The durable stage runtime binding is invalid") from error
+    checksum = "sha256:" + hashlib.sha256(
+        json.dumps(
+            {key: value.model_dump(mode="json") for key, value in sorted(descriptors.items())},
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode()
+    ).hexdigest()
+    return {
+        "profile_id": f"stage-runtime:{stage_id}",
+        "checksum": checksum,
+        "node_executable": descriptors[RuntimeExecutableKind.NODE.value].resolved_path,
+        "package_manager_executable": descriptors[RuntimeExecutableKind.NPM.value].resolved_path,
+        "npx_executable": descriptors[RuntimeExecutableKind.NPX.value].resolved_path,
+        "descriptors": descriptors,
+        "runtime_bindings": {
+            key: value.model_dump(mode="json") for key, value in descriptors.items()
+        },
+    }
 
 
 class StageRuntimeApplicationService:
@@ -99,8 +151,11 @@ class StageRuntimeApplicationService:
             kind=RuntimeExecutableKind.NODE,
             runtime_id=runtime_id,
             minimum_version=entry.node_minimum or entry.node_exact or f"{entry.node_major}.0.0",
+            allowed_major_versions=tuple(sorted(_range_majors(entry.source_node_ranges) & _range_majors(entry.target_node_ranges))),
         )
-        npm_minimum = f"{entry.npm_major}.0.0"
+        # Angular publishes Node/TypeScript/RxJS ranges, not an official npm
+        # major range. npm and npx are governed as a real paired installation.
+        npm_minimum = "0.0.0"
         requirements = (
             node_requirement,
             RuntimeRequirement(kind=RuntimeExecutableKind.NPM, runtime_id=runtime_id, minimum_version=npm_minimum),
@@ -126,11 +181,10 @@ class StageRuntimeApplicationService:
             if session.get(MigrationStageModel, stage_id) is None:
                 raise StageRuntimeError("STAGE_NOT_FOUND", f"Migration stage {stage_id} not found")
         requirement = self.derive_requirement(stage_id, source_family, target_family, catalogue_version)
-        selected_profile = self._selected_profile(stage_id)
-        if selected_profile is not None:
-            requirement = self._requirement_from_profile(requirement, selected_profile)
-        resolved = self._authority.resolve(list(requirement.requirements))
-        bound = all(item.descriptor is not None for item in resolved)
+        catalogue = self._catalogue_provider.load(catalogue_version or CompatibilityCatalogueProvider.CURRENT_VERSION)
+        entry = catalogue.entry_for(source_family, target_family)
+        resolved = self._resolve_stage_policy(requirement, entry, stage_id)
+        bound = self._is_bound(resolved)
         if not bound:
             missing = [item.requirement.kind.value for item in resolved if item.descriptor is None]
             binding = StageRuntimeBinding(
@@ -150,6 +204,49 @@ class StageRuntimeApplicationService:
             resolved_at=self._now_provider(),
         )
         return binding.bind_checksum()
+
+    def _resolve_stage_policy(self, requirement, entry, stage_id):
+        trusted = (*entry.validated_runtime_profiles, *entry.proven_runtime_profiles)
+        for node_exact, npm_exact in trusted:
+            resolved = self._authority.resolve(self._exact_requirements(node_exact, npm_exact))
+            if self._is_bound(resolved):
+                return resolved
+        baseline = self._selected_profile(stage_id)
+        if baseline is not None and self._profile_allowed(baseline, entry):
+            resolved = self._authority.resolve(list(self._requirement_from_profile(requirement, baseline).requirements))
+            if self._is_bound(resolved):
+                return resolved
+        return self._authority.resolve(list(requirement.requirements))
+
+    @staticmethod
+    def _exact_requirements(node_exact: str, npm_exact: str):
+        runtime_id = f"node{node_exact.lstrip('vV').split('.', 1)[0]}"
+        return (
+            RuntimeRequirement(kind=RuntimeExecutableKind.NODE, runtime_id=runtime_id, version_exact=node_exact),
+            RuntimeRequirement(kind=RuntimeExecutableKind.NPM, runtime_id=runtime_id, version_exact=npm_exact),
+            RuntimeRequirement(kind=RuntimeExecutableKind.NPX, runtime_id=runtime_id, version_exact=npm_exact),
+        )
+
+    @staticmethod
+    def _is_bound(bindings) -> bool:
+        descriptors = [item.descriptor for item in bindings]
+        return bool(descriptors) and all(
+            item is not None and binding.requirement.satisfied_by(item)
+            for binding, item in zip(bindings, descriptors)
+        ) and len({item.runtime_id for item in descriptors}) == 1
+
+    @staticmethod
+    def _profile_allowed(profile: dict, entry: CompatibilityCatalogueEntry) -> bool:
+        node = Version.parse(str(profile.get("node_exact") or ""))
+        npm = Version.parse(str(profile.get("package_manager_exact") or profile.get("npm_exact") or ""))
+        npx = Version.parse(str(profile.get("npx_exact") or ""))
+        if not node or not npm or not npx or str(npm) != str(npx):
+            return False
+        pair = (str(node), str(npm))
+        if pair in (*entry.validated_runtime_profiles, *entry.proven_runtime_profiles):
+            return True
+        node_majors = _range_majors(entry.source_node_ranges) & _range_majors(entry.target_node_ranges)
+        return node.major in node_majors and node.at_least(Version.parse(entry.node_minimum or "0.0.0"))
 
     def _selected_profile(self, stage_id: str) -> dict | None:
         with self._session_scope() as session:
@@ -268,3 +365,13 @@ def _binding_id(stage_id: str, kind: str) -> str:
     import hashlib
 
     return "srb-" + hashlib.sha256(f"{stage_id}:{kind}".encode()).hexdigest()[:24]
+
+
+def _range_majors(ranges: tuple[str, ...]) -> set[int]:
+    majors = set()
+    for value in ranges:
+        try:
+            majors.add(int(value.removeprefix("^").split(".", 1)[0]))
+        except (AttributeError, ValueError):
+            continue
+    return majors

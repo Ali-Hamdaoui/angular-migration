@@ -131,6 +131,43 @@ def test_resolution_is_deterministic():
     assert first[0].descriptor.model_dump() == second[0].descriptor.model_dump()
 
 
+def test_grouped_runtime_resolution_never_mixes_installations(monkeypatch):
+    resolver = authority()
+    monkeypatch.setattr(
+        resolver,
+        "discover",
+        lambda: [
+            descriptor(RuntimeExecutableKind.NODE, runtime_id="v18.20.8", version_exact="18.20.8"),
+            descriptor(RuntimeExecutableKind.NPM, runtime_id="v20.20.2", version_exact="10.8.2"),
+            descriptor(RuntimeExecutableKind.NPX, runtime_id="v20.20.2", version_exact="10.8.2"),
+        ],
+    )
+    bindings = resolver.resolve([
+        RuntimeRequirement(kind=RuntimeExecutableKind.NODE, runtime_id="angular-stage-runtime", minimum_version="18.0.0"),
+        RuntimeRequirement(kind=RuntimeExecutableKind.NPM, runtime_id="angular-stage-runtime", minimum_version="10.0.0"),
+        RuntimeRequirement(kind=RuntimeExecutableKind.NPX, runtime_id="angular-stage-runtime", minimum_version="10.0.0"),
+    ])
+    assert all(binding.descriptor is None for binding in bindings)
+
+
+def test_runtime_candidate_ordering_is_semantic(monkeypatch):
+    resolver = authority()
+    monkeypatch.setattr(
+        resolver,
+        "discover",
+        lambda: [
+            descriptor(runtime_id="v9.9.9", version_exact="9.9.9"),
+            descriptor(runtime_id="v12.0.0", version_exact="12.0.0"),
+            descriptor(runtime_id="v20.0.0", version_exact="20.0.0"),
+        ],
+    )
+    binding = resolver.resolve([
+        RuntimeRequirement(kind=RuntimeExecutableKind.NODE, runtime_id="angular-stage-runtime", minimum_version="9.0.0")
+    ])[0]
+    assert binding.descriptor is not None
+    assert binding.descriptor.version_exact == "20.0.0"
+
+
 # --- F01-03 fail-closed guard -------------------------------------------------
 
 def make_worker(policy: CommandPolicy) -> ExecutionWorker:
