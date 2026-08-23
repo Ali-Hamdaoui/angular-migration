@@ -77,7 +77,7 @@ class DiscoveryEvidenceApplicationService:
     def block(self, run_id, request, checksum, message):
         with self.scope() as session:
             run = session.get(MigrationRunModel, run_id)
-            event = self.transition(session, run, request, WorkflowEventType.DISCOVERY_BLOCKED, "discovery dependency failed", {"error_code": "DISCOVERY_DEPENDENCY_FAILED", "blocked_scanners": [], "unknown_reasons": {}}, next_run_phase=RunPhase.DISCOVERY_BASELINE.value, next_phase_status=PhaseStatus.BLOCKED.value, next_run_status=RunStatus.DIAGNOSTIC_HOLD)
+            event = self.transition(session, run, request, WorkflowEventType.DISCOVERY_BLOCKED, "discovery dependency failed", {"error_code": "DISCOVERY_DEPENDENCY_FAILED", "error_message": message, "blocked_scanners": [], "unknown_reasons": {}}, next_run_phase=RunPhase.DISCOVERY_BASELINE.value, next_phase_status=PhaseStatus.BLOCKED.value, next_run_status=RunStatus.DIAGNOSTIC_HOLD)
             row = DiscoveryEvidenceModel(id="discovery-" + uuid4().hex[:12], run_id=run_id, idempotency_key=request.idempotency_key, request_checksum=checksum, actor=request.actor, status="blocked", scanner_results=[], artifact_ids=[], artifact_checksums={}, prerequisite_artifact_ids=request.prerequisite_artifact_ids, error_code="DISCOVERY_DEPENDENCY_FAILED", state_version=event.next_state_version, event_sequence=event.event_sequence, created_at=self.now(), updated_at=self.now())
             session.add(row); session.flush(); return self.dto(row)
 
