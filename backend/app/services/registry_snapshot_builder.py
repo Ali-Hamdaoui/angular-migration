@@ -30,8 +30,9 @@ class RegistrySnapshotBuilder:
         versions = (analysis.snapshot or {}).get("versions", [])
         packages = []
         for item in versions:
-            if item.get("package") not in {"@angular/core", "typescript", "rxjs"}:
-                continue
+            # V2.2 P0-0: retain every queried package metadata row instead of
+            # filtering to Core/TypeScript/RxJS; dependency planning owns the
+            # interpretation. Registry identity/checksum binding is unchanged.
             resolved = item.get("resolved") or self._single_version(item.get("declared"))
             if resolved:
                 packages.append({"package": item.get("package"), "declared": item.get("declared"), "resolved": resolved})

@@ -17,7 +17,8 @@ def get_certification_service() -> RuntimeCertificationService:
 
 
 def _raise(error: RuntimeCertificationError) -> None:
-    raise HTTPException(status_code=404 if error.code == "CATALOGUE_ENTRY_MISSING" else 409 if error.code == "RUNTIME_NOT_CERTIFIED" else 422,
+    gate_codes = {"RUNTIME_NOT_CERTIFIED", "STAGE_RUNTIME_CERTIFICATION_REQUIRED"}
+    raise HTTPException(status_code=404 if error.code == "CATALOGUE_ENTRY_MISSING" else 409 if error.code in gate_codes else 422,
                         detail={"error_code": error.code, "message": error.message})
 
 

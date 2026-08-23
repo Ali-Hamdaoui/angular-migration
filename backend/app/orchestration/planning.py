@@ -20,6 +20,7 @@ from app.services.planning_input_resolver import PlanningInputResolutionError, P
 from app.services.planning_job_service import PlanningFailureDisposition, claim_planning_job, classify_planning_failure
 from app.services.planning_review_evidence_application_service import PlanningReviewEvidenceApplicationService
 from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
+from app.services.runtime_certification_service import certified_profiles_for_families
 from app.services.project_planning_resolver import ProjectPlanningResolutionError, ProjectPlanningResolver
 from app.services.project_capability_service import ProjectCapabilityService
 from app.services.workspace_integrity_service import WorkspaceIntegrityError, WorkspaceIntegrityService
@@ -104,7 +105,7 @@ def resolve_feasibility_step(job_id: str, *, scope=session_scope) -> None:
     try:
         with scope() as session:
             payload = PlanningInputResolver().resolve(session, run.id, actor=actor, expected_state_version=expected_state_version, idempotency_key=f"feasibility:auto:{job_id}", now=now)
-        result = CompatibilityEvidenceApplicationService(resolver=CompatibilityResolver(CompatibilityCatalogueProvider().load())).resolve(run.id, payload, actor)
+        result = CompatibilityEvidenceApplicationService(resolver=CompatibilityResolver(CompatibilityCatalogueProvider().load(), certified_profile_lookup=certified_profiles_for_families)).resolve(run.id, payload, actor)
         with scope() as session:
             job = session.get(PlanningJobModel, job_id)
             job.status = "waiting_g05" if result.status != "blocked" else "completed_blocked"

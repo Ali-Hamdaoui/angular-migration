@@ -11,10 +11,11 @@ from app.repositories.session import session_scope
 from app.services.command_executor_service import CommandExecutorService
 from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
 from app.services.compatibility_application_service import CompatibilityResolver
+from app.services.runtime_certification_service import certified_profiles_for_families
 from app.services.compatibility_evidence_application_service import CompatibilityEvidenceApplicationService
 
 router = APIRouter(prefix="/runs", tags=["baseline"])
-_install_service = BaselineInstallApplicationService(g05_service=CompatibilityEvidenceApplicationService(resolver=CompatibilityResolver(CompatibilityCatalogueProvider().load())))
+_install_service = BaselineInstallApplicationService(g05_service=CompatibilityEvidenceApplicationService(resolver=CompatibilityResolver(CompatibilityCatalogueProvider().load(), certified_profile_lookup=certified_profiles_for_families)))
 
 def get_baseline_service() -> BaselineApplicationService:
     return BaselineApplicationService(

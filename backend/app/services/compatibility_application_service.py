@@ -18,6 +18,7 @@ from app.domain.compatibility import (
 )
 from app.domain.execution_profile import RuntimeCandidate, Version
 from app.domain.runtime_compatibility import RuntimeCompatibilityClass, classify_runtime_versions
+from app.domain.runtime_certification import RunMode
 from app.services.artifact_binding import canonical_artifact_set_checksum
 from app.services.migration_route_service import MigrationRouteError, MigrationRouteService
 
@@ -33,10 +34,21 @@ class CompatibilityApplicationError(ValueError):
 class CompatibilityResolver:
     """Resolve only catalogue data and already-observed runtime candidates."""
 
-    def __init__(self, catalogue: CompatibilityCatalogue, *, gate_version: str = "g05-v1", route_service: MigrationRouteService | None = None) -> None:
+    def __init__(
+        self,
+        catalogue: CompatibilityCatalogue,
+        *,
+        gate_version: str = "g05-v1",
+        route_service: MigrationRouteService | None = None,
+        certified_profile_lookup: Callable[[str, str], tuple[tuple[str, str], ...]] | None = None,
+    ) -> None:
         self.catalogue = catalogue
         self.gate_version = gate_version
         self._route_service = route_service or MigrationRouteService()
+        # Optional promoted-certification source so production feasibility can
+        # accept exact tuples whose immutable evidence was reviewed and
+        # promoted after the static catalogue was frozen.
+        self._certified_profile_lookup = certified_profile_lookup
 
     def resolve(self, request: CompatibilityResolutionRequest) -> CompatibilityResolutionResult:
         if request.catalogue_version != self.catalogue.version:
@@ -72,6 +84,7 @@ class CompatibilityResolver:
         if any(entry is None for entry in entries):
             return self._blocked(request, "CATALOGUE_ROUTE_MISSING", source_family)
         entries = tuple(entry for entry in entries if entry is not None)
+        entries = tuple(self._entry_with_promoted_profiles(entry) for entry in entries)
 
         blockers = list(dict.fromkeys([*request.dependency_findings, *(reason for entry in entries for reason in entry.blockers)]))
         warnings = list(dict.fromkeys(risk for entry in entries for risk in entry.known_risks))
@@ -82,6 +95,10 @@ class CompatibilityResolver:
         profile = self._select_stage1_profile(request, entries[0])
         if profile is None:
             blockers.append("NO_COMPATIBLE_STAGE1_PROFILE")
+        elif profile.classification != "EXACT_CERTIFIED" and not self._qualification_authorized(request):
+            # V2.2 P0-0: production fails closed on allowed-but-uncertified
+            # exact profiles; analysis reporting stays available via the route.
+            blockers.append("STAGE_RUNTIME_CERTIFICATION_REQUIRED")
         status = "blocked" if blockers else ("feasible_with_warnings" if warnings else "feasible")
         support_level = "blocked" if blockers else ("historical_experimental" if any(e.support_level == "historical_experimental" for e in entries) else entries[0].support_level)
         return self._result(request, source_family, route, profile, support_level, status, tuple(blockers), tuple(warnings))
@@ -166,6 +183,24 @@ class CompatibilityResolver:
     def _version_key(value: str) -> tuple[int, int, int]:
         version = Version.parse(value)
         return (version.major, version.minor, version.patch) if version else (-1, -1, -1)
+
+    def _entry_with_promoted_profiles(self, entry):
+        """Augment catalogue profiles with promoted certified exact tuples."""
+        if self._certified_profile_lookup is None:
+            return entry
+        promoted = self._certified_profile_lookup(entry.source_family, entry.target_family)
+        if not promoted:
+            return entry
+        merged = tuple(dict.fromkeys((*entry.validated_runtime_profiles, *promoted)))
+        return entry.model_copy(update={"validated_runtime_profiles": merged})
+
+    @staticmethod
+    def _qualification_authorized(request) -> bool:
+        """QUALIFICATION mode proceeds only with its explicit authorization checksum."""
+        return (
+            getattr(request, "run_mode", "PRODUCTION") == "QUALIFICATION"
+            and bool(request.qualification_authorization_checksum)
+        )
 
     def _stage(self, entry, request, blockers, warnings):
         classifications = [

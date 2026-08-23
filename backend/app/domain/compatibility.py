@@ -56,6 +56,13 @@ class CompatibilityArtifact(CompatibilityModel):
     checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
+#: Catalogue evidence truth layers (V2.2 P0-0): an entry describes the official
+#: support envelope, carries observed empirical proof, or is certified through
+#: promoted immutable evidence. Legacy payloads without the field deserialize
+#: with ``evidence_classification=None`` and are treated as uncertified.
+EvidenceClassification = Literal["official_envelope", "observed", "certified"]
+
+
 class RuntimeProofProfile(CompatibilityModel):
     """Exact empirical target evidence; never an official range or certification."""
 
@@ -67,6 +74,14 @@ class RuntimeProofProfile(CompatibilityModel):
     proof_source: str = Field(min_length=1)
     proof_status: Literal["observed", "replayed", "certified"]
     proved_at: datetime | None = None
+    evidence_artifact_id: str | None = None
+    evidence_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_certified_requires_immutable_evidence(self) -> RuntimeProofProfile:
+        if self.proof_status == "certified" and (not self.evidence_artifact_id or not self.evidence_checksum):
+            raise ValueError("certified runtime proof requires an immutable evidence artifact id and checksum")
+        return self
 
 
 class CompatibilityCatalogueEntry(CompatibilityModel):
@@ -102,6 +117,7 @@ class CompatibilityCatalogueEntry(CompatibilityModel):
     certification_status: str | None = None
     certification_source: str | None = None
     certified_at: datetime | None = None
+    evidence_classification: EvidenceClassification | None = None
 
     def target_cohort(self) -> dict[str, str]:
         """Exact backend-owned package cohort selected inside official ranges."""
@@ -203,6 +219,10 @@ class CompatibilityResolutionRequest(CompatibilityModel):
     source_execution_profile_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     workspace_fingerprint: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     plan_version: str | None = Field(default=None, max_length=128)
+    run_mode: Literal["PRODUCTION", "QUALIFICATION"] = "PRODUCTION"
+    qualification_authorization_checksum: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
     resolved_at: datetime
 
     @model_validator(mode="before")

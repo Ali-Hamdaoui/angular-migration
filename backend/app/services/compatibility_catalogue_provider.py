@@ -75,13 +75,13 @@ _NODE_RANGES: dict[int, tuple[str, ...]] = {
 }
 
 
-#: The certified (runtime-proven) transition; the rest of the envelope is
-#: seeded with official compatibility data and historical_experimental
-#: support until bridge certification (F11) promotes entries.
+#: Historical certified transitions as labeled by catalog-v3. They lacked
+#: immutable repository evidence artifacts, so catalog-v4 no longer certifies
+#: catalogue entries from static seed data; certification requires the reviewed
+#: qualification-evidence promotion path (P0-0). The v1/v2/v3 builders retain
+#: these values byte-for-byte so historical versions stay loadable unchanged.
 CERTIFIED_TRANSITIONS: frozenset[tuple[int, int]] = frozenset({(18, 19), (19, 20), (20, 21)})
 
-#: Runtime profiles proven by bridge certification (F11) for each certified
-#: transition: (node_exact, npm_exact) pairs verified on the migration VM.
 CERTIFIED_RUNTIME_PROFILES: dict[tuple[int, int], tuple[tuple[str, str], ...]] = {
     (18, 19): (("18.20.8", "10.8.2"),),
     (19, 20): (("20.20.2", "10.8.2"),),
@@ -129,9 +129,14 @@ PROVEN_TARGET_COHORTS: dict[tuple[int, int], tuple[str, str, str, str, str]] = {
 
 
 class CompatibilityCatalogueProvider:
-    """Load the active versioned catalogue independently of HTTP mutations."""
+    """Load the active versioned catalogue independently of HTTP mutations.
 
-    CURRENT_VERSION = "catalog-v3"
+    Since catalog-v4 no entry is certified from static seed data: official
+    envelope ranges and observed evidence remain, while exact certification
+    requires promoted immutable qualification evidence (P0-0).
+    """
+
+    CURRENT_VERSION = "catalog-v4"
 
     @staticmethod
     def source_runtime_constraints() -> dict[str, dict[int, tuple[str, ...]] | dict[int, tuple[str, str]]]:
@@ -145,16 +150,101 @@ class CompatibilityCatalogueProvider:
             "rxjs_ranges": rxjs_ranges,
         }
 
+    @staticmethod
+    def node_in_official_intersection(
+        node_exact: str, source_ranges: tuple[str, ...], target_ranges: tuple[str, ...]
+    ) -> bool:
+        """Public envelope check reused by certification promotion."""
+        return _node_in_intersection(node_exact, source_ranges, target_ranges)
+
     def load(self, version: str = CURRENT_VERSION) -> CompatibilityCatalogue:
-        if version not in {"catalog-v1", "catalog-v2", self.CURRENT_VERSION}:
+        if version != self.CURRENT_VERSION and version not in {"catalog-v1", "catalog-v2", "catalog-v3"}:
             raise ValueError("unsupported compatibility catalogue version")
         if version in {"catalog-v1", "catalog-v2"}:
             return self._load_legacy(version)
+        if version == "catalog-v3":
+            return self._load_catalog_v3()
         entries = []
         for major in range(11, 21):
-            certified = (major, major + 1) in CERTIFIED_TRANSITIONS
-            entries.append(self._entry_for(major, certified))
-        return CompatibilityCatalogue.build(version, tuple(entries))
+            entries.append(self._entry_for(major))
+        catalogue = CompatibilityCatalogue.build(version, tuple(entries))
+        _assert_current_catalogue_certification_truth(catalogue)
+        return catalogue
+
+    def _load_catalog_v3(self) -> CompatibilityCatalogue:
+        """Preserve the exact historical v3 contract (certified 18-19/19-20/20-21)."""
+        entries = tuple(self._historical_entry_for(major, (major, major + 1) in CERTIFIED_TRANSITIONS) for major in range(11, 21))
+        return CompatibilityCatalogue.build("catalog-v3", entries)
+
+    @classmethod
+    def _historical_entry_for(cls, major: int, certified: bool) -> CompatibilityCatalogueEntry:
+        target = major + 1
+        cohort = PROVEN_TARGET_COHORTS.get((major, target))
+        target_angular_exact, target_cli_exact, typescript_exact, rxjs_exact, zone_js_exact = (
+            cohort
+            if cohort is not None
+            else (f"{target}.0.0", f"{target}.0.0", None, None, None)
+        )
+        node_minimum = _NODE_MINIMUMS[target]
+        ts_minimum, ts_maximum = _TYPESCRIPT_RANGES[target]
+        support_level = "historical_validated" if certified else "historical_experimental"
+        fixture_status = "passed" if certified else "incomplete"
+        node_major = _node_major_for(node_minimum)
+        if certified:
+            validated = CERTIFIED_RUNTIME_PROFILES.get((major, target), ())
+            certified_runtime = validated[0] if validated else None
+            node_exact = certified_runtime[0] if certified_runtime else node_minimum
+            npm_exact = certified_runtime[1] if certified_runtime else "10.2.4"
+        else:
+            validated = ()
+            node_exact = None
+            npm_exact = None
+        source_node_ranges = _NODE_RANGES.get(major, ())
+        target_node_ranges = _NODE_RANGES.get(target, ())
+        raw_proven = DEV_RUNTIMES_PROVEN_PROFILES.get((major, target), ())
+        proven_profiles = tuple(
+            p for p in raw_proven if _node_in_intersection(p[0], source_node_ranges, target_node_ranges)
+        )
+        raw_evidence = DEV_RUNTIMES_PROVEN_EVIDENCE.get((major, target))
+        if raw_evidence is not None and _node_in_intersection(raw_evidence.node_exact, source_node_ranges, target_node_ranges) and proven_profiles:
+            proven_evidence: tuple[RuntimeProofProfile, ...] = (raw_evidence,)
+        else:
+            proven_evidence = ()
+            if raw_evidence is not None and not _node_in_intersection(raw_evidence.node_exact, source_node_ranges, target_node_ranges):
+                proven_profiles = ()
+        return CompatibilityCatalogueEntry(
+            stage_id=f"angular-{major}-to-{target}",
+            source_family=f"angular-{major}.x",
+            target_family=f"angular-{target}.x",
+            target_angular_exact=target_angular_exact,
+            target_cli_exact=target_cli_exact,
+            typescript_exact=typescript_exact,
+            typescript_minimum=ts_minimum,
+            typescript_exclusive_maximum=ts_maximum,
+            rxjs_exact=rxjs_exact,
+            rxjs_minimum="6.5.3",
+            rxjs_ranges=_RXJS_RANGES[target],
+            zone_js_exact=zone_js_exact,
+            node_major=node_major,
+            npm_major=10,
+            node_minimum=node_minimum,
+            node_exact=node_exact,
+            npm_exact=npm_exact,
+            cli_exact=target_cli_exact,
+            support_level=support_level,
+            fixture_status=fixture_status,
+            validation_policy_id="angular-stage-standard-v2",
+            known_risks=() if certified else ("historical_fixture_evidence_incomplete",),
+            validated_runtime_profiles=validated,
+            source_node_ranges=source_node_ranges,
+            target_node_ranges=target_node_ranges,
+            proven_runtime_profiles=proven_profiles,
+            proven_runtime_evidence=proven_evidence,
+            proven_runtime_source="dev-runtimes-real-e2e" if proven_profiles else None,
+            certification_status="certified" if certified else "seeded_official",
+            certification_source="bridge-certification" if certified else "angular.dev/reference/versions",
+            certified_at=CERTIFIED_AT if certified else None,
+        )
 
     def _load_legacy(self, version: str) -> CompatibilityCatalogue:
         """Preserve the exact historical v1/v2 contract (Angular 18-21 envelope)."""
@@ -183,7 +273,7 @@ class CompatibilityCatalogueProvider:
         return CompatibilityCatalogue.build(version, entries)
 
     @classmethod
-    def _entry_for(cls, major: int, certified: bool) -> CompatibilityCatalogueEntry:
+    def _entry_for(cls, major: int) -> CompatibilityCatalogueEntry:
         target = major + 1
         cohort = PROVEN_TARGET_COHORTS.get((major, target))
         target_angular_exact, target_cli_exact, typescript_exact, rxjs_exact, zone_js_exact = (
@@ -193,18 +283,10 @@ class CompatibilityCatalogueProvider:
         )
         node_minimum = _NODE_MINIMUMS[target]
         ts_minimum, ts_maximum = _TYPESCRIPT_RANGES[target]
-        support_level = "historical_validated" if certified else "historical_experimental"
-        fixture_status = "passed" if certified else "incomplete"
         node_major = _node_major_for(node_minimum)
-        if certified:
-            validated = CERTIFIED_RUNTIME_PROFILES.get((major, target), ())
-            certified_runtime = validated[0] if validated else None
-            node_exact = certified_runtime[0] if certified_runtime else node_minimum
-            npm_exact = certified_runtime[1] if certified_runtime else "10.2.4"
-        else:
-            validated = ()
-            node_exact = None
-            npm_exact = None
+        validated = ()
+        node_exact = None
+        npm_exact = None
         source_node_ranges = _NODE_RANGES.get(major, ())
         target_node_ranges = _NODE_RANGES.get(target, ())
         # Stop promoting a DEV_RUNTIMES_PROVEN runtime when its exact Node falls
@@ -241,24 +323,36 @@ class CompatibilityCatalogueProvider:
             node_exact=node_exact,
             npm_exact=npm_exact,
             cli_exact=target_cli_exact,
-            support_level=support_level,
-            fixture_status=fixture_status,
+            support_level="historical_experimental",
+            fixture_status="incomplete",
             validation_policy_id="angular-stage-standard-v2",
-            known_risks=() if certified else ("historical_fixture_evidence_incomplete",),
+            known_risks=("historical_fixture_evidence_incomplete",),
             validated_runtime_profiles=validated,
             source_node_ranges=source_node_ranges,
             target_node_ranges=target_node_ranges,
             proven_runtime_profiles=proven_profiles,
             proven_runtime_evidence=proven_evidence,
             proven_runtime_source="dev-runtimes-real-e2e" if proven_profiles else None,
-            certification_status="certified" if certified else "seeded_official",
-            certification_source="angular.dev/reference/versions" if not certified else "bridge-certification",
-            certified_at=CERTIFIED_AT if certified else None,
+            certification_status="seeded_official",
+            certification_source="angular.dev/reference/versions",
+            certified_at=None,
+            evidence_classification="observed" if proven_evidence else "official_envelope",
         )
 
 
 def _node_major_for(minimum: str) -> int:
     return int(minimum.split(".", 1)[0])
+
+
+def _assert_current_catalogue_certification_truth(catalogue: CompatibilityCatalogue) -> None:
+    """Current catalogues certify only through promoted immutable evidence."""
+    for entry in catalogue.entries:
+        if entry.certification_status != "certified":
+            continue
+        if entry.evidence_classification != "certified" or not entry.proven_runtime_evidence:
+            raise ValueError("current catalogue entries cannot claim certification without promoted evidence")
+        if any(proof.proof_status != "certified" or not proof.evidence_artifact_id or not proof.evidence_checksum for proof in entry.proven_runtime_evidence):
+            raise ValueError("certified catalogue evidence must bind immutable artifacts")
 
 
 def _satisfies_caret(version: Version, value: str) -> bool:

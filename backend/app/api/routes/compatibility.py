@@ -7,6 +7,7 @@ from app.api.compatibility_contracts import FeasibilityCreateRequest, Feasibilit
 from app.api.errors import error_response
 from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
 from app.services.compatibility_application_service import CompatibilityResolver
+from app.services.runtime_certification_service import certified_profiles_for_families
 from app.services.compatibility_evidence_application_service import CompatibilityEvidenceApplicationService, CompatibilityEvidenceError
 from app.services.planning_job_service import enqueue_planning_job
 from app.repositories.session import session_scope
@@ -16,7 +17,7 @@ router = APIRouter(tags=["feasibility"])
 
 
 def get_service() -> CompatibilityEvidenceApplicationService:
-    return CompatibilityEvidenceApplicationService(resolver=CompatibilityResolver(CompatibilityCatalogueProvider().load()))
+    return CompatibilityEvidenceApplicationService(resolver=CompatibilityResolver(CompatibilityCatalogueProvider().load(), certified_profile_lookup=certified_profiles_for_families))
 
 
 @router.post("/runs/{run_id}/feasibility/actions/resolve", response_model=PlanningCommandResponse, status_code=202)
