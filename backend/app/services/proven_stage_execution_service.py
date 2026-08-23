@@ -104,6 +104,16 @@ _PROVEN_SUCCESSORS = {
     ProvenTransformationNode.PROMOTE_VALIDATED.value: ProvenTransformationNode.PROMOTION_PENDING.value,
 }
 
+#: Proven nodes that terminate the sequential table by design: the graph
+#: routes them to a gate, a block, or the sealing flow instead of a linear
+#: successor.
+_PROVEN_TERMINAL_NODES = frozenset(
+    {
+        ProvenTransformationNode.PROMOTION_PENDING.value,
+        ProvenTransformationNode.DISCARD_DISCOVERY.value,
+    }
+)
+
 
 class ProvenStageExecutionService:
     """Deterministic execution of the proven graph through existing services.
@@ -595,7 +605,28 @@ class ProvenStageExecutionService:
             self._advance_after(session, continuation, ProvenTransformationNode.PERSIST_TARGET_INTENT.value)
 
     def _node_discard_discovery(self, continuation_id: str, worker_id: str) -> None:
-        self._advance_recorded(continuation_id, worker_id, ProvenTransformationNode.DISCARD_DISCOVERY.value)
+        """Discovery was discarded: the disposable result is never promoted.
+
+        Terminal leaf — the graph blocks with explicit evidence so the
+        operator (or repair governance) decides the next step.
+        """
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            store = self._artifact_store(session, continuation)
+            self._record_evidence(
+                session,
+                continuation,
+                store,
+                f"04_workflow_state/stages/{continuation.current_stage_id}/proven/discovery-discarded.json",
+                {"run_id": continuation.run_id, "stage_id": continuation.current_stage_id, "status": "DISCARDED"},
+                "discovery-discard-v1",
+            )
+            self._block(
+                session,
+                continuation,
+                "PROVEN_DISCOVERY_DISCARDED",
+                "target discovery was discarded; no TargetIntent was persisted",
+            )
 
     # -- Phase 3: lock resolution -------------------------------------------
 
