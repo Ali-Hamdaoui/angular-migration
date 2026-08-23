@@ -68,6 +68,19 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     dispatch_due_planning_jobs()
     from app.orchestration.planning_worker import planning_worker_loop
     worker = asyncio.create_task(planning_worker_loop(poll_seconds=settings.planning_worker_poll_seconds))
+    from app.services.proven_activation_gate import ProvenActivationGate
+
+    activation = ProvenActivationGate().activate()
+    print(
+        {
+            "proven_activation": {
+                "passed": activation.passed,
+                "enabled_writer": activation.enabled_writer,
+                "missing": list(activation.missing),
+            }
+        },
+        flush=True,
+    )
     try:
         yield
     finally:

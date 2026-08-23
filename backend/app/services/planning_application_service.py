@@ -30,7 +30,6 @@ from app.domain.planning import (
     CommandTemplateReference,
     ForbiddenChangePolicy,
     MigrationPlan,
-    PROVEN_PLAN_WRITER_ENABLED,
     PlanGenerationRequest,
     PlanGenerationResult,
     RepairPolicy,
@@ -40,6 +39,7 @@ from app.domain.planning import (
     TRANSFORMER_SEMANTIC_VERSION_PROVEN,
     ValidationPolicy,
     checksum_model,
+    proven_plan_writer_enabled,
 )
 from app.services.stage_knowledge_service import StageKnowledgeRegistry
 from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
@@ -97,7 +97,7 @@ class StageExecutionPlanService:
     def create(self, request: PlanGenerationRequest, *, plan_version: int = 1) -> StageExecutionPlan:
         if (
             request.transformer_semantic_version == TRANSFORMER_SEMANTIC_VERSION_PROVEN
-            and not PROVEN_PLAN_WRITER_ENABLED
+            and not proven_plan_writer_enabled()
         ):
             raise PlanningApplicationError(
                 "PLANNING_PROVEN_NOT_READY",
@@ -163,6 +163,22 @@ class StageExecutionPlanService:
             "tests": (self._command("npm-script-test-ci", request, {"test_script": request.resolved_scripts["test"], "test_watch_flag": "--watch=false"}),),
             "lint": (self._command("npm-script-lint", request, {"lint_script": request.resolved_scripts["lint"]}),) if "lint" in request.resolved_scripts else (),
         }
+        if request.transformer_semantic_version == TRANSFORMER_SEMANTIC_VERSION_PROVEN:
+            # Proven plans never prebind the legacy combined update or the
+            # Core-only migration groups; their group contract is the proven
+            # command set below.  CLI-authority-bound commands (discovery,
+            # migrate-only) are bound by the behavior phases at execution time
+            # and therefore never rendered from static plan bindings.
+            commands = {
+                "bootstrap_install": commands["bootstrap_install"],
+                "dependency_tree": (self._command("npm-dependency-tree", request),),
+                "target_version_check": commands["target_version_check"],
+                "lockfile_generation": commands["lockfile_generation"],
+                "final_install": commands["final_install"],
+                "builds": commands["builds"],
+                "tests": commands["tests"],
+                "lint": commands["lint"],
+            }
         if request.installed_migration_fallback and not StageKnowledgeRegistry.allows_installed_migration_fallback(
             StageKnowledgeRegistry().entry(_major(source_family), _major(target_family)),
             request.capability_facts,

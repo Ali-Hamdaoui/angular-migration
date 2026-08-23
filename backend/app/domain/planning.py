@@ -49,9 +49,22 @@ TransformerSemanticVersion = Literal[
 PlanRunMode = Literal["PRODUCTION", "QUALIFICATION"]
 
 #: Proven-plan writer readiness. Remains disabled until every behavior phase
-#: has registered its required command templates (flipped in P08); proven
-#: plan creation fails closed while this is False.
-PROVEN_PLAN_WRITER_ENABLED = False
+#: has registered its required command templates (flipped by the proven
+#: activation gate); proven plan creation fails closed while this is False.
+#: Read through ``proven_plan_writer_enabled()`` so the gate flip is visible
+#: to modules that imported the module before activation.
+_PROVEN_PLAN_WRITER_ENABLED = False
+
+
+def proven_plan_writer_enabled() -> bool:
+    """Current proven-plan writer readiness (mutable, gate-controlled)."""
+    return _PROVEN_PLAN_WRITER_ENABLED
+
+
+def set_proven_plan_writer_enabled(enabled: bool) -> None:
+    """Flip proven-plan writer readiness. Only the activation gate flips it on."""
+    global _PROVEN_PLAN_WRITER_ENABLED
+    _PROVEN_PLAN_WRITER_ENABLED = enabled
 
 
 class TransformerSemanticVersionError(ValueError):
@@ -250,7 +263,7 @@ class StageExecutionPlan(ContractModel):
         if self.run_mode == "QUALIFICATION" and not self.qualification_authorization_checksum:
             raise ValueError("qualification plans require an explicit authorization checksum")
         if self.transformer_semantic_version == TRANSFORMER_SEMANTIC_VERSION_PROVEN:
-            if not PROVEN_PLAN_WRITER_ENABLED:
+            if not proven_plan_writer_enabled():
                 raise ValueError("proven plan generation is not enabled yet")
             self._validate_proven_commands()
             return self
