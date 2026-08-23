@@ -10,7 +10,12 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 
 from app.domain.migration_route import validate_envelope
-from app.domain.stage_knowledge import StageKnowledgeEntry, knowledge_entry_for
+from app.domain.stage_knowledge import (
+    DeterministicRule,
+    StageKnowledgeEntry,
+    evaluate_deterministic_rules,
+    knowledge_entry_for,
+)
 from app.repositories.models import StageKnowledgeEntryModel
 from app.repositories.session import session_scope
 
@@ -132,6 +137,59 @@ class StageKnowledgeRegistry:
                     StageKnowledgeEntryModel.target_major == target_major,
                 ).order_by(StageKnowledgeEntryModel.version.desc()).limit(1)
             )
+
+    @staticmethod
+    def evaluate_deterministic_candidate(
+        *,
+        rules: tuple[DeterministicRule, ...],
+        normalized_diagnostics: tuple[dict[str, str], ...],
+        observed_capabilities: dict[str, str],
+        current_preimage_sha256: str | None,
+        candidate_root_prefix: str,
+    ) -> dict[str, object]:
+        """P1-2 deterministic interception before Main Repair LLM proposal.
+
+        Exactly one active rule match renders a bounded P10 file operation
+        against the exact current preimage; zero matches defer to Main Repair;
+        multiple matches or a preimage mismatch fail closed.
+        """
+        from app.domain.repair_lifecycle import RepairScopeError, assert_repair_candidate_scope
+
+        outcome, rule = evaluate_deterministic_rules(
+            rules=rules,
+            normalized_diagnostics=normalized_diagnostics,
+            observed_capabilities=observed_capabilities,
+        )
+        if outcome != "MATCH" or rule is None:
+            return {"outcome": outcome, "operation": None}
+        required = rule.required_preimage_sha256
+        if required is not None and current_preimage_sha256 != required:
+            raise StageKnowledgeError(
+                "STAGE_KNOWLEDGE_PREIMAGE_MISMATCH",
+                f"rule {rule.rule_id} v{rule.version} preimage does not match the current candidate file",
+            )
+        target_path = rule.operation_template.get("target_path", "")
+        try:
+            assert_repair_candidate_scope(
+                touched_paths=(target_path,),
+                candidate_root_prefix=candidate_root_prefix,
+                allowed_paths=tuple(rule.file_globs) or None,
+            )
+        except RepairScopeError as error:
+            raise StageKnowledgeError(error.code, error.message) from error
+        operation = {
+            "operation_type": rule.operation_template["operation_type"],
+            "target_path": target_path,
+            "rule_id": rule.rule_id,
+            "rule_version": rule.version,
+            "rule_checksum": rule.checksum,
+            "preimage_sha256": current_preimage_sha256,
+            "expected_postcondition": rule.expected_postcondition,
+        }
+        return {"outcome": "MATCH", "operation": operation, "match_trace": {
+            "diagnostic_predicates": list(rule.diagnostic_predicates),
+            "capability_predicates": list(rule.stage_capability_predicates),
+        }}
 
 
 def _entry_id(source_major: int, target_major: int, version: int) -> str:
