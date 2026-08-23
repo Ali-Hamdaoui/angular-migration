@@ -510,6 +510,190 @@ class TargetIntent(ContractModel):
 _EXACT_SEMVER_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
 
 
+# ---------------------------------------------------------------------------
+# V2.2 P0-4 / section 9 — preserve-first LockResolution state machine.
+# ---------------------------------------------------------------------------
+
+LockResolutionMode = Literal["PRESERVE", "FRESH"]
+LockResolutionStatus = Literal["READY", "RUNNING", "CONVERGED", "MATERIALIZING", "PROVED", "FAILED"]
+
+#: Frozen proven-policy default; configurable per policy, never per Angular major.
+LOCK_RESOLUTION_MAX_ATTEMPTS = 5
+
+
+class LockResolutionError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class LockSchemaTransitionEvidence(ContractModel):
+    """Immutable proof that governed npm changed the lockfile schema."""
+
+    schema_version: str = "lock-schema-transition-v1"
+    previous_lockfile_version: int = Field(ge=1)
+    resulting_lockfile_version: int = Field(ge=1)
+    npm_exact_version: str = Field(min_length=1)
+    npm_capability_policy_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    execution_id: str = Field(min_length=1)
+    input_lock_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    output_lock_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class LockResolutionAttempt(ContractModel):
+    """One immutable solve-attempt record bound to its exact inputs/outputs."""
+
+    ordinal: int = Field(ge=1)
+    mode: LockResolutionMode
+    selected_authority_filename: str = Field(min_length=1)
+    selected_authority_kind: str = Field(min_length=1)
+    npm_exact_version: str = Field(min_length=1)
+    npm_capability_policy_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    dependency_intent_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    input_lock_sha256: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    input_lockfile_version: int | None = Field(default=None, ge=1)
+    command_execution_id: str | None = None
+    process_exit_code: int | None = None
+    output_lock_sha256: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    output_lockfile_version: int | None = Field(default=None, ge=1)
+    schema_transition: LockSchemaTransitionEvidence | None = None
+    root_sync_status: str | None = None
+    failure_code: str | None = None
+
+
+class LockResolutionLedger(ContractModel):
+    """Immutable cycle ledger for one lock resolution (V2.2 §9 artifact fields)."""
+
+    schema_version: str = "lock-resolution-ledger-v1"
+    run_id: str = Field(min_length=1)
+    stage_id: str = Field(min_length=1)
+    cycle_id: str = Field(min_length=1)
+    generation_id: str = Field(min_length=1)
+    mode: LockResolutionMode
+    status: LockResolutionStatus
+    npm_exact_version: str = Field(min_length=1)
+    npm_capability_policy_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    dependency_intent_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    authority_filename: str = Field(min_length=1)
+    authority_kind: str = Field(min_length=1)
+    max_attempts: int = Field(default=LOCK_RESOLUTION_MAX_ATTEMPTS, ge=1, le=10)
+    fresh_fallback_used: bool = False
+    fresh_fallback_evidence_ref: str | None = None
+    shrinkwrap_policy_decision_ref: str | None = None
+    attempts: tuple[LockResolutionAttempt, ...] = ()
+    converged_sha256: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    materialization_execution_ids: tuple[str, ...] = ()
+    dependency_tree_execution_id: str | None = None
+    dependency_tree_artifact_id: str | None = None
+    terminal_reason_code: str | None = None
+    checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def bind(self) -> "LockResolutionLedger":
+        if self.checksum == _DRAFT_CHECKSUM:
+            return self
+        expected = _canonical_checksum(self.model_dump(mode="json", exclude={"checksum"}))
+        if self.checksum != expected:
+            raise ValueError("lock resolution ledger checksum does not bind its payload")
+        return self
+
+    @classmethod
+    def create(cls, **fields) -> "LockResolutionLedger":
+        draft = cls(**fields, checksum=_DRAFT_CHECKSUM)
+        checksum = _canonical_checksum(draft.model_dump(mode="json", exclude={"checksum"}))
+        return draft.model_copy(update={"checksum": checksum})
+
+
+def next_lock_resolution_state(
+    ledger: LockResolutionLedger,
+    *,
+    last_attempt: LockResolutionAttempt,
+) -> LockResolutionLedger:
+    """Pure deterministic transition after one recorded solve attempt (§9).
+
+    Two consecutive identical output SHAs converge.  Budget exhaustion fails
+    with LOCK_CONVERGENCE_EXHAUSTED.  Fresh fallback is a classified,
+    authority-scoped, at-most-once PACKAGE_LOCK regeneration; SHRINKWRAP
+    replacement additionally requires an explicit policy decision reference.
+    """
+    if ledger.status in {"CONVERGED", "MATERIALIZING", "PROVED", "FAILED"}:
+        raise LockResolutionError(
+            "LOCK_RESOLUTION_STATE_INVALID",
+            f"cannot advance a ledger in terminal state {ledger.status}",
+        )
+    attempts = (*ledger.attempts, last_attempt)
+    if last_attempt.failure_code is not None or last_attempt.output_lock_sha256 is None:
+        return ledger.model_copy(
+            update={
+                "attempts": attempts,
+                "status": "FAILED",
+                "terminal_reason_code": last_attempt.failure_code or "LOCK_ATTEMPT_OUTPUT_MISSING",
+            }
+        )
+    previous = next(
+        (
+            attempt
+            for attempt in reversed(ledger.attempts)
+            if attempt.output_lock_sha256 is not None and attempt.failure_code is None
+        ),
+        None,
+    )
+    if previous is not None and previous.output_lock_sha256 == last_attempt.output_lock_sha256:
+        return ledger.model_copy(
+            update={
+                "attempts": attempts,
+                "status": "CONVERGED",
+                "converged_sha256": last_attempt.output_lock_sha256,
+                "terminal_reason_code": None,
+            }
+        )
+    if len(attempts) >= ledger.max_attempts:
+        return ledger.model_copy(
+            update={
+                "attempts": attempts,
+                "status": "FAILED",
+                "terminal_reason_code": "LOCK_CONVERGENCE_EXHAUSTED",
+            }
+        )
+    return ledger.model_copy(update={"attempts": attempts, "status": "RUNNING"})
+
+
+def authorize_fresh_fallback(
+    ledger: LockResolutionLedger,
+    *,
+    classification: str,
+    requested_authority_kind: str,
+    shrinkwrap_policy_decision_ref: str | None = None,
+) -> LockResolutionLedger:
+    """Grant the single classified fresh fallback or fail closed (§9).
+
+    Only a proven inherited stale/corrupt/incompatible lock authorizes it.
+    Missing optional/optional-peer/npm6-peer resolutions alone never qualify.
+    """
+    eligible = {
+        "INHERITED_LOCK_STALE",
+        "INHERITED_LOCK_CORRUPT",
+        "INHERITED_LOCK_INCOMPATIBLE",
+    }
+    if ledger.fresh_fallback_used:
+        raise LockResolutionError("LOCK_FRESH_FALLBACK_EXHAUSTED", "fresh lock fallback is allowed at most once per stage")
+    if classification not in eligible:
+        raise LockResolutionError("LOCK_FRESH_FALLBACK_NOT_AUTHORIZED", f"classification {classification} cannot authorize lock deletion")
+    if requested_authority_kind == "SHRINKWRAP" and not shrinkwrap_policy_decision_ref:
+        raise LockResolutionError("SHRINKWRAP_POLICY_DECISION_REQUIRED", "shrinkwrap removal/replacement requires an explicit checksum-bound dependency-policy decision")
+    return ledger.model_copy(
+        update={
+            "mode": "FRESH",
+            "fresh_fallback_used": True,
+            "fresh_fallback_evidence_ref": classification,
+            "shrinkwrap_policy_decision_ref": shrinkwrap_policy_decision_ref,
+            "status": "READY",
+        }
+    )
+
+
 class SourceBaselineEvidence(ContractModel):
     """Immutable evidence for one proven stage source baseline (V2.2 P0-2).
 
