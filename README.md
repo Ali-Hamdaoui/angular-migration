@@ -127,3 +127,26 @@ If you want to validate the full workspace after startup, run:
 ```powershell
 .\scripts\quality.ps1
 ```
+
+
+## V2.2 proven transformer plans (operator notes)
+
+New proven plans use semantic version `transformer-plan-v2.2-proven-1` and run
+the restart-safe adjacent-major graph: fresh source baseline, disposable
+discovery bound to an evidence-checked Angular CLI toolchain authority,
+preserve-first lock resolution under the exact bound npm capability policy,
+dynamic migration ledger, clean validation generation with four-way diagnostic
+delta, and the frozen gate order (normal G09 to promotion to G12; repaired G11
+then G09 then promotion then G12) before sealing. Historical plans without the
+semantic field continue under legacy semantics and are never converted
+mid-flight.
+
+Deprecation: combined authoritative `ng update` (updater V2-V6 templates and
+npx-based migrate commands) is deprecated for new proven plans; it remains
+registered solely for historical replay of persisted legacy stages.
+
+Operator recovery: every proven node persists checksummed terminal evidence;
+restart reuses terminal output only when input checksums match, otherwise it
+reconstructs disposable generations. Production runs require promoted certified
+runtime profiles (`STAGE_RUNTIME_CERTIFICATION_REQUIRED` otherwise);
+qualification authorization can never unlock production.
