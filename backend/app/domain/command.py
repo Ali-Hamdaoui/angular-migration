@@ -336,7 +336,8 @@ ANGULAR_UPDATE_V2_RENDERER: Final[TransformationCommandDefinition] = Transformat
     description="Execute an approved exact Angular update (v2)",
 )
 
-# v3 is the current stage-only renderer. v1 and v2 remain immutable history.
+# v3 is retained for historical plan replay; it is still governed and never
+# enables dirty or forced execution.
 ANGULAR_UPDATE_V3_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
     command_id="angular-update-exact",
     template_id="tpl-angular-update-exact-v3",
@@ -349,7 +350,6 @@ ANGULAR_UPDATE_V3_RENDERER: Final[TransformationCommandDefinition] = Transformat
         "update",
         "@angular/cli@{target_cli_exact}",
         "@angular/core@{target_exact}",
-        "--allow-dirty",
     ),
     executable_aliases=("npx.cmd",),
     timeout_seconds=1800,

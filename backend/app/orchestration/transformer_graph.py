@@ -2138,9 +2138,10 @@ class TransformerOrchestrator:
                                 and execution.status == "failed"
                                 and execution.template_version == 2
                             ):
-                                # First-time dirty-workspace failure (legacy v2
-                                # plan): the v3 --allow-dirty retry is the fix,
-                                # no repair is needed. Restore the execution-
+                                # First-time legacy update failure: the
+                                # governed v3 retry is the bounded fix; no
+                                # forbidden dirty/force flag is permitted.
+                                # Restore the execution-
                                 # bound checkpoint, persist a post-repair
                                 # checkpoint so the v2->v3 supersession binds
                                 # correctly, and queue the governed retry.

@@ -1,23 +1,22 @@
-"""Backend-only migration runner (V2.3 Phase 4).
-
-Executes the proven Transformer workflow without any frontend dependency.
+"""Durable backend-only migration runner.
 
 Usage::
 
     python -m backend.migration_runner \\
         --source angular11 --target angular21 --mode qualification
 
-The runner drives the QualificationRunner chain (or a single adjacent
-transition in ``--mode single``) against a real Angular source workspace and
-writes ``migration-result.json`` containing the run id, stage list, executed
-commands, evidence references, failures, repairs, and final status.
+The runner never owns process execution.  A persisted run is created through
+the normal Factory lifecycle; this command only verifies proven activation and
+pumps the existing TransformerWorker until that run reaches a terminal state.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 # Make ``app`` importable when launched as ``python -m backend.migration_runner``
@@ -38,6 +37,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=Path("migration-result.json"), help="result output path")
     parser.add_argument("--target-exact", default=None, help="exact target version override for --mode single")
     parser.add_argument("--source-exact", default=None, help="exact source version override for --mode single")
+    parser.add_argument("--timeout-seconds", type=int, default=3600)
     return parser.parse_args(argv)
 
 
@@ -45,13 +45,104 @@ def _major(family: str) -> int:
     return int(family.removeprefix("angular").removeprefix("-").removesuffix(".x"))
 
 
-def _require_source_dir(args: argparse.Namespace) -> Path:
+def _require_source_dir(args: argparse.Namespace) -> Path | None:
     if args.source_dir is None:
-        raise SystemExit("--source-dir is required for backend-only execution")
+        return None
     path = Path(args.source_dir).resolve()
     if not path.is_dir() or not (path / "package.json").is_file():
         raise SystemExit(f"source workspace has no package.json: {path}")
     return path
+
+
+def _result(path: Path, payload: dict[str, object]) -> int:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    print(f"migration-result written to {path}", flush=True)
+    print(f"final status: {payload['final_status']}", flush=True)
+    return 0 if payload["final_status"] in {"completed", "promoted"} else 1
+
+
+def _find_run(source_dir: Path | None, source_major: int, target_major: int) -> str | None:
+    from sqlalchemy import select
+
+    from app.domain.contracts import RunStatus
+    from app.repositories.models import MigrationRunModel
+    from app.repositories.session import session_scope
+
+    with session_scope() as session:
+        runs = list(
+            session.scalars(
+                select(MigrationRunModel)
+                .where(
+                    MigrationRunModel.source_version_family == f"angular-{source_major}.x",
+                    MigrationRunModel.target_version_family == f"angular-{target_major}.x",
+                    MigrationRunModel.status.not_in({
+                        RunStatus.COMPLETED.value,
+                        RunStatus.FAILED.value,
+                        RunStatus.CANCELLED.value,
+                    }),
+                )
+                .order_by(MigrationRunModel.created_at.desc())
+            )
+        )
+    if source_dir is None:
+        return runs[0].id if len(runs) == 1 else None
+    matches = [run for run in runs if Path(run.source_path or "").resolve() == source_dir]
+    return matches[0].id if len(matches) == 1 else None
+
+
+def _pump(run_id: str, timeout_seconds: int) -> dict[str, object]:
+    from sqlalchemy import select
+
+    from app.domain.contracts import RunStatus
+    from app.orchestration.transformer_worker import TransformerWorker
+    from app.repositories.models import MigrationRunModel, TransformationContinuationModel
+    from app.repositories.session import session_scope
+    from app.services.proven_activation_gate import ProvenActivationGate
+
+    report = ProvenActivationGate().verify()
+    if not report.passed:
+        return {
+            "run_id": run_id,
+            "final_status": "failed",
+            "failure": {
+                "category": "COMMAND_AUTHORITY",
+                "phase": "migration_execution",
+                "code": "TRANSFORMER_PROVEN_ACTIVATION_BLOCKED",
+                "message": ", ".join(report.missing),
+            },
+        }
+    worker = TransformerWorker(worker_id=f"migration-runner-{os.getpid()}")
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        with session_scope() as session:
+            run = session.get(MigrationRunModel, run_id)
+            continuation = session.scalar(
+                select(TransformationContinuationModel)
+                .where(TransformationContinuationModel.run_id == run_id)
+                .order_by(TransformationContinuationModel.updated_at.desc())
+            )
+            if run is None:
+                return {"run_id": run_id, "final_status": "failed", "failure": {"code": "RUN_NOT_FOUND"}}
+            if run.status in {item.value for item in RunStatus if item in {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}}:
+                return {
+                    "run_id": run_id,
+                    "final_status": "completed" if run.status == RunStatus.COMPLETED.value else "failed",
+                    "run_status": run.status,
+                    "continuation": continuation.current_node if continuation else None,
+                    "failure_code": continuation.last_error_code if continuation else None,
+                }
+        if not worker.run_once():
+            time.sleep(0.25)
+    return {
+        "run_id": run_id,
+        "final_status": "failed",
+        "failure": {
+            "category": "RECOVERY",
+            "phase": "migration_execution",
+            "code": "PROVEN_RUN_TIMEOUT",
+        },
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -61,43 +152,24 @@ def main(argv: list[str] | None = None) -> int:
     if source_major >= target_major:
         raise SystemExit("--source major must be lower than --target major")
     source_dir = _require_source_dir(args)
-    if args.mode == "qualification":
-        from app.services.qualification_runner import QualificationRunner
-
-        result = QualificationRunner().run_qualification(
-            source_dir=source_dir,
-            source_major=source_major,
-            target_major=target_major,
-            evidence_root=args.evidence_root,
-            run_id=args.run_id,
-        )
-        payload = result.migration_result()
-        if not args.run_id:
-            payload["run_id"] = result.run_id
-    else:
-        from app.services.qualification_runner import QualificationRunner
-
-        runner = QualificationRunner()
-        evidence = runner._run_transition(
-            source=source_dir,
-            source_major=source_major,
-            target_major=target_major,
-            workdir=source_dir.parent / f".qualification-{source_major}-{target_major}",
-            evidence_path=(args.evidence_root or source_dir.parent / "qualification-evidence")
-            / f"stages/{source_major}-{target_major}/stage-evidence.json",
-        )
-        payload = {
-            "run_id": args.run_id or f"single-{source_major}-{target_major}",
-            "mode": "single",
-            "stage": f"{source_major}->{target_major}",
-            "final_status": "completed" if evidence.promotion.get("status") == "promoted" else "failed",
-            "stage_evidence": evidence.stage_evidence(),
-        }
     output = args.output.resolve()
-    output.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    print(f"migration-result written to {output}", flush=True)
-    print(f"final status: {payload['final_status']}", flush=True)
-    return 0 if payload["final_status"] in {"completed", "promoted"} else 1
+    run_id = args.run_id or _find_run(source_dir, source_major, target_major)
+    if run_id is None:
+        return _result(output, {
+            "run_id": None,
+            "mode": args.mode,
+            "chain": f"{source_major}->{target_major}",
+            "final_status": "failed",
+            "failure": {
+                "category": "COMMAND_AUTHORITY",
+                "phase": "migration_execution",
+                "code": "PROVEN_RUN_NOT_INITIALIZED",
+                "message": "No persisted run is available; create it through the governed Factory lifecycle before pumping execution.",
+            },
+        })
+    payload = _pump(run_id, args.timeout_seconds)
+    payload.update({"mode": args.mode, "chain": f"{source_major}->{target_major}"})
+    return _result(output, payload)
 
 
 if __name__ == "__main__":
