@@ -894,11 +894,29 @@ class ProvenStageExecutionService:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
             binding = self._binding(session, continuation)
+            steps = session.scalars(
+                select(StageStepModel).where(
+                    StageStepModel.stage_id == continuation.current_stage_id,
+                    StageStepModel.name.in_(
+                        ("final_install-0", "builds-0", "tests-0", "lint-0")
+                    ),
+                )
+            ).all()
+            failed = [step.name for step in steps if step.status != "PASSED"]
+            if failed:
+                self._block(
+                    session,
+                    continuation,
+                    "PROVEN_VALIDATION_NOT_AGGREGATEABLE",
+                    "validation steps are not all passed: " + ", ".join(failed),
+                )
+                return
             store = self._artifact_store(session, continuation)
             payload = {
                 "run_id": continuation.run_id,
                 "stage_id": continuation.current_stage_id,
                 "workspace_fingerprint": binding.workspace_fingerprint,
+                "steps": {step.name: step.status for step in steps},
                 "status": "PASS",
             }
             self._record_evidence(
@@ -1071,21 +1089,36 @@ def _discover_migration_owners(workspace: Path) -> list[dict[str, str]]:
 
 
 def _promotion_summary(session, continuation) -> object:
+    """Derive the promotion summary from the persisted proven validation.
+
+    The aggregate node already verified every validation step is PASSED and
+    wrote the evidence artifact; promotion reuses that durable state instead
+    of inventing a PASS summary here.
+    """
+    binding = _binding_row(session, continuation)
+    steps = session.scalars(
+        select(StageStepModel).where(
+            StageStepModel.stage_id == continuation.current_stage_id,
+            StageStepModel.name.in_(("final_install-0", "builds-0", "tests-0", "lint-0")),
+        )
+    ).all()
+    passed = steps and all(step.status == "PASSED" for step in steps)
+    fingerprint = binding.workspace_fingerprint if binding is not None else "none"
+
     class _Summary:
         run_id = continuation.run_id
         stage_id = continuation.current_stage_id
-        status = "PASS"
-        candidate_fingerprint = _binding_fingerprint(session, continuation)
+        status = "PASS" if passed else "FAIL"
+        candidate_fingerprint = fingerprint
 
     return _Summary()
 
 
-def _binding_fingerprint(session, continuation) -> str:
-    binding = session.scalar(
+def _binding_row(session, continuation) -> StageWorkspaceBindingModel | None:
+    return session.scalar(
         select(StageWorkspaceBindingModel).where(
             StageWorkspaceBindingModel.run_id == continuation.run_id,
             StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
             StageWorkspaceBindingModel.active.is_(True),
         )
     )
-    return binding.workspace_fingerprint if binding is not None else "none"
