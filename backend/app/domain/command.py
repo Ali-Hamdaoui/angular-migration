@@ -565,6 +565,14 @@ TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinitio
         allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"), max_output_bytes=5_000_000,
         description="Final clean install after lockfile verification",
     ),
+    "npm-dependency-tree": TransformationCommandDefinition(
+        command_id="npm-dependency-tree", template_id="tpl-npm-dependency-tree", executable="npm",
+        argument_patterns=("ls", "--all", "--json"),
+        executable_aliases=("npm.cmd",), timeout_seconds=1800,
+        network_profile="none",
+        allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"), max_output_bytes=20_000_000,
+        description="Prove the full physical/logical npm dependency tree as read-only evidence",
+    ),
     "npm-lockfile-generate": TransformationCommandDefinition(
         command_id="npm-lockfile-generate", template_id="tpl-npm-lockfile-generate", executable="npm",
         argument_patterns=("install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"),

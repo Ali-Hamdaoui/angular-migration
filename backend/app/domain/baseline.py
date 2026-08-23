@@ -64,6 +64,27 @@ class PackageMetadata:
     scripts: dict[str, str]
     package_json_checksum: str
     private_registry_scopes: tuple[str, ...] = ()
+    #: Section-preserving root intent (V2.2 P0-2).  The flattened
+    #: ``dependencies`` map above stays for legacy readers only; proven
+    #: semantic evaluation consumes ``dependency_intent`` exclusively.
+    dev_dependencies: dict[str, str] = field(default_factory=dict)
+    optional_dependencies: dict[str, str] = field(default_factory=dict)
+    peer_dependencies: dict[str, str] = field(default_factory=dict)
+    peer_dependencies_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def dependency_intent(self):
+        """Immutable section-aware root intent built once from package.json."""
+        from app.domain.lockfile_compatibility import DependencyIntent
+
+        return DependencyIntent.from_package_json(
+            {
+                "dependencies": self.dependencies,
+                "devDependencies": self.dev_dependencies,
+                "optionalDependencies": self.optional_dependencies,
+                "peerDependencies": self.peer_dependencies,
+                "peerDependenciesMeta": self.peer_dependencies_meta,
+            }
+        )
 
 
 @dataclass(frozen=True)
@@ -73,6 +94,13 @@ class LockfileResult:
     package_json_checksum: str
     lockfile_checksum: str
     blockers: tuple[str, ...] = ()
+    #: V2.2 P0-2 authority bindings (absent on the legacy bootstrap path).
+    authority_policy_checksum: str | None = None
+    authority_filename: str | None = None
+    authority_kind: str | None = None
+    raw_lockfile_sha256: str | None = None
+    dependency_set_checksum: str | None = None
+    root_sync_findings: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -108,12 +136,31 @@ class PackageMetadataInspector:
         payload = _read_json(sandbox / "package.json", "PACKAGE_JSON_MISSING")
         if not isinstance(payload, dict):
             raise BaselineQualificationError("PACKAGE_JSON_INVALID")
-        dependencies: dict[str, str] = {}
-        for section in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"):
-            values = payload.get(section, {})
+
+        def _section(name: str) -> dict[str, str]:
+            values = payload.get(name, {})
             if not isinstance(values, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in values.items()):
                 raise BaselineQualificationError("PACKAGE_DEPENDENCIES_INVALID")
-            dependencies.update(values)
+            return dict(values)
+
+        dependencies = _section("dependencies")
+        dev_dependencies = _section("devDependencies")
+        optional_dependencies = _section("optionalDependencies")
+        peer_dependencies = _section("peerDependencies")
+        peer_meta_raw = payload.get("peerDependenciesMeta", {})
+        if not isinstance(peer_meta_raw, dict) or any(
+            not isinstance(k, str) or not isinstance(v, dict) for k, v in peer_meta_raw.items()
+        ):
+            raise BaselineQualificationError("PACKAGE_DEPENDENCIES_INVALID")
+        peer_dependencies_meta = {name: dict(value) for name, value in peer_meta_raw.items()}
+        # Flattened legacy view: display/legacy readers only, never semantic
+        # root-sync authority.
+        flattened = {
+            **dependencies,
+            **dev_dependencies,
+            **optional_dependencies,
+            **peer_dependencies,
+        }
         private_scopes: list[str] = []
         npmrc = sandbox / ".npmrc"
         if npmrc.is_file():
@@ -127,19 +174,92 @@ class PackageMetadataInspector:
         return PackageMetadata(
             name=str(payload.get("name", "")),
             version=payload.get("version") if isinstance(payload.get("version"), str) else None,
-            dependencies=dependencies,
+            dependencies=flattened,
             scripts=scripts,
             package_json_checksum=_checksum_file(sandbox / "package.json"),
             private_registry_scopes=tuple(sorted(set(private_scopes))),
+            dev_dependencies=dev_dependencies,
+            optional_dependencies=optional_dependencies,
+            peer_dependencies=peer_dependencies,
+            peer_dependencies_meta=peer_dependencies_meta,
         )
 
 
 class LockfilePrequalificationService:
-    """Check npm lockfile presence, parseability, and root dependency agreement."""
+    """Check npm lockfile presence, parseability, and root dependency agreement.
 
-    def inspect(self, sandbox: Path, package: PackageMetadata) -> LockfileResult:
-        # npm accepts either package-lock.json or npm-shrinkwrap.json for a
-        # frozen install. Prefer package-lock when both are present.
+    With a bound exact npm version, selection goes through the canonical
+    ``LockfileAuthorityPolicy``/``select_lockfile_authority`` and root intent
+    is proven section-aware through ``PackageLockReader``.  Without one, the
+    historical bootstrap precedence is retained for the legacy runner until
+    P05 rewires it; proven plans never use that path.
+    """
+
+    def inspect(self, sandbox: Path, package: PackageMetadata, *, npm_exact_version: str | None = None) -> LockfileResult:
+        if npm_exact_version is None:
+            return self._inspect_legacy_bootstrap(sandbox, package)
+        from app.domain.lockfile_compatibility import (
+            LockfileAuthorityError,
+            LockfileAuthorityPolicy,
+            PackageLockError,
+            PackageLockReader,
+            select_lockfile_authority,
+        )
+
+        package_json_checksum = package.package_json_checksum
+        try:
+            policy = LockfileAuthorityPolicy.build_for_npm(npm_exact_version)
+        except ValueError as error:
+            code = getattr(error, "code", "LOCK_AUTHORITY_POLICY_UNSUPPORTED")
+            return LockfileResult("blocked", None, package_json_checksum, "", (code,))
+        try:
+            authority = select_lockfile_authority(sandbox, policy=policy)
+        except (LockfileAuthorityError, PackageLockError) as error:
+            code = getattr(error, "code", "NPM_LOCKFILE_INVALID")
+            return LockfileResult("blocked", None, package_json_checksum, "", (code,))
+        except OSError:
+            return LockfileResult("blocked", None, package_json_checksum, "", ("NPM_LOCKFILE_INVALID",))
+        raw_sha256 = authority.sha256
+        try:
+            reader = PackageLockReader.from_authority(authority)
+        except PackageLockError as error:
+            return LockfileResult("blocked", authority.lockfile_version, package_json_checksum, raw_sha256, (error.code,),
+                                  authority_policy_checksum=policy.checksum, authority_filename=authority.filename,
+                                  authority_kind=authority.kind, raw_lockfile_sha256=raw_sha256)
+        dependency_set = reader.dependency_set()
+        intent = package.dependency_intent()
+        sync = reader.root_sync_with_manifest(intent, policy)
+        blockers: list[str] = []
+        for finding in sync.findings:
+            if finding.static_result != "MISMATCH":
+                continue
+            if finding.kind.value in {"REQUIRED", "DEV"} and finding.resolved_version is None:
+                blockers.append(f"NPM_LOCKFILE_DEPENDENCY_MISSING:{finding.package}")
+            elif _is_exact_version(finding.requested_spec):
+                blockers.append(f"NPM_LOCKFILE_VERSION_MISMATCH:{finding.package}")
+            else:
+                blockers.append(f"NPM_LOCKFILE_ROOT_MISMATCH:{finding.package}")
+        # Deferred findings pass only with governed npm solve/clean-ci
+        # evidence, which this prequalification path does not carry.
+        if sync.status != "synchronized" and not blockers:
+            blockers.append("NPM_LOCKFILE_ROOT_SYNC_DEFERRED")
+        return LockfileResult(
+            "blocked" if blockers else "valid",
+            dependency_set.lockfile_version,
+            package_json_checksum,
+            raw_sha256,
+            tuple(dict.fromkeys(blockers)),
+            authority_policy_checksum=policy.checksum,
+            authority_filename=authority.filename,
+            authority_kind=authority.kind,
+            raw_lockfile_sha256=raw_sha256,
+            dependency_set_checksum=dependency_set.checksum,
+            root_sync_findings=tuple(finding.model_dump(mode="json") for finding in sync.findings),
+        )
+
+    def _inspect_legacy_bootstrap(self, sandbox: Path, package: PackageMetadata) -> LockfileResult:
+        # Historical bootstrap precedence (package-lock first).  Retained only
+        # for the legacy runner; superseded by the bound-npm selector above.
         path = next((candidate for candidate in (sandbox / "package-lock.json", sandbox / "npm-shrinkwrap.json") if candidate.is_file()), sandbox / "package-lock.json")
         blockers: list[str] = []
         if not path.is_file():

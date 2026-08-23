@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 import re
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from app.domain.contracts import ContractModel
 
@@ -299,3 +299,70 @@ class RepairRevisionRequest(RepairDecisionRequest):
 class LegacyRepairOverrideRecoveryRequest(RepairRevisionRequest):
     expected_state_version: int = Field(ge=1)
     correlation_id: str = Field(min_length=1, max_length=128)
+
+
+def _canonical_checksum(payload: object) -> str:
+    import hashlib
+    import json
+
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+_DRAFT_CHECKSUM = "sha256:" + "0" * 64
+
+
+class SourceBaselineEvidence(ContractModel):
+    """Immutable evidence for one proven stage source baseline (V2.2 P0-2).
+
+    Binds the section-aware root intent, the bound-npm lock authority
+    selection and canonical resolved-state proof, same-authority npm-ci/npm-ls
+    executions, exact cohort proof, build/test/lint executions, baseline
+    diagnostics, and the frozen workspace fingerprint into one checksum.
+    """
+
+    schema_version: str = "source-baseline-evidence-v1"
+    run_id: str = Field(min_length=1)
+    stage_id: str = Field(min_length=1)
+    generation_id: str = Field(min_length=1)
+    input_sealed_checkpoint_id: str | None = None
+    input_sealed_fingerprint: str | None = None
+    dependency_intent_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    package_json_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    npm_exact_version: str = Field(min_length=1)
+    lockfile_policy_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    selected_lock_filename: str = Field(min_length=1)
+    selected_lock_kind: str = Field(min_length=1)
+    selected_lock_version: int = Field(ge=1, le=3)
+    selected_lock_raw_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    dependency_set_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    root_sync_status: str = Field(min_length=1)
+    root_sync_findings: tuple[dict[str, object], ...] = ()
+    runtime_identity_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    install_execution_id: str | None = None
+    tree_execution_id: str | None = None
+    version_proof_execution_id: str | None = None
+    build_execution_id: str | None = None
+    test_execution_id: str | None = None
+    lint_execution_id: str | None = None
+    execution_artifact_ids: tuple[str, ...] = ()
+    exact_cohort: dict[str, str] = Field(default_factory=dict)
+    normalized_diagnostics: tuple[dict[str, str], ...] = ()
+    baseline_fingerprint: str = Field(min_length=1)
+    status: str
+    checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+    @classmethod
+    def create(cls, **fields) -> "SourceBaselineEvidence":
+        draft = cls(**fields, checksum=_DRAFT_CHECKSUM)
+        checksum = _canonical_checksum(draft.model_dump(mode="json", exclude={"checksum"}))
+        return draft.model_copy(update={"checksum": checksum})
+
+    @model_validator(mode="after")
+    def bind_checksum(self) -> "SourceBaselineEvidence":
+        if self.checksum == _DRAFT_CHECKSUM:
+            return self
+        expected = _canonical_checksum(self.model_dump(mode="json", exclude={"checksum"}))
+        if self.checksum != expected:
+            raise ValueError("source baseline evidence checksum does not bind its payload")
+        return self

@@ -129,6 +129,13 @@ class LockfileCompatibilityService:
                     resolved[name] = version
         root = packages.get("", {}) if isinstance(packages, dict) else {}
         root_deps = root.get("dependencies", {}) if isinstance(root, dict) else {}
+        # top_level_resolved carries exact resolved versions only; the
+        # declaration mirror under packages[""] is never exposed as intent.
+        top_level = {
+            name: resolved[name]
+            for name in sorted(root_deps)
+            if name in resolved and isinstance(resolved[name], str)
+        }
         if not packages and isinstance(payload, dict):
             # Legacy v1 lockfile: dependencies tree with nested node_modules.
             def walk(node: object) -> None:
@@ -145,9 +152,15 @@ class LockfileCompatibilityService:
                         walk(nested)
 
             walk(payload.get("dependencies", {}))
+            v1_root_names = [
+                name
+                for name, entry in (payload.get("dependencies", {}) or {}).items()
+                if isinstance(entry, dict) and isinstance(entry.get("version"), str)
+            ]
+            top_level = {name: resolved[name] for name in sorted(v1_root_names) if name in resolved}
         return LockfileDependencySet(
             lockfile_version=lockfile_version if isinstance(lockfile_version, int) else None,
-            root_dependencies={k: v for k, v in root_deps.items() if isinstance(v, str)},
+            top_level_resolved=top_level,
             resolved_packages=resolved,
             checksum=checksum,
         )
