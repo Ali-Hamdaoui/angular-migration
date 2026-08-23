@@ -35,6 +35,16 @@ class DependencyRepairPreflightService:
         catalogue_version: str | None = None,
     ) -> dict[str, object]:
         current = self._read_json(workspace / "package.json")
+        operations = proposal.get("operations") if isinstance(proposal, dict) else None
+        if (
+            isinstance(operations, list)
+            and len(operations) == 1
+            and isinstance(operations[0], dict)
+            and operations[0].get("operation") == "dependency_transition"
+        ):
+            return self._validate_transition_contract(
+                current, proposal, source_family, target_family, catalogue_version
+            )
         proposed = self._proposed_manifest(current, proposal)
         source_major = self._major(source_family)
         target_major = self._major(target_family)
@@ -115,6 +125,138 @@ class DependencyRepairPreflightService:
                 evidence,
             )
         return evidence
+
+    def _validate_transition_contract(
+        self,
+        current: dict[str, object],
+        proposal: dict[str, object],
+        source_family: str,
+        target_family: str,
+        catalogue_version: str | None = None,
+    ) -> dict[str, object]:
+        """Validate only the detach/update/reattach transition contract.
+
+        A dependency_transition intentionally changes only the blocking
+        dependency before ``ng update`` reruns, so the rest of the manifest is
+        still at the source major at G10 time. The whole-manifest cohort gate
+        applies after the migration command executes, never here.
+        """
+        operation = proposal["operations"][0]
+        blocking = operation.get("blocking_dependency")
+        target = operation.get("target_state")
+        if (
+            operation.get("path") != "package.json"
+            or not isinstance(blocking, dict)
+            or not isinstance(target, dict)
+        ):
+            raise DependencyRepairPreflightError(
+                "REPAIR_DEPENDENCY_PREFLIGHT_FAILED",
+                "dependency_transition contract is incomplete",
+                {"operation": operation},
+            )
+        package = target.get("package")
+        target_version = target.get("target_version")
+        installed_version = blocking.get("installed_version")
+        blocking_package = blocking.get("package")
+        if (
+            not isinstance(package, str)
+            or not isinstance(target_version, str)
+            or self._version_tuple(target_version) is None
+            or blocking_package != package
+        ):
+            raise DependencyRepairPreflightError(
+                "REPAIR_DEPENDENCY_PREFLIGHT_FAILED",
+                "dependency_transition contract is incomplete or internally inconsistent",
+                {"operation": operation},
+            )
+        if (
+            isinstance(installed_version, str)
+            and self._version_tuple(installed_version) is not None
+            and target_version == installed_version
+        ):
+            raise DependencyRepairPreflightError(
+                "REPAIR_DEPENDENCY_PREFLIGHT_FAILED",
+                "Proposed dependency state is incompatible: "
+                + json.dumps(
+                    [{
+                        "code": "TRANSITION_NO_OP",
+                        "package": package,
+                        "proposed_spec": target_version,
+                        "installed_version": installed_version,
+                        "target_family": target_family,
+                    }],
+                    sort_keys=True,
+                ),
+                {"status": "failed"},
+            )
+        target_major = self._major(target_family)
+        catalogue = CompatibilityCatalogueProvider().load(
+            catalogue_version or CompatibilityCatalogueProvider.CURRENT_VERSION
+        )
+        cohort = catalogue.entry_for(source_family, target_family).target_cohort()
+        expected_exact = cohort.get(package)
+        if expected_exact is not None and target_version != expected_exact:
+            raise DependencyRepairPreflightError(
+                "REPAIR_DEPENDENCY_PREFLIGHT_FAILED",
+                "Proposed dependency state is incompatible: "
+                + json.dumps(
+                    [{
+                        "code": "TARGET_COHORT_MISMATCH",
+                        "package": package,
+                        "proposed_spec": target_version,
+                        "expected_exact": expected_exact,
+                        "target_family": target_family,
+                        "catalogue_version": catalogue.version,
+                    }],
+                    sort_keys=True,
+                ),
+                {"status": "failed"},
+            )
+        peer_ranges = blocking.get("required_peer_ranges")
+        own_range = None
+        if isinstance(peer_ranges, list):
+            own_range = next(
+                (
+                    entry.get("version_range")
+                    for entry in peer_ranges
+                    if isinstance(entry, dict)
+                    and entry.get("package") == package
+                    and isinstance(entry.get("version_range"), str)
+                ),
+                None,
+            )
+        if own_range is not None and not self._range_contains_exact(own_range, target_version):
+            raise DependencyRepairPreflightError(
+                "REPAIR_DEPENDENCY_PREFLIGHT_FAILED",
+                "Proposed dependency state is incompatible: "
+                + json.dumps(
+                    [{
+                        "code": "TRANSITION_PEER_RANGE_MISMATCH",
+                        "package": package,
+                        "proposed_spec": target_version,
+                        "peer_range": own_range,
+                        "target_family": target_family,
+                    }],
+                    sort_keys=True,
+                ),
+                {"status": "failed"},
+            )
+        return {
+            "status": "passed",
+            "source_family": source_family,
+            "target_family": target_family,
+            "target_major": target_major,
+            "catalogue_version": catalogue.version,
+            "catalogue_checksum": catalogue.checksum,
+            "validation_mode": "dependency_transition",
+            "transition_contract": {
+                "package": package,
+                "target_version": target_version,
+                "installed_version": installed_version,
+                "blocking_package": blocking_package,
+            },
+            "findings": [],
+        }
 
     def classify_current_state(
         self, *, workspace: Path, source_family: str, target_family: str
