@@ -992,7 +992,6 @@ def compute_diagnostic_delta(
 
 class ValidationSummary(ContractModel):
     """Checksum-bound outcome of one clean validation generation (§12)."""
-
     schema_version: str = "validation-summary-v1"
     run_id: str = Field(min_length=1)
     stage_id: str = Field(min_length=1)
@@ -1092,3 +1091,67 @@ class SourceBaselineEvidence(ContractModel):
         if self.checksum != expected:
             raise ValueError("source baseline evidence checksum does not bind its payload")
         return self
+
+
+# ---------------------------------------------------------------------------
+# V2.2 P1-3 / section 12 recovery � node-level idempotency guard.
+# ---------------------------------------------------------------------------
+
+class NodeExecutionGuard(ContractModel):
+    """Terminal-evidence predicate for one proven node (P1-3).
+
+    A resumed stage may reuse terminal output only when the recorded input
+    checksum matches the live input and immutable terminal evidence exists;
+    anything else creates a new attempt rather than replaying stale output or
+    guessing completion.
+    """
+
+    schema_version: str = "node-execution-guard-v1"
+    run_id: str = Field(min_length=1)
+    stage_id: str = Field(min_length=1)
+    node: str = Field(min_length=1)
+    generation_id: str = Field(min_length=1)
+    input_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    attempt_id: str = Field(min_length=1)
+    output_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    terminal_evidence_refs: tuple[str, ...] = ()
+    invalidation_reason: str | None = None
+    checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def bind(self) -> "NodeExecutionGuard":
+        if self.checksum == _DRAFT_CHECKSUM:
+            return self
+        expected = _canonical_checksum(self.model_dump(mode="json", exclude={"checksum"}))
+        if self.checksum != expected:
+            raise ValueError("node execution guard checksum does not bind its payload")
+        return self
+
+    @classmethod
+    def create(cls, **fields) -> "NodeExecutionGuard":
+        draft = cls(**fields, checksum=_DRAFT_CHECKSUM)
+        checksum = _canonical_checksum(draft.model_dump(mode="json", exclude={"checksum"}))
+        return draft.model_copy(update={"checksum": checksum})
+
+
+def resolve_replay_decision(
+    *,
+    persisted: NodeExecutionGuard | None,
+    live_input_checksum: str,
+) -> tuple[str, str]:
+    """Pure idempotency decision for a side-effecting proven node.
+
+    Returns ``(decision, reason_code)`` where decision is ``REUSE`` only when
+    persisted terminal evidence is complete and bound to exactly the live
+    input checksum; ``NEW_ATTEMPT`` otherwise.  Missing proven metadata makes
+    the step legacy/unknown - never a guessed completion.
+    """
+    if persisted is None:
+        return "NEW_ATTEMPT", "NODE_GUARD_MISSING"
+    if persisted.invalidation_reason:
+        return "INVALIDATE", f"GUARD_INVALIDATED:{persisted.invalidation_reason}"
+    if persisted.input_checksum != live_input_checksum:
+        return "NEW_ATTEMPT", "INPUT_CHECKSUM_DRIFT"
+    if not persisted.terminal_evidence_refs or persisted.output_checksum is None:
+        return "NEW_ATTEMPT", "TERMINAL_EVIDENCE_INCOMPLETE"
+    return "REUSE", "TERMINAL_EVIDENCE_BOUND"
