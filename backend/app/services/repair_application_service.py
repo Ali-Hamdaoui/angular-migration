@@ -722,7 +722,9 @@ class RepairProposal(RepairProposalCandidate):
 class RepairReviewCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    decision: Literal["accept", "request_changes", "reject"]
+    # V2.2 P1-1: insufficient_context is the bounded fourth outcome; the
+    # reviewer decides and can never author replacement content.
+    decision: Literal["accept", "request_changes", "reject", "insufficient_context"]
     findings: list[str] = Field(max_length=32)
     policy_checks: list[str] = Field(min_length=1, max_length=32)
     risk_assessment: str = Field(min_length=1, max_length=2000)

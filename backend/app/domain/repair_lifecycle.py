@@ -38,6 +38,9 @@ class RepairLifecycleStatus(str, Enum):
     REJECTED = "rejected"
     SUPERSEDED = "superseded"
     CANCELLED = "cancelled"
+    # V2.2 P1-1: bounded fourth reviewer outcome; evidence acquisition or a
+    # governed human route follows, never silent acceptance.
+    REVIEW_INSUFFICIENT_CONTEXT = "review_insufficient_context"
 
 
 ALL_LIFECYCLE_STATUSES = frozenset(status.value for status in RepairLifecycleStatus)
@@ -70,7 +73,8 @@ SEALED_TERMINAL_STATUSES = frozenset(
 #: Legal forward transitions, derived from actual assignment sites.
 _TRANSITIONS: dict[str, frozenset[str]] = {
     RepairLifecycleStatus.EVIDENCE_FROZEN.value: frozenset({RepairLifecycleStatus.PROPOSED.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.CANCELLED.value}),
-    RepairLifecycleStatus.PROPOSED.value: frozenset({RepairLifecycleStatus.REVIEW_ACCEPTED.value, RepairLifecycleStatus.REQUEST_CHANGES.value, RepairLifecycleStatus.REJECTED.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.PROPOSED.value: frozenset({RepairLifecycleStatus.REVIEW_ACCEPTED.value, RepairLifecycleStatus.REQUEST_CHANGES.value, RepairLifecycleStatus.REVIEW_INSUFFICIENT_CONTEXT.value, RepairLifecycleStatus.REJECTED.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.REVIEW_INSUFFICIENT_CONTEXT.value: frozenset({RepairLifecycleStatus.PROPOSED.value, RepairLifecycleStatus.REJECTED.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.REVIEW_ACCEPTED.value: frozenset({RepairLifecycleStatus.WAITING_G10.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.REQUEST_CHANGES.value: frozenset({RepairLifecycleStatus.REJECTED.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.WAITING_G10.value: frozenset({RepairLifecycleStatus.APPROVED_PENDING_EXECUTION.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.CANCELLED.value}),
@@ -105,6 +109,53 @@ class RepairLifecycleTransition(BaseModel):
 
 def is_sealed(status: str | None) -> bool:
     return status in SEALED_TERMINAL_STATUSES
+
+
+# ---------------------------------------------------------------------------
+# V2.2 P1-1 — candidate-scoped repair intent boundaries.
+# ---------------------------------------------------------------------------
+
+#: Files a repair proposal may never touch, in any candidate.
+REPAIR_FORBIDDEN_PATHS = frozenset({"package-lock.json", "npm-shrinkwrap.json"})
+
+
+class RepairScopeError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def assert_repair_candidate_scope(
+    *,
+    touched_paths: tuple[str, ...],
+    candidate_root_prefix: str,
+    allowed_paths: tuple[str, ...] | None = None,
+) -> None:
+    """Fail closed unless every touched path stays inside the isolated candidate.
+
+    Rejects absolute paths, parent traversal, lockfile authority files, and —
+    when an explicit allowlist is bound — anything outside it.  ``None`` as a
+    path or root is invalid; the authoritative generation can never be the
+    application target because its prefix never matches.
+    """
+    if not candidate_root_prefix:
+        raise RepairScopeError("REPAIR_CANDIDATE_ROOT_REQUIRED", "repair application requires a bound candidate root")
+    allowed = {path.replace("\\", "/") for path in allowed_paths} if allowed_paths is not None else None
+    for raw in touched_paths:
+        if not isinstance(raw, str) or not raw:
+            raise RepairScopeError("REPAIR_PATH_INVALID", "repair operation paths must be non-empty strings")
+        path = raw.replace("\\", "/")
+        if path.startswith(("/", "~")) or (len(path) > 1 and path[1] == ":"):
+            raise RepairScopeError("REPAIR_PATH_ABSOLUTE", f"repair path must be relative to the candidate: {raw!r}")
+        normalized = path.lstrip("./") if path.startswith("./") else path
+        if ".." in normalized.split("/"):
+            raise RepairScopeError("REPAIR_PATH_TRAVERSAL", f"repair path escapes the candidate root: {raw!r}")
+        if normalized in REPAIR_FORBIDDEN_PATHS or normalized.endswith("/" + next(iter(REPAIR_FORBIDDEN_PATHS))) or any(normalized == forbidden or normalized.endswith("/" + forbidden) for forbidden in REPAIR_FORBIDDEN_PATHS):
+            raise RepairScopeError("REPAIR_LOCK_AUTHORITY_FORBIDDEN", f"repair proposals cannot edit {normalized!r}")
+        if allowed is not None and normalized not in allowed:
+            raise RepairScopeError("REPAIR_PATH_OUT_OF_SCOPE", f"repair path is outside the bounded problem group: {normalized!r}")
+    return
 
 
 def can_transition(from_status: str | None, to_status: str | None) -> bool:
