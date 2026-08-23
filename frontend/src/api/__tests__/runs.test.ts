@@ -16,7 +16,8 @@ describe("authoritative run API client", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(timing), { status: 200 }));
     const client = createApiClient("http://backend.test", fetchMock);
 
-    await expect(createAuthoritativeRun({ preflight_id: "preflight-1", input_checksum: "sha256:input", artifact_set_checksum: "sha256:artifacts", idempotency_key: "create-1", actor: "operator", client_constraints: { preserve_ui: true }, pricing_snapshot: {} }, client)).resolves.toMatchObject({ run_id: "run-1" });
+    await expect(createAuthoritativeRun({ preflight_id: "preflight-1", input_checksum: "sha256:input", artifact_set_checksum: "sha256:artifacts", idempotency_key: "create-1", actor: "operator", client_constraints: { preserve_ui: true }, pricing_snapshot: {}, run_mode: "QUALIFICATION" }, client)).resolves.toMatchObject({ run_id: "run-1" });
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({ run_mode: "QUALIFICATION" });
     await expect(startAuthoritativeRun("run-1", { expected_state_version: 2, idempotency_key: "start-1", actor: "operator" }, client)).resolves.toMatchObject({ status: "SOURCE_VALIDATION_RUNNING" });
     await expect(retryAuthoritativeSourceIntake("run-1", { expected_state_version: 4, idempotency_key: "retry-1", actor: "operator" }, client)).resolves.toMatchObject({ status: "SOURCE_VALIDATION_RUNNING" });
     await expect(cancelAuthoritativeRun("run-1", { expected_state_version: 5, idempotency_key: "cancel-1", actor: "operator" }, client)).resolves.toMatchObject({ status: "CANCELLED" });

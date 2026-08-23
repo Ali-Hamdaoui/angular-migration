@@ -204,6 +204,74 @@ def test_runtime_governance_rejects_mismatched_npm_and_npx_pair():
     assert "NO_COMPATIBLE_STAGE1_PROFILE" in result.package.blockers
 
 
+def _node12_npm8_candidate():
+    return _candidate(
+        profile_id="runtime-node12",
+        node_exact="12.22.12",
+        npm_exact="8.19.4",
+        npx_exact="8.19.4",
+    )
+
+
+def _node12_npm8_request(**updates):
+    catalogue = CompatibilityCatalogueProvider().load()
+    return _request(
+        source_angular_exact="11.0.4",
+        catalogue_version=catalogue.version,
+        runtime_candidates=(_node12_npm8_candidate(),),
+        **updates,
+    )
+
+
+def test_production_range_compatible_blocks_with_stage_runtime_certification_required():
+    result = CompatibilityResolver(CompatibilityCatalogueProvider().load()).resolve(_node12_npm8_request())
+
+    assert result.selected_profile is not None
+    assert result.selected_profile.classification == "RANGE_COMPATIBLE"
+    assert result.status == "blocked"
+    assert "STAGE_RUNTIME_CERTIFICATION_REQUIRED" in result.package.blockers
+
+
+def test_qualification_range_compatible_is_allowed():
+    result = CompatibilityResolver(CompatibilityCatalogueProvider().load()).resolve(
+        _node12_npm8_request(run_mode="QUALIFICATION")
+    )
+
+    assert result.status == "feasible_with_warnings"
+    assert "STAGE_RUNTIME_CERTIFICATION_REQUIRED" not in result.package.blockers
+    assert result.selected_profile is not None
+    assert result.selected_profile.classification == "RANGE_COMPATIBLE"
+    assert result.gate.status == "pending"
+
+
+def test_production_exact_certified_is_allowed():
+    entries = tuple(
+        entry.model_copy(update={"validated_runtime_profiles": (("20.11.1", "10.2.4"),)})
+        for entry in _catalogue().entries
+    )
+    catalogue = CompatibilityCatalogue.build("catalog-v1", entries)
+    candidate = _candidate()
+    result = CompatibilityResolver(catalogue).resolve(_request(
+        source_angular_exact="18.2.4",
+        catalogue_version=catalogue.version,
+        runtime_candidates=(candidate,),
+    ))
+
+    assert result.selected_profile is not None
+    assert result.selected_profile.classification == "EXACT_CERTIFIED"
+    assert result.status in {"feasible", "feasible_with_warnings"}
+    assert result.package.blockers == ()
+
+
+def test_qualification_does_not_modify_certification_state():
+    resolver = CompatibilityResolver(CompatibilityCatalogueProvider().load())
+    result = resolver.resolve(_node12_npm8_request(run_mode="QUALIFICATION"))
+
+    assert result.selected_profile is not None
+    assert result.selected_profile.classification == "RANGE_COMPATIBLE"
+    assert result.selected_profile.classification != "EXACT_CERTIFIED"
+
+
 def test_service_replays_identical_idempotent_request_and_rejects_payload_reuse():
     service = CompatibilityApplicationService(resolver=CompatibilityResolver(_catalogue()))
     request = _request()

@@ -72,9 +72,9 @@ def setup(tmp_path: Path):
             execution_profile_checksum="sha256:" + "4" * 64,
             resolved_scripts={"build": "build", "test": "test"},
             builder="@angular-devkit/build-angular:application",
-            target_cli_exact="19.2.0",
+            target_cli_exact="19.0.0",
             stage_route=(
-                ("angular-18.x", "angular-19.x", "stage-18-to-19", "19.2.0"),
+                ("angular-18.x", "angular-19.x", "stage-18-to-19", "19.0.0"),
                 ("angular-19.x", "angular-20.x", "stage-19-to-20", "20.0.0"),
                 ("angular-20.x", "angular-21.x", "stage-20-to-21", "21.0.0"),
             ),
@@ -510,3 +510,99 @@ def test_active_plan_without_review_returns_bootstrap_projection(tmp_path):
     assert projection.plan_checksum == generated.plan.checksum
     assert projection.stage_plan_checksum == generated.first_stage_plan.checksum
     assert projection.gate_status == "not_created"
+
+
+BOUND_FINGERPRINT = "sha256:" + "f" * 64
+OTHER_FINGERPRINT = "sha256:" + "e" * 64
+
+
+def _explain(service, generated, *, workspace_fingerprint=None, key="explain-fp"):
+    return service.explain(
+        "run-1",
+        PlanningExplanationApiRequest(
+            expected_state_version=1,
+            idempotency_key=key,
+            plan=generated.plan.model_dump(mode="json"),
+            stage_plan=generated.first_stage_plan.model_dump(mode="json"),
+            artifact_set_checksum="sha256:" + "3" * 64,
+            plan_version=1,
+            workspace_fingerprint=workspace_fingerprint,
+        ),
+        "operator",
+    )
+
+
+def _decide(service, explanation, *, workspace_fingerprint=None, key="decision-fp"):
+    return service.decide_g06(
+        "run-1",
+        G06DecisionApiRequest(
+            expected_state_version=2,
+            idempotency_key=key,
+            gate_version=explanation.gate_version,
+            package_checksum=explanation.package_checksum,
+            artifact_set_checksum=explanation.package["artifact_set_checksum"],
+            plan_checksum=explanation.package["plan_checksum"],
+            stage_plan_checksum=explanation.package["stage_plan_checksum"],
+            workspace_fingerprint=workspace_fingerprint,
+            decision=G06Decision.APPROVE,
+        ),
+        "operator",
+    )
+
+
+def test_g06_accepts_same_bound_workspace_fingerprint(tmp_path):
+    generated, sessions, _, service = setup(tmp_path)
+    service._planning_agent = FakePlanningAgent()
+    explanation = _explain(service, generated, workspace_fingerprint=BOUND_FINGERPRINT)
+
+    decision = _decide(service, explanation, workspace_fingerprint=BOUND_FINGERPRINT)
+
+    assert decision.accepted is True
+    with sessions() as session:
+        gate = session.query(G06ApprovalModel).one()
+        assert gate.status == "approved"
+        assert gate.workspace_fingerprint == BOUND_FINGERPRINT
+
+
+def test_g06_stale_when_bound_and_request_fingerprints_differ(tmp_path):
+    generated, sessions, _, service = setup(tmp_path)
+    service._planning_agent = FakePlanningAgent()
+    explanation = _explain(service, generated, workspace_fingerprint=BOUND_FINGERPRINT)
+
+    with pytest.raises(PlanningReviewEvidenceError, match="G06 package binding is stale"):
+        _decide(service, explanation, workspace_fingerprint=OTHER_FINGERPRINT)
+
+    with sessions() as session:
+        gate = session.query(G06ApprovalModel).one()
+        assert gate.status == "stale"
+        assert gate.stale_reason == "G06 package binding changed"
+        assert "G06_STALE" in {
+            event.event_type for event in session.query(WorkflowEventModel).all()
+        }
+
+
+def test_g06_accepts_missing_request_fingerprint_when_gate_bound(tmp_path):
+    generated, sessions, _, service = setup(tmp_path)
+    service._planning_agent = FakePlanningAgent()
+    explanation = _explain(service, generated, workspace_fingerprint=BOUND_FINGERPRINT)
+
+    decision = _decide(service, explanation, workspace_fingerprint=None)
+
+    assert decision.accepted is True
+    with sessions() as session:
+        gate = session.query(G06ApprovalModel).one()
+        assert gate.status == "approved"
+
+
+def test_g06_accepts_when_neither_side_has_workspace_fingerprint(tmp_path):
+    generated, sessions, _, service = setup(tmp_path)
+    service._planning_agent = FakePlanningAgent()
+    explanation = _explain(service, generated, workspace_fingerprint=None)
+
+    decision = _decide(service, explanation, workspace_fingerprint=None)
+
+    assert decision.accepted is True
+    with sessions() as session:
+        gate = session.query(G06ApprovalModel).one()
+        assert gate.status == "approved"
+        assert gate.workspace_fingerprint is None

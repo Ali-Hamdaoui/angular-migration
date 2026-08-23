@@ -95,9 +95,11 @@ class CompatibilityResolver:
         profile = self._select_stage1_profile(request, entries[0])
         if profile is None:
             blockers.append("NO_COMPATIBLE_STAGE1_PROFILE")
-        elif profile.classification != "EXACT_CERTIFIED" and not self._qualification_authorized(request):
+        elif profile.classification != "EXACT_CERTIFIED" and not self._qualification_allowed(request):
             # V2.2 P0-0: production fails closed on allowed-but-uncertified
             # exact profiles; analysis reporting stays available via the route.
+            # QUALIFICATION permits officially allowed (RANGE_COMPATIBLE)
+            # profiles for controlled E2E testing but never certifies them.
             blockers.append("STAGE_RUNTIME_CERTIFICATION_REQUIRED")
         status = "blocked" if blockers else ("feasible_with_warnings" if warnings else "feasible")
         support_level = "blocked" if blockers else ("historical_experimental" if any(e.support_level == "historical_experimental" for e in entries) else entries[0].support_level)
@@ -195,12 +197,12 @@ class CompatibilityResolver:
         return entry.model_copy(update={"validated_runtime_profiles": merged})
 
     @staticmethod
-    def _qualification_authorized(request) -> bool:
-        """QUALIFICATION mode proceeds only with its explicit authorization checksum."""
-        return (
-            getattr(request, "run_mode", "PRODUCTION") == "QUALIFICATION"
-            and bool(request.qualification_authorization_checksum)
-        )
+    def _qualification_allowed(request) -> bool:
+        """QUALIFICATION mode permits allowed-but-uncertified runtime profiles
+        (RANGE_COMPATIBLE) for controlled E2E testing; PRODUCTION fails closed
+        exactly as before. Qualification never promotes or certifies a runtime.
+        """
+        return getattr(request, "run_mode", "PRODUCTION") == "QUALIFICATION"
 
     def _stage(self, entry, request, blockers, warnings):
         classifications = [

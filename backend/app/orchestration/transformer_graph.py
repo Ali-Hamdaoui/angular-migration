@@ -572,6 +572,7 @@ class TransformerOrchestrator:
                 run.artifact_root,
                 binding.workspace_fingerprint,
             )
+        self._stage.ensure_qualification_certification(context[0], context[1])
         stored = self._stage.write_gate_package(
             run_id=context[0],
             stage_id=context[1],

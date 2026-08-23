@@ -613,6 +613,7 @@ describe('G01ReviewPanel', () => {
         allow_optional_modernization: false,
       },
       pricing_snapshot: {},
+      run_mode: 'QUALIFICATION',
     }));
     expect(startAuthoritativeRun).toHaveBeenCalledWith('created-run', {
       expected_state_version: 2,

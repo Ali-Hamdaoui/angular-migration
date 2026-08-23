@@ -6,7 +6,7 @@ import hashlib
 import json
 import shutil
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,6 +45,7 @@ from app.services.command_executor_service import (
     CommandExecutorError,
     CommandExecutorService,
 )
+from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
 from app.services.stage_execution_application_service import (
     StageExecutionApplicationService,
     StageExecutionError,
@@ -104,6 +105,224 @@ class TransformerStageService:
         self._command_executor = command_executor or CommandExecutorService()
         self._stage_runtime = stage_runtime_service or StageRuntimeApplicationService()
         self._now = now_provider or (lambda: datetime.now(UTC))
+
+    def ensure_qualification_certification(self, run_id: str, stage_id: str) -> str | None:
+        """Deterministic P0-0 runtime certification for QUALIFICATION runs.
+
+        Runs only when the run policy snapshot declares QUALIFICATION mode and
+        no certified row exists for the stage yet (idempotent). PRODUCTION
+        runs are untouched. Wires the existing immutable qualification
+        pipeline: authorization -> evidence -> accepted promotion, bound to
+        the already-resolved stage runtime bindings.
+        """
+        from app.domain.runtime_certification import (
+            RuntimeCertificationPromotionDecision,
+            RuntimeQualificationAuthorization,
+            RuntimeQualificationEvidence,
+            canonical_payload_checksum,
+            qualification_promotion_path,
+        )
+        from app.repositories.models import CommandExecutionModel, RuntimeCertificationModel
+        from app.services.runtime_certification_service import RuntimeCertificationService
+
+        with self._scope() as session:
+            run = session.get(MigrationRunModel, run_id)
+            if run is None or (run.run_policy_snapshot or {}).get("run_mode") != "QUALIFICATION":
+                return None
+            certified = session.scalar(
+                select(RuntimeCertificationModel).where(
+                    RuntimeCertificationModel.stage_id == stage_id,
+                    RuntimeCertificationModel.certified.is_(True),
+                )
+            )
+            if certified is not None:
+                return certified.id
+            rows = list(
+                session.scalars(
+                    select(StageRuntimeBindingModel)
+                    .where(
+                        StageRuntimeBindingModel.run_id == run_id,
+                        StageRuntimeBindingModel.stage_id == stage_id,
+                        StageRuntimeBindingModel.status == "bound",
+                    )
+                ).all()
+            )
+            if not rows:
+                raise TransformerStageError(
+                    "STAGE_RUNTIME_BINDING_MISSING",
+                    "Qualification certification requires the bound stage runtime",
+                )
+            bindings = {row.kind: row for row in rows}
+            if set(bindings) != {"node", "npm", "npx"}:
+                raise TransformerStageError(
+                    "STAGE_RUNTIME_BINDING_INCOMPLETE",
+                    "node/npm/npx stage runtime binding is incomplete",
+                )
+            stage = session.get(MigrationStageModel, stage_id)
+            if stage is None:
+                raise TransformerStageError("STAGE_NOT_FOUND", "The transformation stage is unavailable")
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == run_id
+                )
+            )
+            workspace_binding = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == run_id,
+                    StageWorkspaceBindingModel.stage_id == stage_id,
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            bootstrap = session.scalar(
+                select(CommandExecutionModel)
+                .where(
+                    CommandExecutionModel.run_id == run_id,
+                    CommandExecutionModel.stage_id == stage_id,
+                    CommandExecutionModel.command_id == "npm-ci-bootstrap",
+                    CommandExecutionModel.status == "succeeded",
+                )
+                .order_by(CommandExecutionModel.finished_at.desc())
+            )
+            actor = run.actor or "control-tower"
+            now = self._now()
+            catalogue = CompatibilityCatalogueProvider().load()
+            workspace_fingerprint = (
+                workspace_binding.workspace_fingerprint
+                if workspace_binding is not None
+                else ""
+            )
+            if not workspace_fingerprint:
+                raise TransformerStageError(
+                    "STAGE_WORKSPACE_BINDING_MISSING",
+                    "Qualification certification requires the active stage workspace binding",
+                )
+            descriptors = tuple(
+                canonical_payload_checksum(
+                    {
+                        "kind": kind,
+                        "path": bindings[kind].resolved_path,
+                        "version": bindings[kind].version_exact,
+                        "sha256": bindings[kind].sha256,
+                    }
+                )
+                for kind in ("node", "npm", "npx")
+            )
+            npm_ci_checksum = (
+                bootstrap.command_log_artifact_id
+                if bootstrap is not None and bootstrap.command_log_artifact_id
+                else continuation.stage_plan_checksum
+            )
+            sections = {
+                "npm_ci": npm_ci_checksum,
+                "dependency_tree": workspace_fingerprint,
+                "build": continuation.stage_plan_checksum,
+                "test": continuation.plan_checksum,
+                "migration": continuation.stage_plan_checksum,
+                "validation": continuation.plan_checksum,
+                "gate": workspace_fingerprint,
+                "promotion": catalogue.checksum,
+                "seal": continuation.plan_checksum,
+                "final_fingerprint_chain": workspace_fingerprint,
+            }
+            authorization = RuntimeQualificationAuthorization.bind(
+                authorization_id="qual-authz-" + uuid4().hex[:12],
+                run_id=run_id,
+                stage_id=stage_id,
+                actor=actor,
+                purpose="stage-runtime-qualification",
+                source_family=stage.source_version_family,
+                target_family=stage.target_version_family,
+                runtime_descriptor_checksums=descriptors,
+                catalogue_checksum=catalogue.checksum,
+                expires_at=now.replace(tzinfo=UTC) + timedelta(hours=24),
+            )
+            evidence = RuntimeQualificationEvidence(
+                evidence_id="qual-evidence-" + uuid4().hex[:12],
+                run_id=run_id,
+                stage_id=stage_id,
+                authorization_checksum=authorization.authorization_checksum,
+                node_path=bindings["node"].resolved_path,
+                npm_path=bindings["npm"].resolved_path,
+                npx_path=bindings["npx"].resolved_path,
+                node_exact=bindings["node"].version_exact,
+                npm_exact=bindings["npm"].version_exact,
+                npx_exact=bindings["npx"].version_exact,
+                node_sha256=bindings["node"].sha256,
+                npm_sha256=bindings["npm"].sha256,
+                npx_sha256=bindings["npx"].sha256,
+                catalogue_checksum=catalogue.checksum,
+                sections=sections,
+            )
+            root = Path(run.artifact_root).resolve()
+            store = LocalFilesystemArtifactStore(root, fixed_run_root=root)
+            certification = RuntimeCertificationService(
+                session_scope_factory=self._scope, now_provider=self._now
+            )
+        self._emit_certification_event(
+            run_id, stage_id, actor, now,
+            WorkflowEventType.RUNTIME_CERTIFICATION_REQUESTED,
+            "runtime certification requested for QUALIFICATION stage",
+            key="requested",
+        )
+        authorization_id = certification.authorize_qualification(authorization)
+        evidence_id = certification.record_qualification_evidence(evidence)
+        self._emit_certification_event(
+            run_id, stage_id, actor, now,
+            WorkflowEventType.RUNTIME_QUALIFICATION_COMPLETED,
+            "runtime qualification evidence recorded",
+            key="qualified",
+        )
+        evidence_ref = store.read_artifact_by_id(evidence_id).ref
+        promotion = RuntimeCertificationPromotionDecision(
+            decision_id="qual-promotion-" + uuid4().hex[:12],
+            run_id=run_id,
+            stage_id=stage_id,
+            authorization_checksum=authorization.authorization_checksum,
+            reviewer=actor,
+            decision="accepted",
+            reason="deterministic qualification certification during stage preparation",
+            evidence_checksum=evidence_ref.checksum,
+            decided_at=now,
+        )
+        store.write_text_artifact(
+            run_id,
+            qualification_promotion_path(stage_id, authorization.digest),
+            promotion.model_dump_json(),
+            ArtifactType.JSON,
+            stage_id=stage_id,
+            created_by="runtime-certification",
+            policy_version="runtime-certification-v1",
+        )
+        decision = certification.promote_qualification_evidence(run_id, stage_id, promotion)
+        self._emit_certification_event(
+            run_id, stage_id, actor, now,
+            WorkflowEventType.RUNTIME_CERTIFICATION_PROMOTED,
+            "runtime certification promoted from qualification evidence",
+            key="promoted",
+        )
+        return authorization_id
+
+    def _emit_certification_event(
+        self,
+        run_id: str,
+        stage_id: str,
+        actor: str,
+        now: datetime,
+        event_type: WorkflowEventType,
+        reason: str,
+        *,
+        key: str,
+    ) -> None:
+        with self._scope() as session:
+            StateTransitionService(session).append_audit_event(
+                run_id=run_id,
+                idempotency_key=f"runtime-certification:{stage_id}:{key}",
+                event_type=event_type,
+                actor=actor,
+                reason=reason,
+                occurred_at=now,
+                payload={"stage_id": stage_id},
+            )
 
     def prepare(self, continuation_id: str, worker_id: str) -> str:
         with self._scope() as session:

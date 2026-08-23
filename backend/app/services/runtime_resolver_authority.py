@@ -13,6 +13,7 @@ evidence application service (F01-04).
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -36,6 +37,9 @@ def sha256_of(path: Path) -> str:
 
 
 VersionProbe = Callable[[Path], str | None]
+
+_LEGACY_INSTALL_DIR_RE = re.compile(r"^v\d+\.\d+\.\d+$")
+_MANAGED_BUNDLE_DIR_RE = re.compile(r"^node(\d+)-npm\d+$")
 
 
 @dataclass(frozen=True)
@@ -66,9 +70,14 @@ class RuntimeResolverAuthority:
 
     def discover(self) -> list[RuntimeExecutableDescriptor]:
         """Enumerate every node/npm/npx executable in the runtime matrix."""
+        if not self._matrix.node_install_root.is_dir():
+            return []
         descriptors: list[RuntimeExecutableDescriptor] = []
-        for version_dir in sorted(self._matrix.node_install_root.glob("v*[0-9].*[0-9].*[0-9]"), key=lambda p: p.name):
+        for version_dir in sorted(self._matrix.node_install_root.iterdir(), key=lambda p: p.name):
             if not version_dir.is_dir():
+                continue
+            identity = self._install_identity(version_dir.name)
+            if identity is None:
                 continue
             installation_root = version_dir
             bin_dir = version_dir / "bin"
@@ -94,11 +103,33 @@ class RuntimeResolverAuthority:
                     executable_name=executable_name,
                     path=path,
                     installation_root=installation_root,
-                    source="nvm",
-                    runtime_id=version_dir.name,
+                    source=identity[1],
+                    runtime_id=identity[0],
+                    installation_variant=identity[2],
                 )
                 descriptors.append(descriptor)
         return descriptors
+
+    @staticmethod
+    def _install_identity(directory_name: str) -> tuple[str, str, str | None] | None:
+        """Logical (runtime_id, source, installation_variant) for an install dir.
+
+        Managed factory bundles are named ``node<major>-npm<major>`` and
+        normalize to the catalogue identity ``node<major>`` so existing
+        ``_same_install`` pairing rules keep working unchanged.  The physical
+        bundle name is preserved as ``installation_variant`` so two bundles
+        with the same node major stay distinguishable internally.  Legacy nvm
+        directories keep their ``vX.Y.Z`` identity (which is already unique).
+        """
+        managed = _MANAGED_BUNDLE_DIR_RE.match(directory_name)
+        if managed is not None:
+            # Managed bundles are self-contained and portable: npm.cmd/npx.cmd
+            # shims resolve ``%~dp0node.exe`` and ``%~dp0node_modules\npm``
+            # relative to the bundle, so no PATH/nvm/global npm is consulted.
+            return f"node{managed.group(1)}", "managed-bundle", directory_name
+        if _LEGACY_INSTALL_DIR_RE.match(directory_name) is not None:
+            return directory_name, "nvm", None
+        return None
 
     def resolve(self, requirements: list[RuntimeRequirement]) -> list[RuntimeRequirementBinding]:
         """Resolve each requirement deterministically to a binding."""
@@ -125,10 +156,17 @@ class RuntimeResolverAuthority:
 
     def _best_paired_install(self, requirements, descriptors):
         candidates = []
-        for runtime_id in sorted({item.runtime_id for item in descriptors if item.runtime_id}):
+        installs = sorted({(item.runtime_id, item.installation_variant) for item in descriptors if item.runtime_id})
+        for runtime_id, installation_variant in installs:
             matches = {
                 requirement.kind: next(
-                    (item for item in descriptors if item.runtime_id == runtime_id and requirement.satisfied_by(item)),
+                    (
+                        item
+                        for item in descriptors
+                        if item.runtime_id == runtime_id
+                        and item.installation_variant == installation_variant
+                        and requirement.satisfied_by(item)
+                    ),
                     None,
                 )
                 for requirement in requirements
@@ -136,8 +174,8 @@ class RuntimeResolverAuthority:
             if not all(matches.values()):
                 continue
             node = matches.get(RuntimeExecutableKind.NODE)
-            candidates.append((_semantic_version(node.version_exact if node else None), runtime_id, matches))
-        return max(candidates, key=lambda item: (item[0], item[1]))[2] if candidates else {}
+            candidates.append((_semantic_version(node.version_exact if node else None), runtime_id, installation_variant or "", matches))
+        return max(candidates, key=lambda item: (item[0], item[1], item[2]))[3] if candidates else {}
 
     def _build_descriptor(
         self,
@@ -148,6 +186,7 @@ class RuntimeResolverAuthority:
         installation_root: Path,
         source: str,
         runtime_id: str,
+        installation_variant: str | None = None,
     ) -> RuntimeExecutableDescriptor:
         version = self._probe(path)
         return RuntimeExecutableDescriptor(
@@ -159,6 +198,7 @@ class RuntimeResolverAuthority:
             operating_system=_operating_system(),
             architecture=_architecture(),
             installation_root=str(installation_root),
+            installation_variant=installation_variant,
             source=source,
             runtime_id=runtime_id,
             probed_at=self._now_provider(),

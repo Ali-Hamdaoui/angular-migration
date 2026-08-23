@@ -72,16 +72,21 @@ def test_missing_g02_blocks_without_persisting():
     engine.dispose()
 
 
-def test_empty_candidates_resolve_from_latest_environment_inventory():
-    scope,sessions,engine=fixture()
+def test_empty_candidates_fail_closed_without_runtime_matrix(tmp_path, monkeypatch):
+    """PATH-discovered runtimes in the snapshot are never used as candidates."""
+    scope, sessions, engine = fixture()
     with sessions() as s:
         s.add(EnvironmentCapabilityModel(id="env-1", idempotency_key="env-1", actor="diagnostics", status="available", captured_at=NOW, policy_version="environment-v1", checksum="sha256:environment", snapshot=environment_snapshot(), artifacts={}, created_at=NOW))
         s.commit()
-    service=ExecutionProfileApplicationService(session_scope_factory=scope,now_provider=lambda:NOW)
-    result=service.resolve('run-1',request().model_copy(update={"candidates": ()}))
-    assert result.status == "resolved"
-    assert result.selected_profile is not None
-    assert result.selected_profile.node_exact == "20.11.1"
+    empty_root = tmp_path / "no-bundles"
+    empty_root.mkdir()
+    from app.core.config import Settings
+
+    monkeypatch.setattr("app.services.execution_profile_application_service.get_settings", lambda: Settings(runtime_node_install_root=empty_root))
+    service = ExecutionProfileApplicationService(session_scope_factory=scope, now_provider=lambda: NOW)
+    result = service.resolve("run-1", request().model_copy(update={"candidates": ()}))
+    assert result.status == "blocked"
+    assert "NO_COMPATIBLE_RUNTIME_PROFILE" in result.blockers
     engine.dispose()
 
 

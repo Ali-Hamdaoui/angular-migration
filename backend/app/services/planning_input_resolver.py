@@ -69,6 +69,7 @@ class PlanningInputResolver:
         profile = next((item for item in profile_record.profiles if item.get("profile_id") == profile_record.selected_profile_id and item.get("checksum") == profile_record.selected_checksum), None)
         if profile is None:
             raise PlanningInputResolutionError("PLANNING_RUNTIME_PROFILE_MISSING", "The selected execution profile evidence is incomplete.")
+        run_mode = self._run_mode(run)
         raw_references = []
         for artifact_id in gate.artifact_ids:
             metadata = session.get(ArtifactMetadataModel, "metadata-" + artifact_id)
@@ -93,8 +94,26 @@ class PlanningInputResolver:
             prerequisite_artifacts=list(references), runtime_candidates=runtime,
             source_execution_profile_checksum=profile_record.selected_checksum,
             workspace_fingerprint=workspace_fingerprint,
+            run_mode=run_mode,
             resolved_at=now,
         )
+
+    @staticmethod
+    def _run_mode(run) -> str:
+        """Propagate the run's execution mode into feasibility inputs.
+
+        Missing mode reads as PRODUCTION; unsupported modes fail closed so a
+        UI-created qualification run reaches compatibility feasibility while
+        default behavior stays unchanged.
+        """
+        mode = (run.run_policy_snapshot or {}).get("run_mode", "PRODUCTION")
+        if mode not in {"PRODUCTION", "QUALIFICATION"}:
+            raise PlanningInputResolutionError(
+                "PLANNING_RUN_MODE_UNSUPPORTED",
+                f"unsupported run mode: {mode!r}",
+                422,
+            )
+        return mode
 
     @staticmethod
     def _workspace_fingerprint(session, run_id: str, gate: G04ApprovalModel) -> str:

@@ -49,6 +49,7 @@ class CreateRunRequest:
     actor: str
     client_constraints: dict[str, bool]
     pricing_snapshot: dict[str, str | float | int] | None = None
+    run_mode: str = "PRODUCTION"
 
 
 @dataclass(frozen=True)
@@ -130,7 +131,7 @@ class MigrationRunService:
                 migrated_app_path=str(layout.migrated_app), workspace_aliases=layout.aliases(), output_layout_version=self._layout.layout_version,
                 graph_thread_id=thread_id, client_constraints=request.client_constraints,
                 target_policy_snapshot={"target_angular_family": snapshot.get("target_angular_family"), "migration_mode": snapshot.get("migration_mode")},
-                run_policy_snapshot={"input_checksum": request.input_checksum, "artifact_set_checksum": request.artifact_set_checksum, "gate_version": gate.gate_version},
+                run_policy_snapshot={"input_checksum": request.input_checksum, "artifact_set_checksum": request.artifact_set_checksum, "gate_version": gate.gate_version, "run_mode": request.run_mode},
                 pricing_snapshot=request.pricing_snapshot, actor=request.actor,
                 created_at=now, updated_at=now,
             )

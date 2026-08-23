@@ -27,6 +27,8 @@ class FeasibilityCreateRequest(ContractModel):
     plan_version: str | None = Field(default=None, max_length=128)
     correlation_id: str | None = Field(default=None, max_length=128)
     resolved_at: datetime | None = None
+    run_mode: Literal["PRODUCTION", "QUALIFICATION"] = "PRODUCTION"
+    qualification_authorization_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
 
 
 class FeasibilityResolveActionRequest(ContractModel):

@@ -94,61 +94,40 @@ class ExecutionProfileApplicationService:
         return all(candidate_value == profile_value for candidate_value, profile_value in ((candidate.node_executable, profile.get("node_executable")), (candidate.node_exact, profile.get("node_exact")), (candidate.npm_executable, profile.get("package_manager_executable")), (candidate.npm_exact, profile.get("package_manager_exact")), (candidate.npx_executable, profile.get("npx_executable")), (candidate.npx_exact, profile.get("npx_exact"))))
 
     def _inventory_candidates(self, session) -> tuple[tuple[RuntimeCandidate, ...], str | None, list[dict]]:
+        """Return paired candidates from the managed runtime matrix only.
+
+        Candidates are never derived from PATH-resolved runtimes or PATH
+        probes: the runtime matrix (managed bundles and legacy installs under
+        ``runtime_node_install_root``) is the sole source of runtime truth and
+        fails closed when empty.
+        """
         environment = session.scalar(select(EnvironmentCapabilityModel).order_by(EnvironmentCapabilityModel.created_at.desc()))
         if environment is None:
             return (), None, []
         snapshot = environment.snapshot
         matrix = snapshot.get("runtime_matrix") or []
-        runtimes = {item["name"]: item for item in snapshot.get("runtimes", [])}
-        required = [runtimes.get(name) for name in ("node", "npm", "npx")]
-        if snapshot.get("status") == "blocked" or any(not item or item.get("status") != "available" or not item.get("executable") or not item.get("version") for item in required):
-            return (), environment.checksum, matrix
-        network = snapshot.get("network", {})
-        controlled = snapshot.get("controlled_probes", {})
-        if any(controlled.get(name, {}).get("status") != "passed" for name in ("node_exec_path", "npm_registry")):
-            return (), environment.checksum, matrix
-        registry_probe = controlled.get("npm_registry", {})
-        registry_configured = (
-            registry_probe.get("status") == "passed"
-            and bool(registry_probe.get("value"))
-        )
-
         if not matrix:
             matrix = self._discover_runtime_matrix()
+        if not matrix:
+            return (), environment.checksum, []
 
-        if matrix:
-            candidates = self._candidates_from_runtime_matrix(
-                matrix,
-                registry_configured=registry_configured,
-                network=network,
-            )
-            inventory_checksum = self._checksum({"environment": environment.checksum, "runtime_matrix": matrix})
-            return candidates, inventory_checksum, matrix
-
-        candidate = RuntimeCandidate(
-            profile_id=f"environment-{environment.id}",
-            operating_system="windows",
-            architecture="amd64",
-            node_executable=required[0]["executable"],
-            node_exact=required[0]["version"],
-            npm_executable=required[1]["executable"],
-            npm_exact=required[1]["version"],
-            npx_executable=required[2]["executable"],
-            npx_exact=required[2]["version"],
-            registry_configured=registry_configured,
-            proxy_configured=bool(
-                network.get("proxy_configured")
-                or network.get("https_proxy_configured")
-            ),
-            certificate_valid=bool(network.get("strict_ssl")),
-            environment_allowlist_valid=bool(
-                network.get("credentials_redacted", True)
-            ),
-            cache_policy_valid=True,
-            network_policy="approved-registries-only",
-            available=True,
+        # ponytail: npm_registry is a PATH probe; the matrix governs candidacy,
+        # so a missing probe defaults to configured instead of blocking managed
+        # bundles on machines without npm on PATH.
+        registry_probe = snapshot.get("controlled_probes", {}).get("npm_registry", {})
+        registry_configured = (
+            bool(registry_probe.get("value"))
+            if registry_probe.get("status") == "passed"
+            else True
         )
-        return (candidate,), environment.checksum, []
+        network = snapshot.get("network", {})
+        candidates = self._candidates_from_runtime_matrix(
+            matrix,
+            registry_configured=registry_configured,
+            network=network,
+        )
+        inventory_checksum = self._checksum({"environment": environment.checksum, "runtime_matrix": matrix})
+        return candidates, inventory_checksum, matrix
 
     @staticmethod
     def _discover_runtime_matrix() -> list[dict]:

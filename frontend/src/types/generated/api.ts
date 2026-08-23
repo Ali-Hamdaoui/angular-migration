@@ -134,7 +134,7 @@ export type PathValidationSnapshot = {
   checksum: string;
 };
 export type PathValidationResult = { snapshot: PathValidationSnapshot };
-export type CreateAuthoritativeRunRequestDto = { preflight_id: string; input_checksum: string; artifact_set_checksum: string; idempotency_key: string; actor: string; client_constraints: Record<string, boolean>; pricing_snapshot: Record<string, string | number> };
+export type CreateAuthoritativeRunRequestDto = { preflight_id: string; input_checksum: string; artifact_set_checksum: string; idempotency_key: string; actor: string; client_constraints: Record<string, boolean>; pricing_snapshot: Record<string, string | number>; run_mode?: "PRODUCTION" | "QUALIFICATION" };
 export type StartAuthoritativeRunRequestDto = { expected_state_version: number; idempotency_key: string; actor: string };
 export type CancelAuthoritativeRunRequestDto = { expected_state_version: number; idempotency_key: string; actor: string };
 export type AuthoritativeRunMutationResultDto = { run_id: string; job_id?: string | null; status: RunStatus; state_version: number; event_sequence: number; graph_thread_id: string; idempotent_replay: boolean; artifacts: ArtifactRefDto[] };

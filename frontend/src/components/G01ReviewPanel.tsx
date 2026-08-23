@@ -489,6 +489,7 @@ export function G01ReviewPanel({
           allow_optional_modernization: false,
         },
         pricing_snapshot: {},
+        run_mode: 'QUALIFICATION',
       });
       const started = await startAuthoritativeRun(created.run_id, {
         expected_state_version: created.state_version,

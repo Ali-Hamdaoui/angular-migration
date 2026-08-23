@@ -46,6 +46,7 @@ def create_run(request: CreateAuthoritativeRunRequestDto, http_request: Request,
             preflight_id=request.preflight_id, input_checksum=request.input_checksum,
             artifact_set_checksum=request.artifact_set_checksum, idempotency_key=request.idempotency_key,
             actor=request.actor, client_constraints=request.client_constraints, pricing_snapshot=request.pricing_snapshot,
+            run_mode=request.run_mode,
         ))
     except MigrationRunError as error:
         return _error(http_request, error)

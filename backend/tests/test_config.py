@@ -57,6 +57,29 @@ def test_settings_load_environment_values(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert settings.llm_cost_budget_usd == 25.50
 
 
+def test_runtime_node_install_root_priority(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Runtime root priority: explicit env, managed default, gated legacy nvm."""
+    nvm_win = tmp_path / "AppData" / "Local" / "nvm"
+    nvm_win.mkdir(parents=True)
+    monkeypatch.setattr("app.core.config.Path.home", classmethod(lambda cls: tmp_path))
+    monkeypatch.delenv("RUNTIME_NODE_INSTALL_ROOT", raising=False)
+    monkeypatch.delenv("ALLOW_LEGACY_NVM_RUNTIME", raising=False)
+    managed_root = Path("C:/factory-runtimes")
+
+    default = Settings(_env_file=None)
+    assert default.allow_legacy_nvm_runtime is False
+    assert default.runtime_node_install_root == managed_root
+
+    monkeypatch.setenv("ALLOW_LEGACY_NVM_RUNTIME", "true")
+    gated = Settings(_env_file=None)
+    assert gated.allow_legacy_nvm_runtime is True
+    assert gated.runtime_node_install_root in {managed_root, nvm_win}
+
+    monkeypatch.setenv("RUNTIME_NODE_INSTALL_ROOT", str(tmp_path / "custom-runtimes"))
+    explicit = Settings(_env_file=None)
+    assert explicit.runtime_node_install_root == Path(str(tmp_path / "custom-runtimes"))
+
+
 def test_settings_load_dotenv_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     for variable in (
         "APP_ENV",

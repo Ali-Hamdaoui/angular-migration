@@ -372,7 +372,7 @@ class StageGateService:
                     )
                     attempt.completed_at = decided_at
             continuation.status = "queued"
-            continuation.current_node = self._gate_successor_node(session, continuation, gate_id)
+            continuation.current_node = _gate_successor_node(session, continuation, gate_id)
             continuation.wake_sequence += 1
         else:
             if gate_id == StageGateId.G11.value:

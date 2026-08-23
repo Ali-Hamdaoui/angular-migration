@@ -63,7 +63,10 @@ def canonical_stage_runtime_identity(rows: list[StageRuntimeBindingModel], stage
             raise ValueError("The durable stage runtime binding is invalid") from error
     checksum = "sha256:" + hashlib.sha256(
         json.dumps(
-            {key: value.model_dump(mode="json") for key, value in sorted(descriptors.items())},
+            # exclude_none keeps the digest byte-identical to pre-
+            # installation_variant approvals, so in-flight G07 packages
+            # revalidate without re-approval.
+            {key: value.model_dump(mode="json", exclude_none=True) for key, value in sorted(descriptors.items())},
             sort_keys=True,
             separators=(",", ":"),
             default=str,

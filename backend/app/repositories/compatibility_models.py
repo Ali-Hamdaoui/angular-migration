@@ -58,6 +58,7 @@ class CompatibilityResolutionModel(Base):
     selected_profile: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     source_execution_profile_checksum: Mapped[str | None] = mapped_column(String(128))
     stage1_profile_checksum: Mapped[str | None] = mapped_column(String(128))
+    qualification_evidence: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     blockers: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     warnings: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     package: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)

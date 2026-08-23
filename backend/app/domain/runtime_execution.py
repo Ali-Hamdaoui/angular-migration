@@ -102,6 +102,7 @@ class RuntimeExecutableDescriptor(_ImmutableModel):
     operating_system: str = Field(default="linux", min_length=1)
     architecture: str = Field(default="amd64", min_length=1)
     installation_root: str | None = None
+    installation_variant: str | None = None
     source: str = Field(default="runtime-matrix", min_length=1)
     runtime_id: str | None = None
     probed_at: datetime

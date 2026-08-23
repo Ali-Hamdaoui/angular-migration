@@ -296,6 +296,9 @@ class WorkflowEventType(str, Enum):
     STAGE_SANDBOX_COPIED = "STAGE_SANDBOX_COPIED"
     STAGE_WORKSPACE_BOUND = "STAGE_WORKSPACE_BOUND"
     STAGE_PREPARATION_COMPLETED = "STAGE_PREPARATION_COMPLETED"
+    RUNTIME_CERTIFICATION_REQUESTED = "RUNTIME_CERTIFICATION_REQUESTED"
+    RUNTIME_QUALIFICATION_COMPLETED = "RUNTIME_QUALIFICATION_COMPLETED"
+    RUNTIME_CERTIFICATION_PROMOTED = "RUNTIME_CERTIFICATION_PROMOTED"
     STEP_STATE_CHANGED = "step_state_changed"
     COMPONENT_STATE_CHANGED = "component_state_changed"
     AGENT_STATE_CHANGED = "agent_state_changed"
@@ -1087,6 +1090,7 @@ class CreateAuthoritativeRunRequestDto(ContractModel):
     actor: str = Field(min_length=1, max_length=128)
     client_constraints: dict[str, bool] = Field(default_factory=dict)
     pricing_snapshot: dict[str, str | float | int] = Field(default_factory=dict)
+    run_mode: Literal["PRODUCTION", "QUALIFICATION"] = "PRODUCTION"
 
 
 class StartAuthoritativeRunRequestDto(ContractModel):

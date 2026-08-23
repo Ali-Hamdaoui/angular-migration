@@ -83,6 +83,9 @@ class Settings(BaseSettings):
     # node/npm/npx candidates are discovered under these roots only, never from PATH.
     runtime_node_install_root: Path | None = None
     runtime_angular_cli_root: Path | None = None
+    # Legacy nvm installs are only considered when explicitly enabled; the
+    # Factory must never silently depend on a developer machine's nvm.
+    allow_legacy_nvm_runtime: bool = False
 
     azure_openai_endpoint: str | None = None
     azure_openai_deployment: str | None = None
@@ -147,11 +150,18 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def derive_runtime_matrix_roots(self) -> "Settings":
         if self.runtime_node_install_root is None:
-            candidates = (
-                Path.home() / "AppData" / "Local" / "nvm",
-                Path.home() / ".nvm" / "versions" / "node",
-            )
-            object.__setattr__(self, "runtime_node_install_root", next((path for path in candidates if path.exists()), candidates[-1]))
+            # Priority: managed factory bundles, then legacy nvm installs only
+            # when explicitly allowed.  The env variables
+            # RUNTIME_NODE_INSTALL_ROOT / ALLOW_LEGACY_NVM_RUNTIME
+            # (pydantic-settings) always win.
+            managed_root = Path("C:/factory-runtimes")
+            candidates = [managed_root]
+            if self.allow_legacy_nvm_runtime:
+                candidates.extend((
+                    Path.home() / "AppData" / "Local" / "nvm",
+                    Path.home() / ".nvm" / "versions" / "node",
+                ))
+            object.__setattr__(self, "runtime_node_install_root", next((path for path in candidates if path.exists()), candidates[0]))
         if self.runtime_angular_cli_root is None:
             object.__setattr__(self, "runtime_angular_cli_root", Path.home() / "migration-lab" / "runtimes")
         return self

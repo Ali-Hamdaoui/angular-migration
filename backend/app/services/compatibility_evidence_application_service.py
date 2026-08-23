@@ -126,6 +126,7 @@ class CompatibilityEvidenceApplicationService:
                  selected_profile=result.selected_profile.model_dump(mode="json") if result.selected_profile else None, blockers=list(result.package.blockers), warnings=list(result.package.warnings),
                  source_execution_profile_checksum=(result.selected_profile.source_execution_profile_checksum if result.selected_profile else None),
                  stage1_profile_checksum=(result.selected_profile.stage1_profile_checksum if result.selected_profile else None),
+                qualification_evidence=self._qualification_evidence(request, result),
                 package=result.package.model_dump(mode="json"), package_checksum=evidence_package_checksum, artifact_set_checksum=result.package.artifact_set_checksum,
                 artifact_ids=artifact_ids, artifact_checksums=artifact_checksums, workspace_fingerprint=request.workspace_fingerprint, plan_version=request.plan_version,
                 registry_snapshot={"snapshot_id": request.registry_snapshot_id, "checksum": request.registry_snapshot_checksum, "candidate_count": len(request.runtime_candidates)},
@@ -236,7 +237,24 @@ class CompatibilityEvidenceApplicationService:
 
     def _request(self, run_id, payload, actor, now):
         references = canonical_artifact_references(payload.prerequisite_artifacts)
-        return CompatibilityResolutionRequest(run_id=run_id, expected_state_version=payload.expected_state_version, idempotency_key=payload.idempotency_key, actor=actor, source_angular_exact=payload.source_angular_exact, target_family=payload.target_family, catalogue_version=payload.catalogue_version, registry_snapshot_id=payload.registry_snapshot_id, registry_snapshot_checksum=payload.registry_snapshot_checksum, prerequisite_artifacts=tuple(references), runtime_candidates=payload.runtime_candidates, workspace_topology=payload.workspace_topology, dependency_findings=payload.dependency_findings, source_execution_profile_checksum=getattr(payload, "source_execution_profile_checksum", None), workspace_fingerprint=payload.workspace_fingerprint, plan_version=payload.plan_version, resolved_at=payload.resolved_at or now)
+        return CompatibilityResolutionRequest(run_id=run_id, expected_state_version=payload.expected_state_version, idempotency_key=payload.idempotency_key, actor=actor, source_angular_exact=payload.source_angular_exact, target_family=payload.target_family, catalogue_version=payload.catalogue_version, registry_snapshot_id=payload.registry_snapshot_id, registry_snapshot_checksum=payload.registry_snapshot_checksum, prerequisite_artifacts=tuple(references), runtime_candidates=payload.runtime_candidates, workspace_topology=payload.workspace_topology, dependency_findings=payload.dependency_findings, source_execution_profile_checksum=getattr(payload, "source_execution_profile_checksum", None), workspace_fingerprint=payload.workspace_fingerprint, plan_version=payload.plan_version, run_mode=getattr(payload, "run_mode", "PRODUCTION"), qualification_authorization_checksum=getattr(payload, "qualification_authorization_checksum", None), resolved_at=payload.resolved_at or now)
+
+    @staticmethod
+    def _qualification_evidence(request, result) -> dict[str, object] | None:
+        """Record when QUALIFICATION mode bypassed the certification gate.
+
+        Evidence records the decision mode and the uncertified classification;
+        it never fakes certification or promotes the runtime to EXACT_CERTIFIED.
+        """
+        profile = result.selected_profile
+        if request.run_mode != "QUALIFICATION" or profile is None or profile.classification == "EXACT_CERTIFIED":
+            return None
+        return {
+            "decision_mode": "QUALIFICATION",
+            "runtime_classification": profile.classification,
+            "runtime_checksum": profile.stage1_profile_checksum,
+            "reason": "Qualification execution allowed non-certified compatible runtime",
+        }
 
     def _write_evidence(self, session, run, request, result, now):
         store = self._artifact_store_factory(run)

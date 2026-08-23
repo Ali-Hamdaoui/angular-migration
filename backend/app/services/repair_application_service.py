@@ -4707,6 +4707,14 @@ class RepairApplicationService:
                 installed_version=installed_version,
                 artifact_id=str(context.get("failure_evidence_artifact_id") or ""),
             )
+            cohort = context.get("target_cohort")
+            if isinstance(cohort, dict) and is_exact_version(
+                cohort.get(str(authority["package"]))
+            ):
+                authority = {
+                    **authority,
+                    "target_version": cohort[str(authority["package"])],
+                }
             if blocking is not None:
                 if blocking.package is not None and blocking.package != authority["package"]:
                     raise RepairApplicationError(
@@ -5543,6 +5551,101 @@ class RepairApplicationService:
             )
         return normalized
 
+    @staticmethod
+    def _stage_target_context(context: dict[str, object]) -> dict[str, object]:
+        """Deterministic stage target contract segment for every repair prompt."""
+        source_family = context.get("source_family") or ""
+        target_exact = context.get("target_exact")
+        target_cli = context.get("target_cli_exact")
+        source_exact = context.get("source_exact")
+        return {
+            "segment": "stage_target_cohort",
+            "stage": context.get("stage_id"),
+            "source_angular": source_exact,
+            "target_angular": target_exact,
+            "target_cli": target_cli,
+            "allowed_transition": (
+                f"{source_family} -> {target_exact}" if source_family and target_exact else ""
+            ),
+            "rule": "Never propose source package versions as fixes; "
+            "the stage target cohort below is the authoritative migration contract.",
+            "target_cohort": dict(context.get("target_cohort") or {}),
+        }
+
+    def validate_repair_target_cohort(
+        self, context: dict[str, object], proposal: dict[str, object]
+    ) -> None:
+        """Deterministic cohort gate over the bound proposal, before reviewer and apply.
+
+        Every proposal that touches a stage-cohort package must bind the exact
+        cohort version (or a range containing it for whole-manifest
+        materialization); source versions are never acceptable targets.
+        """
+        cohort = context.get("target_cohort")
+        if not isinstance(cohort, dict) or not cohort:
+            return
+        from app.services.dependency_repair_preflight_service import DependencyRepairPreflightService as _Preflight
+
+        operations = proposal.get("operations") or []
+        if not isinstance(operations, list):
+            return
+        for index, operation in enumerate(operations):
+            if not isinstance(operation, dict):
+                continue
+            op_type = operation.get("operation")
+            if op_type == "dependency_transition":
+                target = operation.get("target_state")
+                if not isinstance(target, dict):
+                    continue
+                package = target.get("package")
+                version = target.get("target_version")
+                required = cohort.get(package) if isinstance(package, str) else None
+                if required and version != required:
+                    raise RepairApplicationError(
+                        "TARGET_COHORT_MISMATCH",
+                        f"operations.{index} dependency_transition target {package} "
+                        f"{version} does not match the stage target cohort {required}",
+                    )
+            elif self._is_normalization_operation(operation):
+                text = operation.get("new_text") or operation.get("post_text")
+                if not isinstance(text, str):
+                    continue
+                try:
+                    manifest = json.loads(text)
+                except (TypeError, ValueError):
+                    continue
+                dependencies = {
+                    name: value
+                    for section in ("dependencies", "devDependencies")
+                    if isinstance(manifest.get(section), dict)
+                    for name, value in manifest[section].items()
+                    if isinstance(name, str) and isinstance(value, str)
+                }
+                for package, required in cohort.items():
+                    proposed_spec = dependencies.get(package)
+                    if proposed_spec is not None and not _Preflight._range_contains_exact(
+                        proposed_spec, required
+                    ):
+                        raise RepairApplicationError(
+                            "TARGET_COHORT_MISMATCH",
+                            f"operations.{index} normalized {package} {proposed_spec} "
+                            f"does not match the stage target cohort {required}",
+                        )
+            else:
+                package = operation.get("package")
+                version = operation.get("new_version")
+                if (
+                    isinstance(package, str)
+                    and isinstance(version, str)
+                    and package in cohort
+                    and not _Preflight._range_contains_exact(version, cohort[package])
+                ):
+                    raise RepairApplicationError(
+                        "TARGET_COHORT_MISMATCH",
+                        f"operations.{index} {package} {version} does not match "
+                        f"the stage target cohort {cohort[package]}",
+                    )
+
     def validate_proposal(
         self, value: dict[str, object], context: dict[str, object]
     ) -> dict[str, object]:
@@ -5639,6 +5742,7 @@ class RepairApplicationService:
             result = bound
         else:
             result = proposal.model_dump(mode="json")
+        self.validate_repair_target_cohort(context, result)
         rejection = self._causal_gate_rejection(context, result)
         if rejection is not None:
             raise RepairApplicationError(
@@ -5756,9 +5860,12 @@ class RepairApplicationService:
                 "stage_plan_checksum": stage_plan.checksum if stage_plan else (continuation.stage_plan_checksum if continuation else None),
                 "stage_plan_state_version": stage_plan.state_version if stage_plan else None,
                 "stage_plan_commands": dict((stage_plan.stage_plan or {}).get("commands") or {}),
-                "target_exact": angular_bindings.get("target_exact") or stage_value.get("target_exact"),
+"target_exact": angular_bindings.get("target_exact") or stage_value.get("target_exact"),
                 "target_cli_exact": angular_bindings.get("target_cli_exact") or stage_value.get("target_cli_exact"),
                 "target_cohort": dict(stage_value.get("target_cohort") or {}),
+                "source_exact": stage_value.get("source_exact"),
+                "source_family": stage_value.get("source_family"),
+                "target_family": stage_value.get("target_family"),
                 "workspace_binding_id": binding.id,
                 "workspace_binding_alias": binding.alias,
                 "workspace_stored_fingerprint": binding.workspace_fingerprint,
@@ -5826,6 +5933,9 @@ class RepairApplicationService:
         if context["workspace_live_fingerprint"] != context["workspace_stored_fingerprint"]:
             raise RepairApplicationError("REPAIR_WORKSPACE_STALE", "Repair workspace fingerprint changed")
         context["segments"] = [artifact.content for artifact in artifacts]
+        context["segments"].append(
+            json.dumps(self._stage_target_context(context), sort_keys=True)
+        )
         if include_proposal:
             proposal_artifact = next(
                 artifact

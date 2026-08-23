@@ -41,9 +41,9 @@ def _generation():
         execution_profile_checksum="sha256:" + "4" * 64,
         resolved_scripts={"build": "build", "test": "test"},
         builder="@angular-devkit/build-angular:application",
-        target_cli_exact="19.2.0",
+        target_cli_exact="19.0.0",
         stage_route=(
-            ("angular-18.x", "angular-19.x", "stage-18-to-19", "19.2.0"),
+            ("angular-18.x", "angular-19.x", "stage-18-to-19", "19.0.0"),
             ("angular-19.x", "angular-20.x", "stage-19-to-20", "20.0.0"),
             ("angular-20.x", "angular-21.x", "stage-20-to-21", "21.0.0"),
         ),

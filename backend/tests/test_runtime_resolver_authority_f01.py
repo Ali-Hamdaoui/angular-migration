@@ -104,6 +104,177 @@ def test_resolve_exact_node_version_is_path_independent():
     assert bindings[0].descriptor.runtime_id == "v18.20.8"
 
 
+def _managed_bundle(tmp_path: Path, name: str, versions: dict[str, str]) -> Path:
+    bundle = tmp_path / name
+    bundle.mkdir()
+    for executable, version in versions.items():
+        (bundle / executable).write_text(version, encoding="utf-8")
+    return bundle
+
+
+def test_discover_managed_bundle_layout(tmp_path: Path):
+    bundle = _managed_bundle(
+        tmp_path,
+        "node12-npm8",
+        {"node.exe": "12.22.12", "npm.cmd": "8.19.4", "npx.cmd": "8.19.4"},
+    )
+
+    def probe(path: Path) -> str:
+        return {"node.exe": "12.22.12", "npm.cmd": "8.19.4", "npx.cmd": "8.19.4"}[path.name]
+
+    found = RuntimeResolverAuthority(
+        RuntimeMatrix(node_install_root=tmp_path, angular_cli_root=tmp_path),
+        probe=probe,
+        now_provider=lambda: NOW,
+    ).discover()
+
+    assert {(item.kind, item.runtime_id, item.source, item.installation_variant, item.installation_root) for item in found} == {
+        (RuntimeExecutableKind.NODE, "node12", "managed-bundle", "node12-npm8", str(bundle)),
+        (RuntimeExecutableKind.NPM, "node12", "managed-bundle", "node12-npm8", str(bundle)),
+        (RuntimeExecutableKind.NPX, "node12", "managed-bundle", "node12-npm8", str(bundle)),
+    }
+
+
+def test_managed_bundle_resolves_paired_candidate(tmp_path: Path):
+    _managed_bundle(
+        tmp_path,
+        "node12-npm8",
+        {"node.exe": "12.22.12", "npm.cmd": "8.19.4", "npx.cmd": "8.19.4"},
+    )
+
+    def probe(path: Path) -> str:
+        return {"node.exe": "12.22.12", "npm.cmd": "8.19.4", "npx.cmd": "8.19.4"}[path.name]
+
+    resolver = RuntimeResolverAuthority(
+        RuntimeMatrix(node_install_root=tmp_path, angular_cli_root=tmp_path),
+        probe=probe,
+        now_provider=lambda: NOW,
+    )
+    bindings = resolver.resolve(
+        [
+            RuntimeRequirement(kind=RuntimeExecutableKind.NODE, runtime_id="node12", version_exact="12.22.12"),
+            RuntimeRequirement(kind=RuntimeExecutableKind.NPM, runtime_id="node12", version_exact="8.19.4"),
+            RuntimeRequirement(kind=RuntimeExecutableKind.NPX, runtime_id="node12", version_exact="8.19.4"),
+        ]
+    )
+
+    assert all(binding.descriptor is not None for binding in bindings)
+    assert {binding.descriptor.version_exact for binding in bindings} == {"12.22.12", "8.19.4"}
+    assert len({binding.descriptor.installation_root for binding in bindings}) == 1
+    assert all(binding.descriptor.installation_variant == "node12-npm8" for binding in bindings)
+
+
+def test_two_managed_bundles_same_major_never_mix_installations(tmp_path: Path):
+    _managed_bundle(
+        tmp_path,
+        "node12-npm8",
+        {"node.exe": "12.22.12", "npm.cmd": "8.19.4", "npx.cmd": "8.19.4"},
+    )
+    _managed_bundle(
+        tmp_path,
+        "node12-npm10",
+        {"node.exe": "12.22.12", "npm.cmd": "10.3.1", "npx.cmd": "10.3.1"},
+    )
+
+    def probe(path: Path) -> str:
+        return {
+            ("node12-npm8", "node.exe"): "12.22.12",
+            ("node12-npm8", "npm.cmd"): "8.19.4",
+            ("node12-npm8", "npx.cmd"): "8.19.4",
+            ("node12-npm10", "node.exe"): "12.22.12",
+            ("node12-npm10", "npm.cmd"): "10.3.1",
+            ("node12-npm10", "npx.cmd"): "10.3.1",
+        }[(path.parent.name, path.name)]
+
+    resolver = RuntimeResolverAuthority(
+        RuntimeMatrix(node_install_root=tmp_path, angular_cli_root=tmp_path),
+        probe=probe,
+        now_provider=lambda: NOW,
+    )
+    found = resolver.discover()
+    assert {(item.runtime_id, item.installation_variant) for item in found} == {
+        ("node12", "node12-npm8"),
+        ("node12", "node12-npm10"),
+    }
+
+    bindings = resolver.resolve(
+        [
+            RuntimeRequirement(kind=RuntimeExecutableKind.NODE, runtime_id="node12", version_exact="12.22.12"),
+            RuntimeRequirement(kind=RuntimeExecutableKind.NPM, runtime_id="node12", version_exact="8.19.4"),
+            RuntimeRequirement(kind=RuntimeExecutableKind.NPX, runtime_id="node12", version_exact="8.19.4"),
+        ]
+    )
+    assert all(binding.descriptor is not None for binding in bindings)
+    assert all(binding.descriptor.installation_variant == "node12-npm8" for binding in bindings)
+    assert len({binding.descriptor.installation_root for binding in bindings}) == 1
+
+
+def test_real_managed_bundle_layout_executes_without_path_dependency(tmp_path: Path):
+    """Prove runtime selection is independent from the developer machine PATH."""
+    bundle = tmp_path / "node12-npm8"
+    (bundle / "node_modules" / "npm" / "bin").mkdir(parents=True)
+    (bundle / "node.exe").write_text("node", encoding="utf-8")
+    (bundle / "npm.cmd").write_text('"%~dp0node.exe" "%~dp0node_modules\\npm\\bin\\npm-cli.js" %*', encoding="utf-8")
+    (bundle / "npx.cmd").write_text('"%~dp0node.exe" "%~dp0node_modules\\npm\\bin\\npx-cli.js" %*', encoding="utf-8")
+    (bundle / "node_modules" / "npm" / "bin" / "npm-cli.js").write_text("// npm cli", encoding="utf-8")
+
+    def probe(path: Path) -> str:
+        return {"node.exe": "12.22.12", "npm.cmd": "8.19.4", "npx.cmd": "8.19.4"}[path.name]
+
+    resolver = RuntimeResolverAuthority(
+        RuntimeMatrix(node_install_root=tmp_path, angular_cli_root=tmp_path),
+        probe=probe,
+        now_provider=lambda: NOW,
+    )
+    bindings = resolver.resolve(
+        [
+            RuntimeRequirement(kind=RuntimeExecutableKind.NODE, runtime_id="node12", version_exact="12.22.12"),
+            RuntimeRequirement(kind=RuntimeExecutableKind.NPM, runtime_id="node12", version_exact="8.19.4"),
+            RuntimeRequirement(kind=RuntimeExecutableKind.NPX, runtime_id="node12", version_exact="8.19.4"),
+        ]
+    )
+
+    assert all(binding.descriptor is not None for binding in bindings)
+    assert {binding.descriptor.version_exact for binding in bindings} == {"12.22.12", "8.19.4"}
+    assert len({binding.descriptor.installation_root for binding in bindings}) == 1
+    assert all(binding.descriptor.installation_variant == "node12-npm8" for binding in bindings)
+    assert all(binding.descriptor.source == "managed-bundle" for binding in bindings)
+    assert all(str(bundle) in binding.descriptor.resolved_path for binding in bindings)
+
+
+def test_legacy_nvm_layout_still_resolves(tmp_path: Path):
+    _managed_bundle(
+        tmp_path,
+        "v12.22.12",
+        {"node.exe": "12.22.12", "npm.cmd": "8.19.4", "npx.cmd": "8.19.4"},
+    )
+
+    def probe(path: Path) -> str:
+        return {"node.exe": "12.22.12", "npm.cmd": "8.19.4", "npx.cmd": "8.19.4"}[path.name]
+
+    resolver = RuntimeResolverAuthority(
+        RuntimeMatrix(node_install_root=tmp_path, angular_cli_root=tmp_path),
+        probe=probe,
+        now_provider=lambda: NOW,
+    )
+    found = resolver.discover()
+
+    assert {(item.kind, item.source, item.runtime_id) for item in found} == {
+        (RuntimeExecutableKind.NODE, "nvm", "v12.22.12"),
+        (RuntimeExecutableKind.NPM, "nvm", "v12.22.12"),
+        (RuntimeExecutableKind.NPX, "nvm", "v12.22.12"),
+    }
+    assert all(item.installation_variant is None for item in found)
+    bindings = resolver.resolve(
+        [
+            RuntimeRequirement(kind=RuntimeExecutableKind.NODE, runtime_id="v12.22.12", version_exact="12.22.12"),
+            RuntimeRequirement(kind=RuntimeExecutableKind.NPM, runtime_id="v12.22.12", version_exact="8.19.4"),
+            RuntimeRequirement(kind=RuntimeExecutableKind.NPX, runtime_id="v12.22.12", version_exact="8.19.4"),
+        ]
+    )
+    assert all(binding.descriptor is not None for binding in bindings)
+
+
 def test_resolve_pairs_npm_npx_with_named_install():
     resolver = authority()
     bindings = resolver.resolve(
@@ -336,20 +507,20 @@ def test_runtime_bindings_from_real_serialized_profile():
         "profile_id": "profile-1",
         "checksum": "sha256:runtime",
         "node_executable": "node",
-        "node_exact": "18.20.8",
+        "node_exact": "12.22.12",
         "package_manager": "npm",
         "package_manager_executable": "npm",
-        "package_manager_exact": "10.8.2",
+        "package_manager_exact": "8.19.4",
         "npx_executable": "npx",
-        "npx_exact": "10.8.2",
+        "npx_exact": "8.19.4",
         "environment_allowlist": ["PATH"],
     }
     bindings = _runtime_bindings_from_profile(profile)
     assert set(bindings) == {"node", "npm", "npx"}
-    assert bindings["node"].runtime_id == "v18.20.8"
-    assert bindings["npm"].runtime_id == "v18.20.8"
-    assert bindings["npm"].version_exact == "10.8.2"
-    assert bindings["npx"].runtime_id == "v18.20.8"
+    assert bindings["node"].runtime_id == "node12"
+    assert bindings["npm"].runtime_id == "node12"
+    assert bindings["npm"].version_exact == "8.19.4"
+    assert bindings["npx"].runtime_id == "node12"
 
 
 def test_runtime_bindings_legacy_profile_without_node_exact_returns_empty():

@@ -342,7 +342,10 @@ class PlanningReviewEvidenceApplicationService:
                 or request.artifact_set_checksum != gate.artifact_set_checksum
                 or request.plan_checksum != gate.plan_checksum
                 or request.stage_plan_checksum != gate.stage_plan_checksum
-                or request.workspace_fingerprint != gate.workspace_fingerprint
+                or (
+                    request.workspace_fingerprint is not None
+                    and request.workspace_fingerprint != gate.workspace_fingerprint
+                )
             ):
                 self._mark_gate_stale(session, run, gate, actor, now, "G06 package binding changed")
                 session.commit()

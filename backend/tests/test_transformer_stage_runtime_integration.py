@@ -5,7 +5,7 @@ import pytest
 
 from app.domain.runtime_execution import RuntimeExecutableKind
 from app.repositories.models import MigrationStageModel
-from app.services.command_executor_service import CommandExecutorError, _runtime_bindings_from_stage
+from app.services.stage_runtime_service import canonical_stage_runtime_identity
 from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
 
 
@@ -102,7 +102,7 @@ def test_stage_runtime_binding_rejects_mixed_installations():
 
 def test_command_authority_reads_stage_runtime_rows():
     stage_id = "stage-command"
-    bindings = _runtime_bindings_from_stage(_Session(SimpleNamespace(id=stage_id), _rows(stage_id, "node12")), stage_id)
+    bindings = canonical_stage_runtime_identity(_rows(stage_id, "node12"), stage_id)["descriptors"]
 
     assert {item.runtime_id for item in bindings.values()} == {"node12"}
     assert bindings["node"].resolved_path.endswith("node.exe")
@@ -114,5 +114,5 @@ def test_command_authority_rejects_blocked_stage_runtime_rows():
     rows = _rows(stage_id, "node12")
     rows[0].status = "blocked"
 
-    with pytest.raises(CommandExecutorError, match="incomplete or blocked"):
-        _runtime_bindings_from_stage(_Session(SimpleNamespace(id=stage_id), rows), stage_id)
+    with pytest.raises(ValueError, match="incomplete or blocked"):
+        canonical_stage_runtime_identity(rows, stage_id)
