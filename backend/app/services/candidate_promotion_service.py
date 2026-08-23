@@ -11,6 +11,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from app.domain.candidate_promotion import CandidatePromotionDecision
+from app.domain.transformation import ValidationSummary
 from app.domain.workspace_authority import WorkspacePromotionRequest
 from app.repositories.models import CandidatePromotionModel, MigrationRunModel, MigrationStageModel
 from app.repositories.session import session_scope
@@ -116,6 +117,43 @@ class CandidatePromotionService:
             return rejected.bind_checksum()
         promoted = validation.model_copy(update={"status": "promoted", "validated": True})
         return promoted.bind_checksum()
+
+    def promote_validated_generation(
+        self,
+        *,
+        run_id: str,
+        stage_id: str,
+        candidate_path: Path,
+        validation_summary: ValidationSummary,
+    ) -> CandidatePromotionDecision:
+        """P08 exact promotion: only the approved, fingerprint-equal generation.
+
+        Requires an approved PASS ValidationSummary whose bound
+        ``candidate_fingerprint`` equals the live canonical
+        ``STAGE_FINGERPRINT_PROFILE`` digest of the candidate right now;
+        any inequality fails closed before authority mutation.
+        """
+        from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
+
+        if validation_summary.run_id != run_id or validation_summary.stage_id != stage_id:
+            raise CandidatePromotionError(
+                "VALIDATION_SUMMARY_SCOPE_MISMATCH",
+                "validation summary does not belong to this run/stage",
+            )
+        if validation_summary.status != "PASS":
+            raise CandidatePromotionError(
+                "CANDIDATE_NOT_VALIDATED",
+                "promotion requires an approved PASS validation summary",
+            )
+        resolved = candidate_path.resolve(strict=False)
+        live_fingerprint = STAGE_FINGERPRINT_PROFILE.fingerprint(resolved)
+        if live_fingerprint != validation_summary.candidate_fingerprint:
+            raise CandidatePromotionError(
+                "CANDIDATE_FINGERPRINT_MISMATCH",
+                "live candidate fingerprint differs from the validated generation",
+                {"validated": validation_summary.candidate_fingerprint[:16]},
+            )
+        return self.promote_candidate(run_id=run_id, stage_id=stage_id, candidate_path=candidate_path)
 
     def rollback_safety(self, *, run_id: str, stage_id: str) -> CandidatePromotionDecision:
         """Confirm the last-good generation is still active (rollback safety).

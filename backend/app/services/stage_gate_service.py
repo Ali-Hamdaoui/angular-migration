@@ -13,8 +13,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.domain.contracts import WorkflowEventType
-from app.domain.planning import SUPPORTED_VALIDATION_TARGETS
-from app.domain.transformation import StageGateDecisionRequest, StageGateId, TransformationNode
+from app.domain.planning import (
+    SUPPORTED_VALIDATION_TARGETS,
+    TRANSFORMER_SEMANTIC_VERSION_PROVEN,
+    normalize_stage_plan_semantics,
+)
+from app.domain.transformation import (
+    ProvenTransformationNode,
+    StageGateDecisionRequest,
+    StageGateId,
+    TransformationNode,
+)
 from app.artifact_store import ArtifactNotFoundError, ArtifactStoreError, LocalFilesystemArtifactStore
 from app.repositories.models import (
     ArtifactMetadataModel,
@@ -67,6 +76,30 @@ _NEXT_NODE = {
 
 _SEMANTIC_RECOVERY_REASON = "semantic retry exhausted recovery requested"
 _BOUND_CANDIDATE_RECOVERY_REASON = "deterministic bound candidate recovery requested"
+
+
+def _gate_successor_node(session: Session, continuation: TransformationContinuationModel, gate_id: str) -> str:
+    """Immutable gate successor selected by the persisted graph semantics.
+
+    Legacy plans keep their historical successors.  Proven plans route an
+    approved G09 to exact validated-generation promotion instead of directly
+    creating G12; G11→CREATE_G09 and G12→SEAL remain for both tables.
+    """
+    node = _NEXT_NODE[gate_id]
+    if gate_id != StageGateId.G09.value or not getattr(continuation, "stage_plan_id", None):
+        return node
+    plan_row = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+    try:
+        semantic_version, _mode, _authorization = normalize_stage_plan_semantics(
+            (plan_row.stage_plan if plan_row else None) or {}
+        )
+    except ValueError as error:
+        raise StageGateError(
+            getattr(error, "code", "TRANSFORMER_SEMANTIC_VERSION_UNSUPPORTED"), str(error)
+        ) from error
+    if semantic_version == TRANSFORMER_SEMANTIC_VERSION_PROVEN:
+        return ProvenTransformationNode.PROMOTE_VALIDATED.value
+    return node
 
 
 def _canonical_revision_payload(value: object, *, review: bool) -> dict | None:
@@ -331,7 +364,7 @@ class StageGateService:
                     )
                     attempt.completed_at = decided_at
             continuation.status = "queued"
-            continuation.current_node = _NEXT_NODE[gate_id]
+            continuation.current_node = self._gate_successor_node(session, continuation, gate_id)
             continuation.wake_sequence += 1
         else:
             if gate_id == StageGateId.G11.value:
