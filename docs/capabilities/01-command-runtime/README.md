@@ -107,3 +107,20 @@ ownership with leases, timeout, and cancellation.
   execution passes through the structured path, policy versioning enforced
 - **Runtime/product/frontend:** PASS — All routes registered, API contracts
   match frozen schemas, frontend components integrated
+
+## V2.2 governed runtime and command evidence requirements (P2-0/P2-1)
+
+New proven plans (`transformer-plan-v2.2-proven-1`) execute only through
+authority-bound commands: discovery and migration run through an absolute,
+checksummed Angular CLI entrypoint under the exact governed Node/npm/npx
+descriptors of an `AngularCliToolchainAuthority`; child npm must resolve to the
+bound npm descriptor. The V2-V6 combined updater templates and the npx-based
+migrate commands remain registered solely as legacy replay history - they are
+deprecated for new proven plans and are never selected as authoritative
+mutation.
+
+Every qualification row keeps its full immutable evidence chain (authorization,
+toolchain authority, lock authority selection, npm-ci/npm-ls same-authority
+proof, gate order, promotion, seal). Runtime qualification is separate from
+production: PRODUCTION requires promoted certified profiles and can never use
+qualification authorization.
