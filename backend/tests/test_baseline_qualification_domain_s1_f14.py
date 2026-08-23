@@ -46,6 +46,30 @@ def test_known_failure_requires_explicit_allowed_policy_and_never_looks_clean():
     assert allowed.status is BaselineQualificationStatus.QUALIFIED_WITH_KNOWN_FAILURES
 
 
+def test_pre_existing_lint_debt_is_captured_without_blocking_g03():
+    failure = {"fingerprint": "sha256:lint", "kind": "lint", "origin": "pre-existing", "message": "legacy"}
+    current = evidence(failures=(failure,))
+    current = current.__class__(**{**current.__dict__, "optional_failures": (failure,)})
+
+    result = BaselinePolicyService().evaluate(current)
+
+    assert result.status is BaselineQualificationStatus.QUALIFIED_WITH_KNOWN_FAILURES
+    assert not result.blockers
+    assert result.known_failures == (failure,)
+
+
+def test_optional_lint_debt_does_not_hide_a_required_failure():
+    lint = {"fingerprint": "sha256:lint", "kind": "lint", "origin": "pre-existing"}
+    test = {"fingerprint": "sha256:test", "kind": "test", "origin": "pre-existing"}
+    current = evidence(failures=(lint, test))
+    current = current.__class__(**{**current.__dict__, "optional_failures": (lint,)})
+
+    result = BaselinePolicyService().evaluate(current)
+
+    assert result.status is BaselineQualificationStatus.BLOCKED_BY_PROJECT
+    assert "KNOWN_BASELINE_FAILURES_REQUIRE_POLICY" in result.blockers
+
+
 def test_failed_install_or_build_cannot_be_approved():
     result = BaselinePolicyService().evaluate(evidence(install="failed", build="passed"))
     package = G03ApprovalPackageBuilder().build(run_id="run-1", actor="operator", evidence=evidence(install="failed", build="passed"), qualification=result)

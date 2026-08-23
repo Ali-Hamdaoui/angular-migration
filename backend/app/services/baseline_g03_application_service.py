@@ -60,7 +60,9 @@ class BaselineG03ApplicationService:
             evidence_artifacts = tuple({"artifact_id": artifact_id, "checksum": registered[artifact_id].checksum} for artifact_id in evidence_ids)
             runtime_status = "selected" if profile and profile.selected_profile_id and profile.selected_checksum else "not_proven"
             install_status = self.installation_status(installation)
-            evidence=BaselineEvidence(runtime={"status":runtime_status},install={"status":install_status},validations=tuple({"kind":v.kind,"status":self.validation_status(v)} for v in vals),parity={"failures":parity.failures if parity else [],"confidence":parity.confidence if parity else {}},source_integrity={"verified":True},evidence_artifacts=evidence_artifacts,sandbox_fingerprint=baseline.sandbox_fingerprint or "",execution_profile_checksum=profile.selected_checksum if profile and profile.selected_checksum else "",state_version=run.state_version)
+            parity_failures = tuple(parity.failures or [])
+            optional_failures = tuple(item for item in parity_failures if item.get("kind") == "lint" and item.get("origin") == "pre-existing")
+            evidence=BaselineEvidence(runtime={"status":runtime_status},install={"status":install_status},validations=tuple({"kind":v.kind,"status":self.validation_status(v)} for v in vals),parity={"failures":parity_failures,"confidence":parity.confidence if parity else {}},source_integrity={"verified":True},evidence_artifacts=evidence_artifacts,sandbox_fingerprint=baseline.sandbox_fingerprint or "",execution_profile_checksum=profile.selected_checksum if profile and profile.selected_checksum else "",state_version=run.state_version,optional_failures=optional_failures)
             q=BaselinePolicyService().evaluate(evidence,policy=KnownFailurePolicy(request.policy),company_policy_allows_known_failures=request.company_policy_allows_known_failures)
             package=G03ApprovalPackageBuilder().build(run_id=run_id,actor=request.actor,evidence=evidence,qualification=q)
             parity_binding = self._parity_binding(parity)

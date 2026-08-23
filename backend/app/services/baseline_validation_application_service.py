@@ -5,7 +5,7 @@ import json
 import os
 import re
 import threading
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -21,6 +21,71 @@ from app.state.transition_service import StaleStateVersionError, StateTransition
 class BaselineValidationApplicationError(ValueError):
     def __init__(self, code: str, message: str, status_code: int = 422):
         super().__init__(message); self.code, self.message, self.status_code = code, message, status_code
+
+
+@dataclass(frozen=True)
+class BrowserRuntime:
+    path: Path
+    family: str
+    checksum: str
+    candidates: tuple[str, ...]
+    version: str | None = None
+
+
+_BROWSER_VERSION_ARGUMENTS = ("--headless", "--disable-gpu", "--no-sandbox", "--version")
+
+
+def _windows_file_version(path: Path) -> str | None:
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+
+        version = ctypes.windll.version
+        size = version.GetFileVersionInfoSizeW(str(path), None)
+        if not size:
+            return None
+        buffer = ctypes.create_string_buffer(size)
+        if not version.GetFileVersionInfoW(str(path), 0, size, buffer):
+            return None
+        class FixedFileInfo(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_uint32) for name in ("signature", "structure", "file_ms", "file_ls", "product_ms", "product_ls", "mask", "flags", "os", "type", "subtype", "date_ms", "date_ls")]
+        pointer = ctypes.c_void_p()
+        length = ctypes.c_uint32()
+        if not version.VerQueryValueW(buffer, "\\", ctypes.byref(pointer), ctypes.byref(length)):
+            return None
+        info = ctypes.cast(pointer, ctypes.POINTER(FixedFileInfo)).contents
+        return f"{info.file_ms >> 16}.{info.file_ms & 0xffff}.{info.file_ls >> 16}.{info.file_ls & 0xffff}"
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _discover_browser() -> BrowserRuntime | None:
+    if os.name != "nt":
+        return None
+    roots = {
+        "LOCALAPPDATA": os.environ.get("LOCALAPPDATA"),
+        "ProgramFiles": os.environ.get("ProgramFiles"),
+        "ProgramFiles(x86)": os.environ.get("ProgramFiles(x86)"),
+    }
+    candidates = (
+        ("Chrome", roots["LOCALAPPDATA"], "Google/Chrome/Application/chrome.exe"),
+        ("Chrome", roots["ProgramFiles"], "Google/Chrome/Application/chrome.exe"),
+        ("Chrome", roots["ProgramFiles(x86)"], "Google/Chrome/Application/chrome.exe"),
+        ("Chromium", roots["LOCALAPPDATA"], "Chromium/Application/chrome.exe"),
+        ("Chromium", roots["ProgramFiles"], "Chromium/Application/chrome.exe"),
+        ("Chromium", roots["ProgramFiles(x86)"], "Chromium/Application/chrome.exe"),
+    )
+    seen: list[str] = []
+    for family, root, relative in candidates:
+        if not root:
+            continue
+        path = (Path(root) / relative).resolve()
+        seen.append(str(path))
+        if path.is_file():
+            checksum = hashlib.sha256(path.read_bytes()).hexdigest()
+            return BrowserRuntime(path, family, f"sha256:{checksum}", tuple(seen), _windows_file_version(path))
+    return None
 class BaselineValidationApplicationService:
     _ACTIVE: dict[tuple[str, str], threading.Event] = {}
     _EVENTS = {"build": (WorkflowEventType.BASELINE_BUILD_STARTED, WorkflowEventType.BASELINE_BUILD_COMPLETED), "test": (WorkflowEventType.BASELINE_TESTS_STARTED, WorkflowEventType.BASELINE_TESTS_COMPLETED), "lint": (WorkflowEventType.BASELINE_LINT_STARTED, WorkflowEventType.BASELINE_LINT_COMPLETED)}
@@ -59,16 +124,36 @@ class BaselineValidationApplicationService:
             started = self._transition(session, run, request, self._EVENTS[kind][0], f"baseline {kind} validation started", {"kind": kind, "target_count": len(targets)})
             validation = BaselineValidationModel(id=f"validation-{uuid4().hex[:12]}", run_id=run_id, idempotency_key=request.idempotency_key, actor=request.actor, kind=kind, status="running", targets=[self._target_dict(t) for t in targets], results=[], parser_summary=None, artifact_ids=[], artifact_checksums={}, prerequisite_artifact_ids=list(request.prerequisite_artifact_ids), baseline_checksum=baseline.checksum, state_version=started.next_state_version, event_sequence=started.event_sequence, created_at=self._now(), updated_at=self._now())
             session.add(validation); session.flush(); sandbox = Path(baseline.sandbox_path); profile = self._profile(session, run_id); runtime_id = profile.selected_profile_id if profile and profile.selected_profile_id else "source-runtime-profile"; runtime_checksum = profile.selected_checksum if profile else None
-            bound_targets = [self._bind_runtime_target(target, profile) for target in targets]
+            browser_targets = [self._bind_test_target(target, sandbox) for target in targets] if kind == "test" else targets
+            bound_targets = [self._bind_runtime_target(target, profile) for target in browser_targets]
             validation.targets = [self._target_dict(target) for target in bound_targets]
-            definitions = tuple(CommandDefinition(t.command_id, t.executable, t.arguments) for t in bound_targets if t.supported); worker = self._worker(run, sandbox, definitions, runtime_id, self._runtime_environment(profile))
+            browser = _discover_browser() if any(self._is_karma_target(target, sandbox) for target in bound_targets) else None
+            needs_browser = kind == "test" and any(self._is_karma_target(target, sandbox) for target in bound_targets if target.supported)
+            definitions = tuple(CommandDefinition(t.command_id, t.executable, t.arguments) for t in bound_targets if t.supported)
+            if browser is not None:
+                definitions += (CommandDefinition("runtime-executable-probe", "*", _BROWSER_VERSION_ARGUMENTS),)
+            worker = self._worker(run, sandbox, definitions, runtime_id, self._runtime_environment(profile, browser.path if browser else None), {browser.path.parent} if browser else ())
             targets = bound_targets
         cancel_event = threading.Event(); self._ACTIVE[(run_id, kind)] = cancel_event
         results: list[BaselineTargetResult] = []; executed: list[tuple[BaselineTargetResult, object, CommandRequestDto]] = []
+        browser_probe = None; browser_error = None
         output_sequence = 0
         execution_error: Exception | None = None
         try:
-            for index, target in enumerate(targets):
+            if needs_browser:
+                if browser is None:
+                    browser_error = "HARNESS_BROWSER_NOT_FOUND"
+                else:
+                    try:
+                        browser_request = CommandRequestDto(command_id="runtime-executable-probe", run_id=run_id, executable=str(browser.path), arguments=list(_BROWSER_VERSION_ARGUMENTS), shell=False, working_directory_alias="BASELINE_SANDBOX", runtime_profile_id=runtime_id, timeout_seconds=60, network_profile="none", cancellation_policy=CancellationPolicy.TERMINATE_PROCESS_TREE, idempotency_key=f"{request.idempotency_key}:browser-version", requested_by=request.actor, requester=request.actor, requested_at=self._now())
+                        browser_probe = worker.run(browser_request, cancel_event=cancel_event)
+                        if browser_probe.result.exit_code != 0 and not browser.version:
+                            browser_error = "HARNESS_BROWSER_VERSION_PROBE_FAILED"
+                    except Exception as error:
+                        browser_error = f"HARNESS_BROWSER_VERSION_PROBE_FAILED: {error}"
+            if browser_error:
+                results = [replace(normalize_command_result(target, exit_code=None, duration_ms=None), status=BaselineTargetStatus.BLOCKED, blocker=browser_error) if target.supported else normalize_command_result(target, exit_code=None, duration_ms=None) for target in targets]
+            for index, target in enumerate(targets if not browser_error else ()):
                 if cancel_event.is_set():
                     results.extend(normalize_command_result(later, exit_code=None, duration_ms=None, cancelled=True) for later in targets[index:])
                     break
@@ -95,6 +180,12 @@ class BaselineValidationApplicationService:
             run, baseline = self._run_and_baseline(session, run_id); record = session.get(BaselineValidationModel, validation.id)
             if record is None: raise BaselineValidationApplicationError("BASELINE_VALIDATION_NOT_FOUND", "Validation record disappeared.", 500)
             result_dicts = [self._result_dict(r) for r in results]; artifact_ids = [self._write_target_inventory(session, run, inventory)]
+            if browser_probe is not None:
+                browser_artifacts = [ref.artifact_id for ref in (browser_probe.command_log_artifact.ref, browser_probe.stdout_artifact.ref if browser_probe.stdout_artifact else None, browser_probe.stderr_artifact.ref if browser_probe.stderr_artifact else None) if ref]
+                for artifact_id in browser_artifacts: self._register_artifact(session, run, artifact_id)
+                artifact_ids.extend(browser_artifacts)
+            if kind == "test":
+                artifact_ids.append(self._write_browser_evidence(session, run, browser, browser_probe, browser_error))
             for result, execution, command_request in executed:
                 command = CommandExecutionModel(id=f"execution-{uuid4().hex[:12]}", run_id=run_id, stage_id=None, idempotency_key=command_request.idempotency_key, requested_by=request.actor, requester=request.actor, command_id=command_request.command_id, executable=command_request.executable, arguments=list(command_request.arguments), shell=False, working_directory_alias=command_request.working_directory_alias, runtime_profile_id=runtime_id, runtime_checksum=runtime_checksum, baseline_checksum=baseline.checksum, status=execution.result.status.value, requested_at=command_request.requested_at, started_at=execution.result.started_at, finished_at=execution.result.finished_at, exit_code=execution.result.exit_code, duration_ms=execution.result.duration_ms, timed_out=execution.timed_out, cancelled=execution.cancelled, stdout_artifact_id=execution.stdout_artifact.ref.artifact_id if execution.stdout_artifact else None, stderr_artifact_id=execution.stderr_artifact.ref.artifact_id if execution.stderr_artifact else None, command_log_artifact_id=execution.command_log_artifact.ref.artifact_id, artifact_ids=[], blockers=[], state_version=record.state_version, event_sequence=record.event_sequence)
                 command.artifact_ids = [ref.artifact_id for ref in [execution.command_log_artifact.ref, execution.stdout_artifact.ref if execution.stdout_artifact else None, execution.stderr_artifact.ref if execution.stderr_artifact else None] if ref]
@@ -105,10 +196,10 @@ class BaselineValidationApplicationService:
             status = "blocked" if any(r.status is BaselineTargetStatus.BLOCKED for r in results) and not any(r.status is BaselineTargetStatus.FAILED for r in results) else "failed" if execution_error is not None or any(r.status in {BaselineTargetStatus.FAILED, BaselineTargetStatus.CANCELLED, BaselineTargetStatus.INTERRUPTED} for r in results) else results[0].status.value if results and all(r.status is results[0].status for r in results) and results[0].status in {BaselineTargetStatus.SKIPPED_NOT_CONFIGURED, BaselineTargetStatus.SKIPPED_NOT_APPLICABLE} else "passed"
             completed = self._transition(session, run, request, self._EVENTS[kind][1], f"baseline {kind} validation completed", {"kind": kind, "status": status, "artifact_count": len(artifact_ids)}, expected_state_version=run.state_version)
             record.status, record.results, record.parser_summary, record.artifact_ids = status, result_dicts, summary, artifact_ids; record.artifact_checksums = {artifact_id: self._artifact_checksum(run, artifact_id) for artifact_id in artifact_ids}; record.state_version, record.event_sequence, record.updated_at = completed.next_state_version, completed.event_sequence, self._now(); session.flush(); self._ACTIVE.pop((run_id, kind), None); return self._response(record)
-    def _worker(self, run, sandbox, definitions, runtime_id, environment_overrides=None):
-        root = Path(run.artifact_root).resolve(); store = LocalFilesystemArtifactStore(root, fixed_run_root=root); policy = CommandPolicy(sandbox_root=sandbox, registry=CommandRegistry(definitions=definitions), working_directory_aliases={"BASELINE_SANDBOX": sandbox}, runtime_profiles=frozenset({runtime_id}), network_profiles=frozenset({"none"}), environment_overrides=environment_overrides or {}); return ExecutionWorker(policy, CommandLogWriter(store), timeout_seconds=3600)
+    def _worker(self, run, sandbox, definitions, runtime_id, environment_overrides=None, runtime_probe_roots=()):
+        root = Path(run.artifact_root).resolve(); store = LocalFilesystemArtifactStore(root, fixed_run_root=root); policy = CommandPolicy(sandbox_root=sandbox, registry=CommandRegistry(definitions=definitions), working_directory_aliases={"BASELINE_SANDBOX": sandbox}, runtime_profiles=frozenset({runtime_id}), network_profiles=frozenset({"none"}), environment_overrides=environment_overrides or {}, runtime_probe_roots=frozenset(runtime_probe_roots)); return ExecutionWorker(policy, CommandLogWriter(store), timeout_seconds=3600)
     @staticmethod
-    def _runtime_environment(profile):
+    def _runtime_environment(profile, browser_path=None):
         if profile is None:
             return {}
         selected = next((item for item in (profile.profiles or []) if item.get("profile_id") == profile.selected_profile_id and item.get("checksum") == profile.selected_checksum), None)
@@ -123,10 +214,35 @@ class BaselineValidationApplicationService:
                     directories.append(directory)
         current_path = os.environ.get("PATH", "")
         environment = {"PATH": os.pathsep.join([*directories, current_path]) if current_path else os.pathsep.join(directories)}
-        chrome_bin = os.environ.get("CHROME_BIN")
-        if chrome_bin and Path(chrome_bin).is_file():
-            environment["CHROME_BIN"] = str(Path(chrome_bin).resolve())
+        selected_browser = browser_path or os.environ.get("CHROME_BIN")
+        if selected_browser and Path(selected_browser).is_file():
+            environment["CHROME_BIN"] = str(Path(selected_browser).resolve())
         return environment
+
+    @staticmethod
+    def _is_karma_target(target, sandbox):
+        if target.kind is not BaselineTargetKind.TEST or not target.supported:
+            return False
+        if target.command_id.startswith("angular__"):
+            return True
+        if target.executable not in {"npm", "npm.cmd"} or len(target.arguments) < 2 or target.arguments[0] != "run":
+            return False
+        try:
+            package = json.loads((Path(sandbox) / "package.json").read_text(encoding="utf-8"))
+            return "ng test" in str((package.get("scripts") or {}).get(target.arguments[1], ""))
+        except (OSError, json.JSONDecodeError):
+            return False
+
+    @classmethod
+    def _bind_test_target(cls, target, sandbox):
+        if not cls._is_karma_target(target, sandbox):
+            return target
+        arguments = list(target.arguments)
+        if "--watch=false" not in arguments:
+            arguments.append("--watch=false")
+        if "--browsers=ChromeHeadless" not in arguments:
+            arguments.append("--browsers=ChromeHeadless")
+        return replace(target, arguments=tuple(arguments))
     @staticmethod
     def _bind_runtime_target(target, profile):
         """Replace PATH-resolved npm/npx shims with the selected profile paths."""
@@ -233,6 +349,25 @@ class BaselineValidationApplicationService:
         payload = {"run_id": run.id, "sandbox_path": str(sandbox), "files": files}
         store = LocalFilesystemArtifactStore(Path(run.artifact_root).resolve(), fixed_run_root=Path(run.artifact_root).resolve())
         stored = store.write_text_artifact(run.id, "01_baseline/generated_output_inventory.json", json.dumps(payload, indent=2, sort_keys=True), ArtifactType.JSON, created_by="baseline-validation-service", created_at=self._now(), policy_version="baseline-validation-v1")
+        self._register_artifact(session, run, stored.ref.artifact_id)
+        return stored.ref.artifact_id
+
+    def _write_browser_evidence(self, session, run, browser, probe, error):
+        version_output = self._execution_output(probe, run.id).strip() if probe is not None else ""
+        payload = {
+            "run_id": run.id,
+            "status": "bound" if browser is not None and not error else "harness_blocked" if error else "not_required",
+            "selection_policy": "known_windows_chrome_chromium_install_paths_only",
+            "executable_path": str(browser.path) if browser else None,
+            "browser_family": browser.family if browser else None,
+            "version": browser.version if browser else next((line.strip() for line in version_output.splitlines() if line.strip() and "ERROR:" not in line), None),
+            "sha256": browser.checksum if browser else None,
+            "probe_command_id": "runtime-executable-probe" if probe is not None else None,
+            "probe_exit_code": probe.result.exit_code if probe is not None else None,
+            "error": error,
+        }
+        root = Path(run.artifact_root).resolve(); store = LocalFilesystemArtifactStore(root, fixed_run_root=root)
+        stored = store.write_text_artifact(run.id, "global/execution-profile/browser_runtime.json", json.dumps(payload, indent=2, sort_keys=True), ArtifactType.JSON, created_by="baseline-validation-service", created_at=self._now(), policy_version="baseline-validation-v1")
         self._register_artifact(session, run, stored.ref.artifact_id)
         return stored.ref.artifact_id
 

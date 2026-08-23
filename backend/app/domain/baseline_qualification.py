@@ -50,6 +50,7 @@ class BaselineEvidence:
     sandbox_fingerprint: str
     execution_profile_checksum: str
     state_version: int
+    optional_failures: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -102,6 +103,9 @@ class BaselinePolicyService:
         blockers: list[str] = []
         warnings: list[str] = []
         failures = tuple(self._known_failures(evidence))
+        optional = tuple(dict(item) for item in evidence.optional_failures if isinstance(item, Mapping))
+        optional_keys = {_stable_key(item) for item in optional}
+        required_failures = tuple(item for item in failures if _stable_key(item) not in optional_keys)
 
         if not evidence.sandbox_fingerprint:
             blockers.append("BASELINE_SANDBOX_FINGERPRINT_REQUIRED")
@@ -138,12 +142,14 @@ class BaselinePolicyService:
         if any(status in {"not_configured", "manual_validation_required", "deferred_company_tool_required"} for status in validation_statuses):
             warnings.append("BASELINE_VALIDATION_NOT_MACHINE_PROVEN")
 
-        if failures and policy is KnownFailurePolicy.STRICT_CLEAN:
+        if failures and not required_failures:
+            warnings.append("BASELINE_HAS_PRE_EXISTING_OPTIONAL_DIAGNOSTICS")
+        elif required_failures and policy is KnownFailurePolicy.STRICT_CLEAN:
             blockers.append("KNOWN_BASELINE_FAILURES_REQUIRE_POLICY")
-        elif failures and policy is KnownFailurePolicy.QUALIFIED_KNOWN_FAILURES:
+        elif required_failures and policy is KnownFailurePolicy.QUALIFIED_KNOWN_FAILURES:
             if not company_policy_allows_known_failures:
                 blockers.append("KNOWN_FAILURE_POLICY_NOT_ALLOWED")
-            elif any(not item.get("fingerprint") for item in failures):
+            elif any(not item.get("fingerprint") for item in required_failures):
                 blockers.append("KNOWN_FAILURE_FINGERPRINT_REQUIRED")
             else:
                 warnings.append("BASELINE_HAS_APPROVED_KNOWN_FAILURES")
@@ -270,3 +276,7 @@ class G03ApprovalService:
 def _checksum(value: Any) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
     return f"sha256:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
+
+
+def _stable_key(value: Mapping[str, Any]) -> str:
+    return json.dumps(dict(value), sort_keys=True, separators=(",", ":"), default=str)
