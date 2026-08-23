@@ -163,4 +163,14 @@ export type TransformationProjection = {
     mismatches: string[];
   } | null;
   cancel_requested_at: string | null;
+  // V2.2 proven-plan additive projection; legacy stages leave these unset.
+  plan_semantic_version?: string | null;
+  run_mode?: "PRODUCTION" | "QUALIFICATION" | null;
+  runtime_certification_status?: string | null;
+  qualification_authorization_ref?: string | null;
+  g11_status?: string | null;
+  g09_status?: string | null;
+  promotion_status?: string | null;
+  seal_status?: string | null;
+  evidence_refs?: string[];
 };

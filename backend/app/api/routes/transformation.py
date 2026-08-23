@@ -19,12 +19,15 @@ from app.domain.transformation import (
 )
 from app.repositories.models import (
     ArtifactMetadataModel,
+    CandidatePromotionModel,
     CommandExecutionModel,
     MigrationStageModel,
     MigrationRunModel,
     RepairAttemptModel,
+    RuntimeCertificationModel,
     LlmInvocationModel,
     StageCheckpointModel,
+    StageExecutionPlanModel,
     StageGateDecisionModel,
     StageGatePackageModel,
     StagePromptRequestModel,
@@ -35,6 +38,7 @@ from app.repositories.models import (
     WorkflowEventModel,
 )
 from app.repositories.session import session_scope
+from app.domain.planning import normalize_stage_plan_semantics
 from app.services.transformation_continuation_service import (
     TransformationContinuationError,
     TransformationContinuationService,
@@ -665,6 +669,7 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
                 "comment": decision.comment,
                 "accepted": decision.accepted,
             }
+    proven = _proven_projection_fields(session, continuation)
     return {
         "run_id": continuation.run_id,
         "continuation_id": continuation.id,
@@ -839,7 +844,79 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
         "last_error_message": continuation.last_error_message,
         "runtime_profile_binding": runtime_profile_binding,
         "cancel_requested_at": continuation.cancel_requested_at,
+        **proven,
     }
+
+
+def _proven_projection_fields(session, continuation: TransformationContinuationModel) -> dict[str, object]:
+    """Additive V2.2 proven-plan projection; legacy stages omit these values.
+
+    The UI projects backend truth only: completeness, ownership, gate order
+    and seal state are read from persisted records, never derived client-side.
+    """
+    fields: dict[str, object] = {
+        "plan_semantic_version": None,
+        "run_mode": None,
+        "runtime_certification_status": None,
+        "qualification_authorization_ref": None,
+        "g11_status": None,
+        "g09_status": None,
+        "promotion_status": None,
+        "seal_status": None,
+        "evidence_refs": [],
+    }
+    plan_row = (
+        session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+        if getattr(continuation, "stage_plan_id", None)
+        else None
+    )
+    plan_payload = (plan_row.stage_plan if plan_row else None) or {}
+    try:
+        semantic_version, run_mode, _authorization = normalize_stage_plan_semantics(plan_payload)
+    except ValueError:
+        semantic_version, run_mode = "unsupported", None
+    fields["plan_semantic_version"] = semantic_version
+    fields["run_mode"] = run_mode
+    certification = session.scalar(
+        select(RuntimeCertificationModel)
+        .where(RuntimeCertificationModel.stage_id == continuation.current_stage_id)
+        .order_by(RuntimeCertificationModel.created_at.desc())
+        .limit(1)
+    )
+    if certification is not None:
+        fields["runtime_certification_status"] = (
+            "certified" if certification.certified else ("allowed_uncertified" if certification.allowed else "uncertified")
+        )
+    for gate_id, key in (("G11", "g11_status"), ("G09", "g09_status")):
+        row = session.scalar(
+            select(StageGatePackageModel)
+            .where(
+                StageGatePackageModel.run_id == continuation.run_id,
+                StageGatePackageModel.stage_id == continuation.current_stage_id,
+                StageGatePackageModel.gate_id == gate_id,
+            )
+            .order_by(StageGatePackageModel.created_at.desc())
+            .limit(1)
+        )
+        fields[key] = row.status if row else None
+    promotion = session.scalar(
+        select(CandidatePromotionModel)
+        .where(CandidatePromotionModel.stage_id == continuation.current_stage_id)
+        .order_by(CandidatePromotionModel.created_at.desc())
+        .limit(1)
+    )
+    fields["promotion_status"] = promotion.status if promotion else None
+    sealed = session.scalar(
+        select(StageCheckpointModel)
+        .where(
+            StageCheckpointModel.stage_id == continuation.current_stage_id,
+            StageCheckpointModel.sealed.is_(True),
+        )
+        .order_by(StageCheckpointModel.created_at.desc())
+        .limit(1)
+    )
+    fields["seal_status"] = "sealed" if sealed else None
+    return fields
 
 
 @router.get("/{run_id}/transformation")

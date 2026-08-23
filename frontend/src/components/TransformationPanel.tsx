@@ -223,9 +223,18 @@ export function TransformationPanel({
               <code>State version: {projection.state_version}</code>
               <code>Package checksum: {projection.active_gate_package_checksum ?? "unavailable"}</code>
               <code>Workspace fingerprint: {projection.workspace_fingerprint ?? "unavailable"}</code>
+              {projection.plan_semantic_version ? <code>Plan semantics: {projection.plan_semantic_version}</code> : null}
+              {projection.run_mode ? <code>Run mode: {projection.run_mode}</code> : null}
+              {projection.runtime_certification_status ? <code>Runtime certification: {projection.runtime_certification_status}</code> : null}
             </TechnicalDetails>
           </div>
         </div>
+        {projection.seal_status === "sealed" || projection.g09_status || projection.g11_status || projection.promotion_status ? (
+          <p className={styles.note}>
+            Proven chain — G11: {projection.g11_status ?? "n/a"} · G09: {projection.g09_status ?? "n/a"} ·
+            Promotion: {projection.promotion_status ?? "n/a"} · Seal: {projection.seal_status ?? "pending"}
+          </p>
+        ) : null}
         {reviewerOverrideRequired ? <div className={styles.alert} role="alert">
           <strong>Reviewer raised unresolved concerns.</strong>
           <p>Review the findings, policy checks, limitations, validation targets, and {current.dependency_operation?.operation === "dependency_transition" ? "Dependency Transition Plan" : "exact candidate diff"} before approving.</p>
