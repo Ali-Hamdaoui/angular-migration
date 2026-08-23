@@ -18,6 +18,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from uuid import uuid4
 
 # Make ``app`` importable when launched as ``python -m backend.migration_runner``
 # from the repository root (backend/ is the package that owns app/).
@@ -91,6 +92,43 @@ def _find_run(source_dir: Path | None, source_major: int, target_major: int) -> 
     return matches[0].id if len(matches) == 1 else None
 
 
+def _repository_git_sha(root: Path) -> str:
+    """Read the checked-out commit identity without launching a process."""
+    head = root / ".git" / "HEAD"
+    try:
+        value = head.read_text(encoding="utf-8").strip()
+        if value.startswith("ref: "):
+            value = (root / ".git" / value[5:]).read_text(encoding="utf-8").strip()
+        return value or "working-tree"
+    except OSError:
+        return "working-tree"
+
+
+def _activate_factory_runtime() -> None:
+    """Bind this CLI process to the existing Factory runtime authority."""
+    from hashlib import sha256
+
+    from app.core.config import get_settings
+    from app.core.database import active_revisions
+    from app.repositories.session import engine, session_scope
+    from app.services.factory_runtime_service import FactoryRuntimeService
+
+    settings = get_settings()
+    os.environ.setdefault(
+        "FACTORY_RUNTIME_GENERATION",
+        f"migration-runner-{os.getpid()}-{uuid4().hex[:12]}",
+    )
+    os.environ.setdefault("FACTORY_GIT_SHA", _repository_git_sha(settings.platform_repository_root))
+    os.environ.setdefault(
+        "FACTORY_DATABASE_IDENTITY",
+        "sha256:" + sha256((settings.database_url or "").encode("utf-8")).hexdigest(),
+    )
+    os.environ.setdefault("FACTORY_LAUNCHER_PID", str(os.getpid()))
+    runtime = FactoryRuntimeService()
+    with session_scope() as session:
+        runtime.activate(session, ",".join(active_revisions(engine)))
+
+
 def _pump(run_id: str, timeout_seconds: int) -> dict[str, object]:
     from sqlalchemy import select
 
@@ -110,6 +148,19 @@ def _pump(run_id: str, timeout_seconds: int) -> dict[str, object]:
                 "phase": "migration_execution",
                 "code": "TRANSFORMER_PROVEN_ACTIVATION_BLOCKED",
                 "message": ", ".join(report.missing),
+            },
+        }
+    try:
+        _activate_factory_runtime()
+    except Exception as error:
+        return {
+            "run_id": run_id,
+            "final_status": "failed",
+            "failure": {
+                "category": "COMMAND_AUTHORITY",
+                "phase": "migration_execution",
+                "code": "FACTORY_RUNTIME_ACTIVATION_FAILED",
+                "message": str(error),
             },
         }
     worker = TransformerWorker(worker_id=f"migration-runner-{os.getpid()}")
