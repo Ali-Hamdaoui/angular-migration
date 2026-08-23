@@ -880,6 +880,164 @@ def pending_human_entries(owners: tuple[MigrationOwnerEntry, ...]) -> tuple[Migr
     return tuple(entry for entry in owners if entry.decision is MigrationDecision.PENDING_HUMAN)
 
 
+# ---------------------------------------------------------------------------
+# V2.2 P0-6 / section 12 — dependency authority freeze, clean validation,
+# and the PRE_EXISTING/NEW/RESOLVED/CHANGED diagnostic delta.
+# ---------------------------------------------------------------------------
+
+class DependencyAuthorityFreeze(ContractModel):
+    """Immutable package.json/selected-lock/workspace authority freeze."""
+
+    schema_version: str = "dependency-authority-freeze-v1"
+    run_id: str = Field(min_length=1)
+    stage_id: str = Field(min_length=1)
+    generation_id: str = Field(min_length=1)
+    dependency_intent_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    npm_exact_version: str = Field(min_length=1)
+    lockfile_policy_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    selected_lock_filename: str = Field(min_length=1)
+    selected_lock_kind: str = Field(min_length=1)
+    selected_lock_raw_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    selected_lock_version: int = Field(ge=1, le=3)
+    dependency_set_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    workspace_fingerprint: str = Field(min_length=1)
+    migration_ledger_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    target_cli_authority_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    catalogue_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    plan_checksum: str | None = None
+    checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def bind(self) -> "DependencyAuthorityFreeze":
+        if self.checksum == _DRAFT_CHECKSUM:
+            return self
+        expected = _canonical_checksum(self.model_dump(mode="json", exclude={"checksum"}))
+        if self.checksum != expected:
+            raise ValueError("dependency authority freeze checksum does not bind its payload")
+        return self
+
+    @classmethod
+    def create(cls, **fields) -> "DependencyAuthorityFreeze":
+        draft = cls(**fields, checksum=_DRAFT_CHECKSUM)
+        checksum = _canonical_checksum(draft.model_dump(mode="json", exclude={"checksum"}))
+        return draft.model_copy(update={"checksum": checksum})
+
+
+def normalize_diagnostic(diagnostic: Mapping[str, object]) -> dict[str, str]:
+    """Canonical sorted signature of one tool diagnostic (§12).
+
+    Identity is (tool, target, relative_path, code_or_rule); message text is
+    normalized for comparison but preserved in the delta record.
+    """
+    def _text(key: str) -> str:
+        value = diagnostic.get(key)
+        return re.sub(r"\s+", " ", str(value or "").strip())
+    relative_path = _text("relative_path").replace("\\", "/")
+    return {
+        "tool": _text("tool"),
+        "target": _text("target"),
+        "relative_path": relative_path,
+        "code_or_rule": _text("code_or_rule"),
+        "severity": _text("severity"),
+        "normalized_message": _text("message"),
+    }
+
+
+def compute_diagnostic_delta(
+    *,
+    source_diagnostics: tuple[Mapping[str, object], ...],
+    target_diagnostics: tuple[Mapping[str, object], ...],
+) -> dict[str, object]:
+    """Deterministic four-way delta between source baseline and target.
+
+    PRE_EXISTING: same identity and message in both; NEW: target only;
+    RESOLVED: source only; CHANGED: same identity, different severity/message.
+    """
+    def identity_key(item: Mapping[str, str]) -> tuple[str, str, str, str]:
+        return (item["tool"], item["target"], item["relative_path"], item["code_or_rule"])
+
+    def full_key(item: Mapping[str, str]) -> tuple[str, str, str, str, str, str]:
+        return identity_key(item) + (item["severity"], item["normalized_message"])
+
+    source_items = [normalize_diagnostic(d) for d in source_diagnostics]
+    target_items = [normalize_diagnostic(d) for d in target_diagnostics]
+    source_by_identity = {identity_key(item): item for item in source_items}
+    target_by_identity = {identity_key(item): item for item in target_items}
+    source_full = {full_key(item) for item in source_items}
+    target_full = {full_key(item) for item in target_items}
+    pre_existing: list[dict[str, str]] = []
+    changed: list[dict[str, str]] = []
+    for key, item in sorted(target_by_identity.items()):
+        source_counterpart = source_by_identity.get(key)
+        if source_counterpart is None:
+            continue
+        if full_key(item) in source_full:
+            pre_existing.append(item)
+        else:
+            changed.append({**item, "source_severity": source_counterpart["severity"], "source_normalized_message": source_counterpart["normalized_message"]})
+    new_items = [item for key, item in sorted(target_by_identity.items()) if key not in source_by_identity]
+    resolved = [source_by_identity[key] for key in sorted(set(source_by_identity) - set(target_by_identity))]
+    payload = {
+        "pre_existing": pre_existing,
+        "new": new_items,
+        "resolved": resolved,
+        "changed": changed,
+    }
+    return {
+        **payload,
+        "counts": {name: len(items) for name, items in payload.items()},
+        "delta_checksum": _canonical_checksum(payload),
+    }
+
+
+class ValidationSummary(ContractModel):
+    """Checksum-bound outcome of one clean validation generation (§12)."""
+
+    schema_version: str = "validation-summary-v1"
+    run_id: str = Field(min_length=1)
+    stage_id: str = Field(min_length=1)
+    candidate_generation_id: str = Field(min_length=1)
+    candidate_fingerprint: str = Field(min_length=1)
+    package_json_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    dependency_intent_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    npm_exact_version: str = Field(min_length=1)
+    lockfile_policy_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    selected_lock_filename: str = Field(min_length=1)
+    selected_lock_kind: str = Field(min_length=1)
+    selected_lock_raw_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    selected_lock_version: int = Field(ge=1, le=3)
+    dependency_set_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    root_sync_status: str = Field(min_length=1)
+    target_cli_authority_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    install_execution_id: str | None = None
+    tree_execution_id: str | None = None
+    version_proof_execution_id: str | None = None
+    build_execution_id: str | None = None
+    test_execution_id: str | None = None
+    lint_execution_id: str | None = None
+    path_kind: Literal["NORMAL", "REPAIRED"] = "NORMAL"
+    diagnostic_delta_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    status: Literal["PASS", "FAIL"]
+    failure_reason_codes: tuple[str, ...] = ()
+    summary_artifact_id: str | None = None
+    checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def bind(self) -> "ValidationSummary":
+        if self.checksum == _DRAFT_CHECKSUM:
+            return self
+        expected = _canonical_checksum(self.model_dump(mode="json", exclude={"checksum"}))
+        if self.checksum != expected:
+            raise ValueError("validation summary checksum does not bind its payload")
+        return self
+
+    @classmethod
+    def create(cls, **fields) -> "ValidationSummary":
+        draft = cls(**fields, checksum=_DRAFT_CHECKSUM)
+        checksum = _canonical_checksum(draft.model_dump(mode="json", exclude={"checksum"}))
+        return draft.model_copy(update={"checksum": checksum})
+
+
 class SourceBaselineEvidence(ContractModel):
     """Immutable evidence for one proven stage source baseline (V2.2 P0-2).
 
