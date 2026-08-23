@@ -229,7 +229,7 @@ export function TransformationPanel({
             </TechnicalDetails>
           </div>
         </div>
-        {projection.seal_status === "sealed" || projection.g09_status || projection.g11_status || projection.promotion_status ? (
+        {projection.plan_semantic_version === "transformer-plan-v2.2-proven-1" && (projection.seal_status === "sealed" || projection.g09_status || projection.g11_status || projection.promotion_status) ? (
           <p className={styles.note}>
             Proven chain — G11: {projection.g11_status ?? "n/a"} · G09: {projection.g09_status ?? "n/a"} ·
             Promotion: {projection.promotion_status ?? "n/a"} · Seal: {projection.seal_status ?? "pending"}

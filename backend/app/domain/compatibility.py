@@ -160,6 +160,21 @@ class CompatibilityCatalogueEntry(CompatibilityModel):
         return self
 
 
+def _strip_none_values(value):
+    """Recursively drop None-valued mapping entries for stable checksums."""
+    if isinstance(value, dict):
+        return {
+            key: _strip_none_values(item)
+            for key, item in value.items()
+            if item is not None
+        }
+    if isinstance(value, list):
+        return [_strip_none_values(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_strip_none_values(item) for item in value)
+    return value
+
+
 class CompatibilityCatalogue(CompatibilityModel):
     version: str = Field(min_length=1)
     entries: tuple[CompatibilityCatalogueEntry, ...] = Field(min_length=1)
@@ -169,7 +184,7 @@ class CompatibilityCatalogue(CompatibilityModel):
     def build(cls, version: str, entries: tuple[CompatibilityCatalogueEntry, ...]) -> "CompatibilityCatalogue":
         serialized_entries = []
         for entry in entries:
-            serialized = entry.model_dump(mode="json")
+            serialized = _strip_none_values(entry.model_dump(mode="json"))
             if not entry.validated_runtime_profiles:
                 serialized.pop("validated_runtime_profiles", None)
             if not entry.source_node_ranges:

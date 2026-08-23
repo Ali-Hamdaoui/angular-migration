@@ -148,7 +148,9 @@ def assert_repair_candidate_scope(
         path = raw.replace("\\", "/")
         if path.startswith(("/", "~")) or (len(path) > 1 and path[1] == ":"):
             raise RepairScopeError("REPAIR_PATH_ABSOLUTE", f"repair path must be relative to the candidate: {raw!r}")
-        normalized = path.lstrip("./") if path.startswith("./") else path
+        if path.startswith("./"):
+            path = path[2:]
+        normalized = path.lstrip("/") if path.startswith("/") else path
         if ".." in normalized.split("/"):
             raise RepairScopeError("REPAIR_PATH_TRAVERSAL", f"repair path escapes the candidate root: {raw!r}")
         if normalized in REPAIR_FORBIDDEN_PATHS or normalized.endswith("/" + next(iter(REPAIR_FORBIDDEN_PATHS))) or any(normalized == forbidden or normalized.endswith("/" + forbidden) for forbidden in REPAIR_FORBIDDEN_PATHS):
