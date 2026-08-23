@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -75,7 +76,7 @@ def _failure(code: str, message: str, *, category="unknown") -> dict[str, object
     return envelope.model_dump(mode="json")
 
 
-def _find_run(source_dir: Path | None, source_major: int, target_major: int) -> str | None:
+def _find_run(source_dir: Path | None, source_major: int, target_major: int, mode: str) -> str | None:
     from sqlalchemy import select
 
     from app.domain.contracts import RunStatus
@@ -87,8 +88,7 @@ def _find_run(source_dir: Path | None, source_major: int, target_major: int) -> 
             session.scalars(
                 select(MigrationRunModel)
                 .where(
-                    MigrationRunModel.source_version_family == f"angular-{source_major}.x",
-                    MigrationRunModel.target_version_family == f"angular-{target_major}.x",
+                    MigrationRunModel.target_version_family.in_({f"angular-{target_major}.x", f"{target_major}.x"}),
                     MigrationRunModel.status.not_in({
                         RunStatus.COMPLETED.value,
                         RunStatus.FAILED.value,
@@ -98,10 +98,18 @@ def _find_run(source_dir: Path | None, source_major: int, target_major: int) -> 
                 .order_by(MigrationRunModel.created_at.desc())
             )
         )
+    def detected_major(run) -> int | None:
+        match = re.search(r"(?<!\d)\d+", run.source_version_detected or run.source_angular_version or "")
+        return int(match.group()) if match else None
+
+    runs = [run for run in runs if run.source_version_family == f"angular-{source_major}.x" or (run.source_version_family is None and detected_major(run) == source_major)]
     if source_dir is None:
         return runs[0].id if len(runs) == 1 else None
     matches = [run for run in runs if Path(run.source_path or "").resolve() == source_dir]
-    return matches[0].id if len(matches) == 1 else None
+    preferred = [run for run in matches if (run.target_policy_snapshot or {}).get("migration_mode") == mode]
+    if mode == "qualification":
+        preferred = [run for run in matches if (run.client_constraints or {}).get("qualification") is True]
+    return preferred[0].id if preferred else (matches[0].id if len(matches) == 1 else None)
 
 
 def _repository_git_sha(root: Path) -> str:
@@ -206,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--source major must be lower than --target major")
     source_dir = _require_source_dir(args)
     output = args.output.resolve()
-    run_id = args.run_id or _find_run(source_dir, source_major, target_major)
+    run_id = args.run_id or _find_run(source_dir, source_major, target_major, args.mode)
     if run_id is None:
         return _result(output, {
             "run_id": None,
