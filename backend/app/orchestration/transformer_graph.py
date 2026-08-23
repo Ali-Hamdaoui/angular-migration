@@ -172,6 +172,29 @@ PROVEN_ROUTING: dict[str, str] = {
     node: "proven" for node in sorted(PROVEN_TRANSITION_NODES)
 }
 
+#: Shared nodes the proven graph reaches through existing machinery: the G06
+#: entry gate, the governed repair chain, the seal chain, and cancellation.
+#: Each routes to an existing semantic-agnostic orchestrator handler; a
+#: proven plan never runs legacy stage phases, only shared governance nodes.
+PROVEN_SHARED_ROUTING: dict[str, str] = {
+    "validate_g06": "_validate_g06_proven",
+    "classify_failure": "_classify_failure",
+    "deterministic_replan": "_deterministic_replan",
+    "propose_repair": "_propose_repair",
+    "review_repair": "_review_repair",
+    "create_g10": "_create_g10_proven",
+    "apply_repair": "_apply_repair",
+    "verify_repair": "_verify_repair",
+    "repair_revalidate": "_start_revalidation",
+    "create_g11": "_create_g11_proven",
+    "create_g09": "_create_g09_from_repair",
+    "create_g12": "_create_g12_proven",
+    "seal_stage": "_seal_stage_proven",
+    "materialize_next_stage": "_materialize_next_stage_proven",
+    "complete_run": "_complete_run_proven",
+    "cancel": "_cancel",
+}
+
 
 class TransformerPointer(TypedDict):
     continuation_id: str
@@ -385,15 +408,68 @@ class TransformerOrchestrator:
         The graph only orchestrates: every proven node dispatches to the
         registered handler on ``ProvenStageExecutionService``, which composes
         the existing stage/lock/validation/promotion/seal/repair services.
-        A node without a registered route fails closed — no proven plan can
-        silently run legacy semantics.
+        Shared governance nodes (G06 entry, repair chain, seal chain, cancel)
+        reuse their existing semantic-agnostic handlers.  A node without a
+        registered route fails closed — no proven plan can silently run
+        legacy stage semantics.
         """
+        shared = PROVEN_SHARED_ROUTING.get(node)
+        if shared is not None:
+            getattr(self, shared)(continuation_id, worker_id)
+            return
         if node not in PROVEN_ROUTING:
             raise TransformerStageError(
                 "TRANSFORMATION_NODE_UNSUPPORTED",
                 f"Unsupported proven node: {node}",
             )
         self._proven.advance(continuation_id, worker_id, node)
+
+    def _validate_g06_proven(self, continuation_id: str, worker_id: str) -> None:
+        """Proven G06 entry: same binding proof, proven successor.
+
+        The continuation is created on ``validate_g06`` regardless of graph
+        semantics; the proven table validates the approved G06 binding exactly
+        like the legacy table and then routes to ``select_run_mode`` instead
+        of the legacy ``prepare_workspace``.
+        """
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            gate = session.get(G06ApprovalModel, continuation.g06_approval_id)
+            pointer = session.scalar(
+                select(ActivePlanVersionModel).where(
+                    ActivePlanVersionModel.run_id == continuation.run_id,
+                    ActivePlanVersionModel.scope == continuation.current_stage_id,
+                )
+            )
+            if (
+                gate is None
+                or gate.status not in {"approved", "approved_with_comment"}
+                or gate.plan_checksum != continuation.plan_checksum
+                or gate.stage_plan_checksum != continuation.stage_plan_checksum
+                or pointer is None
+                or pointer.stage_plan_id != continuation.stage_plan_id
+            ):
+                self._block(session, continuation, "G06_BINDING_STALE", "Approved G06 binding changed")
+                return
+            self._queue(continuation, ProvenTransformationNode.SELECT_RUN_MODE.value)
+
+    def _create_g10_proven(self, continuation_id: str, worker_id: str) -> None:
+        self._create_repair_gate(continuation_id, worker_id, "G10")
+
+    def _create_g11_proven(self, continuation_id: str, worker_id: str) -> None:
+        self._create_repair_gate(continuation_id, worker_id, "G11")
+
+    def _create_g12_proven(self, continuation_id: str, worker_id: str) -> None:
+        self._sealing_flow.create_g12(continuation_id, worker_id)
+
+    def _seal_stage_proven(self, continuation_id: str, worker_id: str) -> None:
+        self._sealing_flow.seal(continuation_id, worker_id)
+
+    def _materialize_next_stage_proven(self, continuation_id: str, worker_id: str) -> None:
+        self._sealing_flow.materialize(continuation_id, worker_id)
+
+    def _complete_run_proven(self, continuation_id: str, worker_id: str) -> None:
+        self._sealing_flow.complete(continuation_id, worker_id)
 
     def fail(
         self,

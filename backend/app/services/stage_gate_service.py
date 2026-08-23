@@ -82,11 +82,15 @@ def _gate_successor_node(session: Session, continuation: TransformationContinuat
     """Immutable gate successor selected by the persisted graph semantics.
 
     Legacy plans keep their historical successors.  Proven plans route an
-    approved G09 to exact validated-generation promotion instead of directly
-    creating G12; G11→CREATE_G09 and G12→SEAL remain for both tables.
+    approved G07 to ``create_source_baseline``, G08 to
+    ``execute_migration_owner``, and G09 to exact validated-generation
+    promotion instead of the legacy install/validate/gate nodes; G11→CREATE_G09
+    and G12→SEAL remain for both tables.
     """
     node = _NEXT_NODE[gate_id]
-    if gate_id != StageGateId.G09.value or not getattr(continuation, "stage_plan_id", None):
+    if gate_id not in {StageGateId.G07.value, StageGateId.G08.value, StageGateId.G09.value} or not getattr(
+        continuation, "stage_plan_id", None
+    ):
         return node
     plan_row = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
     try:
@@ -97,9 +101,13 @@ def _gate_successor_node(session: Session, continuation: TransformationContinuat
         raise StageGateError(
             getattr(error, "code", "TRANSFORMER_SEMANTIC_VERSION_UNSUPPORTED"), str(error)
         ) from error
-    if semantic_version == TRANSFORMER_SEMANTIC_VERSION_PROVEN:
-        return ProvenTransformationNode.PROMOTE_VALIDATED.value
-    return node
+    if semantic_version != TRANSFORMER_SEMANTIC_VERSION_PROVEN:
+        return node
+    return {
+        StageGateId.G07.value: ProvenTransformationNode.CREATE_SOURCE_BASELINE.value,
+        StageGateId.G08.value: ProvenTransformationNode.EXECUTE_MIGRATION_OWNER.value,
+        StageGateId.G09.value: ProvenTransformationNode.PROMOTE_VALIDATED.value,
+    }[gate_id]
 
 
 def _canonical_revision_payload(value: object, *, review: bool) -> dict | None:
