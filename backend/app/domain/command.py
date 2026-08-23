@@ -538,6 +538,11 @@ NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER: Final[TransformationCommandDefinition] 
 )
 
 # Default command templates for Sprint 3 pipeline
+#
+# V2.2 deprecation: `angular-update-exact` (V2-V6 renderers below) and the
+# npx-based migrate commands are [DEPRECATE]/[REMOVE-LATER].  They remain
+# registered for historical replay only and are never selected by proven
+# plans, which require an AngularCliToolchainAuthority instead.
 TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinition]] = {
     "npm-ci-bootstrap": TransformationCommandDefinition(
         command_id="npm-ci-bootstrap", template_id="tpl-npm-ci", executable="npm", argument_patterns=("ci",),
@@ -600,6 +605,31 @@ TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinitio
     "npm-dependency-uninstall": NPM_DEPENDENCY_UNINSTALL_RENDERER,
     "npm-dependency-install": NPM_DEPENDENCY_INSTALL_RENDERER,
     "npm-dependency-materialize": NPM_DEPENDENCY_MATERIALIZE_RENDERER,
+    # V2.2 P0-3: authority-bound Angular CLI commands. The executable is the
+    # exact governed Node descriptor resolved by the worker and the first argv
+    # item is the checksummed absolute CLI entrypoint bound by an
+    # AngularCliToolchainAuthority. No PATH lookup chooses `ng`.
+    "angular-cli-authority-version": TransformationCommandDefinition(
+        command_id="angular-cli-authority-version",
+        template_id="tpl-angular-cli-authority-version",
+        executable="{governed_node_absolute}",
+        argument_patterns=("{angular_cli_entrypoint_absolute}", "version"),
+        timeout_seconds=300,
+        network_profile="none",
+        max_output_bytes=1_000_000,
+        description="Prove the actual executing Angular CLI version through its absolute entrypoint",
+    ),
+    "angular-update-discovery": TransformationCommandDefinition(
+        command_id="angular-update-discovery",
+        template_id="tpl-angular-update-discovery",
+        executable="{governed_node_absolute}",
+        argument_patterns=("{angular_cli_entrypoint_absolute}", "update", "{package_spec}", "--interactive=false"),
+        timeout_seconds=1800,
+        network_profile="registry_only",
+        allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+        max_output_bytes=5_000_000,
+        description="Run disposable target discovery through the proven absolute CLI authority",
+    ),
 }
 
 

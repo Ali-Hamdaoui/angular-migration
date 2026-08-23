@@ -3,6 +3,7 @@
 from datetime import datetime
 from enum import Enum
 import re
+from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -310,6 +311,203 @@ def _canonical_checksum(payload: object) -> str:
 
 
 _DRAFT_CHECKSUM = "sha256:" + "0" * 64
+
+_SHA256 = r"^sha256:[0-9a-f]{64}$"
+_ABSOLUTE_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|/).+$")
+_NPM_PACKAGE = re.compile(r"^@?[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)?$")
+
+
+class AngularCliToolchainAuthorityError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class AngularCliToolchainAuthority(ContractModel):
+    """Single generic evidence-bound Angular CLI execution authority (V2.2 §7).
+
+    ``purpose`` distinguishes DISCOVERY and MIGRATION authorities.  Binds the
+    exact requested/installed CLI, the checksummed absolute entrypoint, the
+    governed Node/npm/npx identities, the exact governed PATH and allowed
+    environment, the child-visible npm identity, and CLI-version proof.
+    Bare ``ng`` or generic npx resolution can never produce this authority.
+    """
+
+    schema_version: str = "angular-cli-toolchain-authority-v1"
+    strategy_id: str = Field(min_length=1, max_length=128)
+    strategy_version: int = Field(ge=1)
+    purpose: Literal["DISCOVERY", "MIGRATION"]
+    run_id: str = Field(min_length=1)
+    stage_id: str = Field(min_length=1)
+    requested_cli_exact: str = Field(min_length=1)
+    installed_cli_package_version: str = Field(min_length=1)
+    cli_entrypoint_absolute: str = Field(min_length=1)
+    cli_entrypoint_sha256: str = Field(pattern=_SHA256)
+    cli_package_integrity: str = Field(min_length=1)
+    node_runtime_id: str | None = None
+    npm_runtime_id: str | None = None
+    npx_runtime_id: str | None = None
+    node_executable_absolute: str = Field(min_length=1)
+    npm_executable_absolute: str = Field(min_length=1)
+    npx_executable_absolute: str = Field(min_length=1)
+    node_version_exact: str = Field(min_length=1)
+    npm_version_exact: str = Field(min_length=1)
+    npx_version_exact: str = Field(min_length=1)
+    node_sha256: str = Field(pattern=_SHA256)
+    npm_sha256: str = Field(pattern=_SHA256)
+    npx_sha256: str = Field(pattern=_SHA256)
+    governed_path: tuple[str, ...] = Field(min_length=1)
+    governed_path_checksum: str = Field(pattern=_SHA256)
+    allowed_environment: dict[str, str] = Field(default_factory=dict)
+    allowed_environment_checksum: str = Field(pattern=_SHA256)
+    child_npm_resolved_path: str = Field(min_length=1)
+    child_npm_version_exact: str = Field(min_length=1)
+    child_npm_sha256: str = Field(pattern=_SHA256)
+    cli_version_proof_execution_id: str | None = None
+    cli_version_proof_artifact_id: str | None = None
+    source_generation_fingerprint: str = Field(min_length=1)
+    target_stage_id: str = Field(min_length=1)
+    toolchain_generation_fingerprint: str = Field(min_length=1)
+    version_check_disabled_authorized: bool = False
+    authority_checksum: str = Field(pattern=_SHA256)
+
+    @model_validator(mode="after")
+    def validate_and_bind(self) -> "AngularCliToolchainAuthority":
+        if self.authority_checksum == _DRAFT_CHECKSUM:
+            return self
+        if self.requested_cli_exact != self.installed_cli_package_version:
+            raise AngularCliToolchainAuthorityError(
+                "ANGULAR_CLI_AUTHORITY_MISMATCH",
+                "requested CLI exact must equal the installed CLI package version",
+            )
+        for label, path in (
+            ("cli_entrypoint", self.cli_entrypoint_absolute),
+            ("node", self.node_executable_absolute),
+            ("npm", self.npm_executable_absolute),
+            ("npx", self.npx_executable_absolute),
+            ("child_npm", self.child_npm_resolved_path),
+        ):
+            if not _ABSOLUTE_PATH.match(path):
+                raise AngularCliToolchainAuthorityError(
+                    "ANGULAR_CLI_AUTHORITY_MISMATCH",
+                    f"{label} must be an absolute contained path",
+                )
+        if not _NPM_PACKAGE.match(_cohort_package_of(self.requested_cli_exact)):
+            raise AngularCliToolchainAuthorityError(
+                "ANGULAR_CLI_AUTHORITY_MISMATCH",
+                "requested CLI identity is not a valid npm package version binding",
+            )
+        if self.child_npm_resolved_path != self.npm_executable_absolute or self.child_npm_version_exact != self.npm_version_exact or self.child_npm_sha256 != self.npm_sha256:
+            raise AngularCliToolchainAuthorityError(
+                "CHILD_PACKAGE_MANAGER_AUTHORITY_MISMATCH",
+                "child-visible npm must resolve to the bound npm descriptor",
+            )
+        if not self.governed_path:
+            raise AngularCliToolchainAuthorityError(
+                "ANGULAR_CLI_AUTHORITY_MISMATCH",
+                "governed PATH cannot be empty or ambient",
+            )
+        if self.version_check_disabled_authorized and not self.allowed_environment.get("NG_DISABLE_VERSION_CHECK"):
+            raise AngularCliToolchainAuthorityError(
+                "ANGULAR_CLI_DELEGATION_UNPROVEN",
+                "NG_DISABLE_VERSION_CHECK requires an explicit strategy-authorized environment value",
+            )
+        payload = self.model_dump(mode="json", exclude={"authority_checksum"})
+        expected = _canonical_checksum(payload)
+        if self.authority_checksum != expected:
+            raise AngularCliToolchainAuthorityError(
+                "ANGULAR_CLI_AUTHORITY_MISMATCH",
+                "authority checksum does not bind its payload",
+            )
+        return self
+
+    @classmethod
+    def create(cls, **fields) -> "AngularCliToolchainAuthority":
+        draft = cls(**fields, authority_checksum=_DRAFT_CHECKSUM)
+        checksum = _canonical_checksum(draft.model_dump(mode="json", exclude={"authority_checksum"}))
+        return draft.model_copy(update={"authority_checksum": checksum})
+
+
+def _cohort_package_of(version_binding: str) -> str:
+    # The CLI cohort identity is fixed by the catalogue; only the exact
+    # version is bound here.
+    return "@angular/cli"
+
+
+class DiscoveryResult(ContractModel):
+    """One disposable discovery probe outcome; process exit and completeness
+    are independent facts (V2.2 §8/P04)."""
+
+    schema_version: str = "discovery-result-v1"
+    run_id: str = Field(min_length=1)
+    stage_id: str = Field(min_length=1)
+    generation_id: str = Field(min_length=1)
+    toolchain_authority_checksum: str = Field(pattern=_SHA256)
+    strategy_id: str = Field(min_length=1, max_length=128)
+    strategy_version: int = Field(ge=1)
+    execution_id: str = Field(min_length=1)
+    process_exit_code: int | None = None
+    process_status: str = Field(min_length=1)
+    pre_manifest_sha256: str = Field(pattern=_SHA256)
+    post_manifest_sha256: str = Field(pattern=_SHA256)
+    pre_lockfile_sha256: str | None = Field(default=None, pattern=_SHA256)
+    post_lockfile_sha256: str | None = Field(default=None, pattern=_SHA256)
+    post_workspace_fingerprint: str | None = None
+    discovery_complete: bool
+    completeness_findings: tuple[str, ...] = ()
+    prompt_evidence_artifact_id: str | None = None
+    result_artifact_id: str | None = None
+    artifact_checksum: str = Field(pattern=_SHA256)
+
+
+class TargetIntent(ContractModel):
+    """Normalized, source-bound target dependency intent (V2.2 §8).
+
+    Immutable and evidence-bound: source files and discovery lock changes are
+    never copied into it.  A complete intent requires proven toolchain
+    authority and deterministic completeness findings.
+    """
+
+    schema_version: Literal["target-intent-v1"] = "target-intent-v1"
+    run_id: str = Field(min_length=1)
+    stage_id: str = Field(min_length=1)
+    source_baseline_fingerprint: str = Field(min_length=1)
+    discovery_execution_id: str = Field(min_length=1)
+    process_exit_code: int | None = None
+    discovery_complete: bool
+    completeness_findings: tuple[str, ...] = ()
+    dependency_intent_checksum: str = Field(pattern=_SHA256)
+    source_package_json_sha256: str = Field(pattern=_SHA256)
+    discovered_package_json_sha256: str = Field(pattern=_SHA256)
+    target_cohort: dict[str, str]
+    catalogue_checksum: str = Field(pattern=_SHA256)
+    registry_snapshot_checksum: str = Field(pattern=_SHA256)
+    discovery_toolchain_authority_checksum: str = Field(pattern=_SHA256)
+    checksum: str = Field(pattern=_SHA256)
+
+    @model_validator(mode="after")
+    def validate_intent(self) -> "TargetIntent":
+        if self.checksum == _DRAFT_CHECKSUM:
+            return self
+        if any(not _NPM_PACKAGE.match(name) or not _EXACT_SEMVER_PATTERN.match(exact) for name, exact in self.target_cohort.items()):
+            raise ValueError("target cohort must bind valid npm names to exact versions")
+        if "@angular/core" not in self.target_cohort or "@angular/cli" not in self.target_cohort:
+            raise ValueError("target cohort must contain exact required core and CLI intent")
+        payload = self.model_dump(mode="json", exclude={"checksum"})
+        expected = _canonical_checksum(payload)
+        if self.checksum != expected:
+            raise ValueError("target intent checksum does not bind its payload")
+        return self
+
+    @classmethod
+    def create(cls, **fields) -> "TargetIntent":
+        draft = cls(**fields, checksum=_DRAFT_CHECKSUM)
+        checksum = _canonical_checksum(draft.model_dump(mode="json", exclude={"checksum"}))
+        return draft.model_copy(update={"checksum": checksum})
+
+
+_EXACT_SEMVER_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
 
 
 class SourceBaselineEvidence(ContractModel):
