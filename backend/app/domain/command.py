@@ -101,6 +101,23 @@ class CancellationPolicy(str, Enum):
     WAIT_FOR_SAFE_POINT = "wait_for_safe_point"
 
 
+AUTHORITY_BOUND_COMMAND_IDS = frozenset({
+    "angular-cli-authority-version",
+    "angular-update-discovery",
+    "angular-migrate-range-v2",
+    "angular-migrate-name-v2",
+})
+
+
+def authority_executable_is_bound(command_id: str, executable: str) -> bool:
+    """Accept only concrete absolute executables for authority templates."""
+    return (
+        command_id in AUTHORITY_BOUND_COMMAND_IDS
+        and bool(re.match(r"^(?:[A-Za-z]:[\\/]|/)", executable))
+        and not any(character in executable for character in "\r\n;|&<>`$()'\" ")
+    )
+
+
 @dataclass(frozen=True)
 class CommandTemplate:
     """One registered command shape in the structured registry.

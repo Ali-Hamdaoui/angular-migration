@@ -23,6 +23,8 @@ from sqlalchemy.orm import Session
 from app.domain.command import (
     ANGULAR_UPDATE_V2_RENDERER,
     ANGULAR_UPDATE_V3_RENDERER,
+    AUTHORITY_BOUND_COMMAND_IDS,
+    authority_executable_is_bound,
     DEFAULT_COMMAND_TEMPLATES,
     NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
     NPM_DEPENDENCY_MATERIALIZE_RENDERER,
@@ -296,7 +298,10 @@ class CommandPolicyEngineService:
 
             # 3. Executable matches template
             allowed = set(template.executable_aliases + [template.executable])
-            if request.executable not in allowed:
+            executable_matches = request.executable in allowed or authority_executable_is_bound(
+                request.command_id, request.executable
+            )
+            if not executable_matches:
                 checks.append(AuthorizationCheckResult(
                     passed=False,
                     rule_name="executable_matches_template",
@@ -676,6 +681,11 @@ class CommandPolicyEngineService:
 
         refs = [ref for group in (stage_data.get("commands") or {}).values() for ref in group]
         planned = next((ref for ref in refs if ref.get("command_id") == request.command_id), None)
+        authority_command = request.command_id in AUTHORITY_BOUND_COMMAND_IDS
+        if planned is None and authority_command:
+            if stage_data.get("transformer_semantic_version") != "transformer-plan-v2.2-proven-1":
+                return reject("COMMAND_NOT_IN_APPROVED_PLAN", "authority command requires a proven stage plan")
+            planned = {"working_directory_alias": request.working_directory_alias, "network_profile": request.network_profile}
         repair_transition = bool(
             repair_transition_attempt_id
             and self._valid_repair_dependency_transition(
@@ -728,12 +738,16 @@ class CommandPolicyEngineService:
             command_matches_plan = (
                 planned is not None
                 and (
-                    planned.get("executable") != request.executable
+                    (not authority_command and planned.get("executable") != request.executable)
                     or list(planned.get("arguments") or []) != list(request.arguments)
                     or planned.get("shell", False) is not False
                     or request.template_id is None
                 )
             ) is False
+            if authority_command:
+                command_matches_plan = authority_executable_is_bound(request.command_id, request.executable)
+                if request.command_id == "angular-cli-authority-version":
+                    command_matches_plan = command_matches_plan and len(request.arguments) == 2
         if not command_matches_plan and supersedes_authorization_id and self._valid_angular_update_supersession(
             session,
             request,

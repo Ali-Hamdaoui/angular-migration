@@ -25,6 +25,7 @@ from app.domain.proven_failure import (
     envelope_from_execution,
 )
 from app.domain.transformation import ProvenTransformationNode
+from app.domain.command import TRANSFORMATION_COMMAND_CATALOGUE
 from app.repositories.models import (
     ArtifactMetadataModel,
     CommandExecutionModel,
@@ -303,6 +304,94 @@ class ProvenStageExecutionService:
                 "command-execution-evidence-v1",
             )
 
+    def _queue_authority_command(
+        self,
+        session,
+        continuation,
+        *,
+        command_id: str,
+        purpose: str,
+        group: str,
+        next_node: str,
+        attempt_key: str,
+    ) -> None:
+        stage_plan = self._stage_plan(session, continuation)
+        authority = self._stage.angular_cli_authority(session, continuation, purpose=purpose)
+        if purpose == "MIGRATION" and authority.requested_cli_exact != stage_plan.get("target_cli_exact"):
+            raise ProvenStageExecutionError(
+                "ANGULAR_CLI_TARGET_AUTHORITY_MISMATCH",
+                "materialized Angular CLI does not match the approved target CLI exact version",
+            )
+
+        definition = TRANSFORMATION_COMMAND_CATALOGUE[command_id]
+        bindings = {
+            "governed_node_absolute": authority.node_executable_absolute,
+            "angular_cli_entrypoint_absolute": authority.cli_entrypoint_absolute,
+            "target_cli_entrypoint_absolute": authority.cli_entrypoint_absolute,
+        }
+        if command_id == "angular-update-discovery":
+            bindings["package_spec"] = f"@angular/core@{stage_plan['target_exact']}"
+        elif command_id == "angular-migrate-range-v2":
+            bindings.update(
+                package="@angular/core",
+                from_version=stage_plan["source_exact"],
+                to_version=stage_plan["target_exact"],
+            )
+        try:
+            arguments = list(definition.render_arguments(bindings))
+        except ValueError as error:
+            raise ProvenStageExecutionError("ANGULAR_CLI_COMMAND_BINDING_INVALID", str(error)) from error
+        reference = {
+            "command_id": definition.command_id,
+            "template_id": definition.template_id,
+            "template_version": 1,
+            "parameter_bindings": bindings,
+            "executable": authority.node_executable_absolute,
+            "arguments": arguments,
+            "working_directory_alias": f"STAGE_WORKSPACE_{continuation.current_stage_id.upper().replace('-', '_')}",
+            "timeout_seconds": definition.timeout_seconds,
+            "network_profile": definition.network_profile,
+            "cancellation_policy": "terminate_process_tree",
+            "runtime_profile_checksum": self._stage.runtime_binding(session, continuation)["checksum"],
+        }
+        store = self._artifact_store(session, continuation)
+        self._record_evidence(
+            session,
+            continuation,
+            store,
+            f"04_workflow_state/stages/{continuation.current_stage_id}/angular-cli/{purpose.lower()}-authority.json",
+            authority.model_dump(mode="json"),
+            "angular-cli-toolchain-authority-v1",
+        )
+        result = self._stage._queue_group(
+            session,
+            continuation,
+            group=group,
+            next_node=next_node,
+            attempt_key=attempt_key,
+            reference_override=reference,
+        )
+        execution = session.get(CommandExecutionModel, result.execution_id)
+        if execution is not None:
+            evidence = build_command_execution_evidence(
+                execution_row=execution,
+                artifact_checksums=self._artifact_checksums(session, execution),
+            )
+            self._record_evidence(
+                session,
+                continuation,
+                store,
+                f"04_workflow_state/stages/{continuation.current_stage_id}/commands/{execution.id}.evidence.json",
+                evidence.model_dump(mode="json"),
+                "command-execution-evidence-v1",
+            )
+
+    def _queue_authority_or_block(self, session, continuation, **kwargs) -> None:
+        try:
+            self._queue_authority_command(session, continuation, **kwargs)
+        except (TransformerStageError, ProvenStageExecutionError) as error:
+            self._block(session, continuation, getattr(error, "code", "ANGULAR_CLI_AUTHORITY_FAILED"), str(error))
+
     def _artifact_checksums(self, session, execution) -> dict[str, str]:
         """Resolve committed artifact checksums for one execution row."""
         checksums: dict[str, str] = {}
@@ -572,7 +661,17 @@ class ProvenStageExecutionService:
         self._advance_recorded(continuation_id, worker_id, ProvenTransformationNode.PREPARE_DISCOVERY_TOOLCHAIN.value)
 
     def _node_prove_discovery_cli_authority(self, continuation_id: str, worker_id: str) -> None:
-        self._advance_recorded(continuation_id, worker_id, ProvenTransformationNode.PROVE_DISCOVERY_CLI_AUTHORITY.value)
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            self._queue_authority_or_block(
+                session,
+                continuation,
+                command_id="angular-cli-authority-version",
+                purpose="DISCOVERY",
+                group="cli_authority_version",
+                next_node=ProvenTransformationNode.RUN_DISCOVERY.value,
+                attempt_key="discovery-cli-version",
+            )
 
     def _node_run_discovery(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
@@ -582,21 +681,11 @@ class ProvenStageExecutionService:
             if not target_exact:
                 self._block(session, continuation, "PROVEN_TARGET_EXACT_MISSING", "stage plan has no exact target version")
                 return
-            # The discovery command is bound to the proven CLI toolchain
-            # authority at execution time and therefore never rendered from
-            # static plan bindings; without a wired group the node fails
-            # closed instead of inventing a discovery path.
-            if not ((stage_plan.get("commands") or {}).get("discovery")):
-                self._block(
-                    session,
-                    continuation,
-                    "PROVEN_DISCOVERY_GROUP_MISSING",
-                    "discovery command group is not bound by the proven toolchain authority",
-                )
-                return
-            self._queue_planned_command(
+            self._queue_authority_or_block(
                 session,
                 continuation,
+                command_id="angular-update-discovery",
+                purpose="DISCOVERY",
                 group="discovery",
                 next_node=ProvenTransformationNode.ASSESS_DISCOVERY.value,
                 attempt_key="discovery",
@@ -786,19 +875,11 @@ class ProvenStageExecutionService:
             if not target_exact or not source_exact:
                 self._block(session, continuation, "PROVEN_MIGRATION_RANGE_MISSING", "source/target exact versions are required")
                 return
-            # Migration owners execute through the materialized target CLI
-            # authority; without a wired group the node fails closed.
-            if not ((stage_plan.get("commands") or {}).get("migrate_packages")):
-                self._block(
-                    session,
-                    continuation,
-                    "PROVEN_MIGRATION_GROUP_MISSING",
-                    "migration owner command group is not bound by the materialized CLI authority",
-                )
-                return
-            self._queue_planned_command(
+            self._queue_authority_or_block(
                 session,
                 continuation,
+                command_id="angular-migrate-range-v2",
+                purpose="MIGRATION",
                 group="migrate_packages",
                 next_node=ProvenTransformationNode.COMPARE_DEPENDENCY_AUTHORITY.value,
                 attempt_key="migration-owner",

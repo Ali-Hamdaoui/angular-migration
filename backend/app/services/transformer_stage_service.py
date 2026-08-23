@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.command import ANGULAR_UPDATE_V2_RENDERER, ANGULAR_UPDATE_V3_RENDERER
+from app.domain.transformation import AngularCliToolchainAuthority
 from app.domain.runtime_execution import RuntimeExecutableKind, RuntimeExecutableDescriptor
 from app.domain.contracts import ArtifactType, RunStatus, WorkflowEventType
 from app.repositories.models import (
@@ -240,6 +241,102 @@ class TransformerStageService:
                 binding.blocked_reason or "No governed runtime satisfies this stage",
             )
         return self.runtime_binding(session, continuation)
+
+    def angular_cli_authority(
+        self,
+        session,
+        continuation: TransformationContinuationModel,
+        *,
+        purpose: str,
+    ) -> AngularCliToolchainAuthority:
+        """Bind the installed CLI and the already-bound Node toolchain."""
+        if purpose not in {"DISCOVERY", "MIGRATION"}:
+            raise TransformerStageError("ANGULAR_CLI_AUTHORITY_PURPOSE_INVALID", "unsupported Angular CLI authority purpose")
+        binding = self._binding(session, continuation)
+        runtime = self.runtime_binding(session, continuation)
+        descriptors = runtime.get("runtime_bindings") or {}
+        if set(descriptors) != {"node", "npm", "npx"}:
+            raise TransformerStageError("ANGULAR_CLI_RUNTIME_BINDING_MISSING", "Node/npm/npx runtime binding is incomplete")
+
+        workspace = Path(binding.workspace_path).resolve(strict=True)
+        cli_package = workspace / "node_modules" / "@angular" / "cli" / "package.json"
+        lockfile = workspace / "package-lock.json"
+        if not cli_package.is_file() or not lockfile.is_file():
+            raise TransformerStageError("ANGULAR_CLI_PACKAGE_MISSING", "installed Angular CLI package and lockfile are required")
+        try:
+            package = json.loads(cli_package.read_text(encoding="utf-8"))
+            lock = json.loads(lockfile.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise TransformerStageError("ANGULAR_CLI_PACKAGE_INVALID", "installed Angular CLI metadata is invalid") from error
+        version = package.get("version")
+        integrity = ((lock.get("packages") or {}).get("node_modules/@angular/cli") or {}).get("integrity")
+        if not integrity:
+            integrity = ((lock.get("dependencies") or {}).get("@angular/cli") or {}).get("integrity")
+        if not isinstance(version, str) or not isinstance(integrity, str):
+            raise TransformerStageError("ANGULAR_CLI_INTEGRITY_MISSING", "Angular CLI exact version and lockfile integrity are required")
+        bin_value = package.get("bin")
+        entrypoint = bin_value.get("ng") if isinstance(bin_value, dict) else bin_value
+        if not isinstance(entrypoint, str):
+            raise TransformerStageError("ANGULAR_CLI_ENTRYPOINT_MISSING", "Angular CLI package has no ng entrypoint")
+        entrypoint_path = (cli_package.parent / entrypoint).resolve(strict=True)
+        try:
+            entrypoint_path.relative_to(workspace)
+        except ValueError as error:
+            raise TransformerStageError("ANGULAR_CLI_ENTRYPOINT_OUTSIDE_WORKSPACE", "Angular CLI entrypoint is outside the stage workspace") from error
+
+        def file_hash(path: str) -> str:
+            candidate = Path(path).resolve(strict=True)
+            digest = hashlib.sha256()
+            with candidate.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(65536), b""):
+                    digest.update(chunk)
+            return "sha256:" + digest.hexdigest()
+
+        runtime_values = {kind: value for kind, value in descriptors.items()}
+        node_path = runtime["node_executable"]
+        npm_path = runtime["package_manager_executable"]
+        npx_path = runtime["npx_executable"]
+        allowed_environment: dict[str, str] = {}
+        path_entries = tuple(sorted({str(Path(value["resolved_path"]).resolve().parent) for value in runtime_values.values()}))
+        path_checksum = "sha256:" + hashlib.sha256(json.dumps(path_entries, separators=(",", ":")).encode()).hexdigest()
+        environment_checksum = "sha256:" + hashlib.sha256(b"{}").hexdigest()
+        authority = AngularCliToolchainAuthority.create(
+            strategy_id="angular-cli-authority-v2.2",
+            strategy_version=1,
+            purpose=purpose,
+            run_id=continuation.run_id,
+            stage_id=continuation.current_stage_id,
+            requested_cli_exact=version,
+            installed_cli_package_version=version,
+            cli_entrypoint_absolute=str(entrypoint_path),
+            cli_entrypoint_sha256=file_hash(str(entrypoint_path)),
+            cli_package_integrity=integrity,
+            node_runtime_id=runtime_values["node"].get("runtime_id"),
+            npm_runtime_id=runtime_values["npm"].get("runtime_id"),
+            npx_runtime_id=runtime_values["npx"].get("runtime_id"),
+            node_executable_absolute=str(Path(node_path).resolve(strict=True)),
+            npm_executable_absolute=str(Path(npm_path).resolve(strict=True)),
+            npx_executable_absolute=str(Path(npx_path).resolve(strict=True)),
+            node_version_exact=runtime_values["node"]["version_exact"],
+            npm_version_exact=runtime_values["npm"]["version_exact"],
+            npx_version_exact=runtime_values["npx"]["version_exact"],
+            node_sha256=file_hash(node_path),
+            npm_sha256=file_hash(npm_path),
+            npx_sha256=file_hash(npx_path),
+            governed_path=path_entries,
+            governed_path_checksum=path_checksum,
+            allowed_environment=allowed_environment,
+            allowed_environment_checksum=environment_checksum,
+            child_npm_resolved_path=str(Path(npm_path).resolve(strict=True)),
+            child_npm_version_exact=runtime_values["npm"]["version_exact"],
+            child_npm_sha256=file_hash(npm_path),
+            source_generation_fingerprint=binding.workspace_fingerprint,
+            target_stage_id=continuation.current_stage_id,
+            toolchain_generation_fingerprint="sha256:" + hashlib.sha256(
+                f"{runtime['checksum']}:{file_hash(str(entrypoint_path))}:{binding.workspace_fingerprint}".encode()
+            ).hexdigest(),
+        )
+        return authority
 
     @staticmethod
     def _stage_runtime_rows(session, continuation: TransformationContinuationModel) -> dict[str, object] | None:
@@ -1503,6 +1600,7 @@ class TransformerStageService:
         prompt_id=None,
         recovery_of=None,
         parameter_bindings=None,
+        reference_override=None,
     ):
         run = session.get(MigrationRunModel, continuation.run_id)
         plan = session.get(MigrationPlanModel, continuation.plan_id)
@@ -1531,6 +1629,7 @@ class TransformerStageService:
                 run.actor or "transformer",
                 group,
                 parameter_bindings_override=parameter_bindings,
+                reference_override=reference_override,
             )
         except StageExecutionError as error:
             raise TransformerStageError(error.code, error.message) from error
@@ -1540,6 +1639,17 @@ class TransformerStageService:
                 StageStepModel.name == f"{group}-0",
             )
         )
+        if step is None and reference_override is not None:
+            step = StageStepModel(
+                id=f"step-{run.id}-{continuation.current_stage_id}-{group}-0",
+                run_id=run.id,
+                stage_id=continuation.current_stage_id,
+                name=f"{group}-0",
+                status="PENDING",
+                component_type="command",
+                idempotency_key=f"{run.id}:{continuation.current_stage_id}:{group}:0",
+            )
+            session.add(step)
         execution = session.get(CommandExecutionModel, result.execution_id)
         if recovery_of is not None:
             parent = session.get(CommandExecutionModel, recovery_of)

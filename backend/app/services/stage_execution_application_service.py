@@ -408,17 +408,18 @@ class StageExecutionApplicationService:
         command_index=0,
         persisted_idempotency_key=None,
         parameter_bindings_override=None,
+        reference_override=None,
     ):
         stage_plan = stage.stage_plan or {}
         references = (stage_plan.get("commands") or {}).get(group) or []
-        if not references:
+        if reference_override is None and not references:
             raise StageExecutionError(
                 "STAGE_COMMAND_NOT_FOUND",
                 f"The approved stage plan contains no {group} command.",
             )
-        if command_index >= len(references):
+        if reference_override is None and command_index >= len(references):
             raise StageExecutionError("STAGE_COMMAND_NOT_FOUND", f"{group} command index is invalid.")
-        reference = references[command_index]
+        reference = reference_override or references[command_index]
         # P0-2: dynamic migrate-only bindings — keep template authority but bind exact package/from/to
         if group == "migrate_packages" and isinstance(parameter_bindings_override, dict) and parameter_bindings_override:
             # Validate that plan authorizes the migrate-range template at all

@@ -44,7 +44,7 @@ from app.command_execution.worker import (
     WorkerSupervisor,
 )
 from app.core.config import get_settings
-from app.domain.command import command_arguments_match
+from app.domain.command import authority_executable_is_bound, command_arguments_match
 from app.domain.contracts import (
     ArtifactRefDto,
     ArtifactType,
@@ -700,7 +700,10 @@ class CommandExecutorService:
         )
         if template is None:
             raise CommandExecutorError("COMMAND_TEMPLATE_NOT_FOUND", "The authorized command template is unavailable")
-        if template.executable not in {authorization.executable, *(template.executable_aliases or [])}:
+        if (
+            template.executable not in {authorization.executable, *(template.executable_aliases or [])}
+            and not authority_executable_is_bound(authorization.command_id, authorization.executable)
+        ):
             raise CommandExecutorError("AUTHORIZATION_STALE", "Authorized executable no longer matches the template")
         if not command_arguments_match(tuple(template.arguments), tuple(authorization.arguments or [])):
             raise CommandExecutorError("AUTHORIZATION_STALE", "Authorized arguments no longer match the template")

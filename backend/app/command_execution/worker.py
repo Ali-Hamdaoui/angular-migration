@@ -33,6 +33,7 @@ from app.domain.command import (
     ANGULAR_INSTALLED_MIGRATION_RENDERER,
     NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
     TRANSFORMATION_COMMAND_CATALOGUE,
+    authority_executable_is_bound,
     command_arguments_match,
 )
 from app.domain.contracts import (
@@ -369,9 +370,10 @@ class CommandPolicy:
         if definition.command_id == _RUNTIME_PROBE_COMMAND_ID:
             return self._resolve_runtime_probe(request)
         binding = self._binding_for_executable(request.executable)
-        if request.executable not in definition.allowed_executables and binding is None:
+        authority_bound = authority_executable_is_bound(request.command_id, request.executable)
+        if request.executable not in definition.allowed_executables and binding is None and not authority_bound:
             raise CommandPolicyViolation("Executable does not match the registered command definition")
-        if binding is not None and binding.kind.value not in definition.allowed_executables:
+        if binding is not None and binding.kind.value not in definition.allowed_executables and not authority_bound:
             raise CommandPolicyViolation("Bound runtime kind does not match the registered command definition")
         if not definition.matches_arguments(argument_lookup or tuple(request.arguments)):
             raise CommandPolicyViolation("Arguments do not match the registered command definition")

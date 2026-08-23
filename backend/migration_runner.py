@@ -63,6 +63,18 @@ def _result(path: Path, payload: dict[str, object]) -> int:
     return 0 if payload["final_status"] in {"completed", "promoted"} else 1
 
 
+def _failure(code: str, message: str, *, category="unknown") -> dict[str, object]:
+    from app.domain.proven_failure import FailureCategory, MigrationFailureEnvelope
+
+    envelope = MigrationFailureEnvelope.create(
+        category=FailureCategory(category),
+        phase="migration_execution",
+        code=code,
+        message=message,
+    )
+    return envelope.model_dump(mode="json")
+
+
 def _find_run(source_dir: Path | None, source_major: int, target_major: int) -> str | None:
     from sqlalchemy import select
 
@@ -143,12 +155,7 @@ def _pump(run_id: str, timeout_seconds: int) -> dict[str, object]:
         return {
             "run_id": run_id,
             "final_status": "failed",
-            "failure": {
-                "category": "COMMAND_AUTHORITY",
-                "phase": "migration_execution",
-                "code": "TRANSFORMER_PROVEN_ACTIVATION_BLOCKED",
-                "message": ", ".join(report.missing),
-            },
+            "failure": _failure("TRANSFORMER_PROVEN_ACTIVATION_BLOCKED", ", ".join(report.missing), category="environment"),
         }
     try:
         _activate_factory_runtime()
@@ -156,12 +163,7 @@ def _pump(run_id: str, timeout_seconds: int) -> dict[str, object]:
         return {
             "run_id": run_id,
             "final_status": "failed",
-            "failure": {
-                "category": "COMMAND_AUTHORITY",
-                "phase": "migration_execution",
-                "code": "FACTORY_RUNTIME_ACTIVATION_FAILED",
-                "message": str(error),
-            },
+            "failure": _failure("FACTORY_RUNTIME_ACTIVATION_FAILED", str(error), category="environment"),
         }
     worker = TransformerWorker(worker_id=f"migration-runner-{os.getpid()}")
     deadline = time.monotonic() + timeout_seconds
@@ -174,7 +176,7 @@ def _pump(run_id: str, timeout_seconds: int) -> dict[str, object]:
                 .order_by(TransformationContinuationModel.updated_at.desc())
             )
             if run is None:
-                return {"run_id": run_id, "final_status": "failed", "failure": {"code": "RUN_NOT_FOUND"}}
+                return {"run_id": run_id, "final_status": "failed", "failure": _failure("RUN_NOT_FOUND", "migration run does not exist")}
             if run.status in {item.value for item in RunStatus if item in {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}}:
                 return {
                     "run_id": run_id,
@@ -182,17 +184,17 @@ def _pump(run_id: str, timeout_seconds: int) -> dict[str, object]:
                     "run_status": run.status,
                     "continuation": continuation.current_node if continuation else None,
                     "failure_code": continuation.last_error_code if continuation else None,
+                    "failure": _failure(
+                        continuation.last_error_code or "PROVEN_RUN_FAILED",
+                        continuation.last_error_message or "proven migration run failed",
+                    ) if run.status == RunStatus.FAILED.value else None,
                 }
         if not worker.run_once():
             time.sleep(0.25)
     return {
         "run_id": run_id,
         "final_status": "failed",
-        "failure": {
-            "category": "RECOVERY",
-            "phase": "migration_execution",
-            "code": "PROVEN_RUN_TIMEOUT",
-        },
+        "failure": _failure("PROVEN_RUN_TIMEOUT", "proven migration run exceeded the runner timeout", category="environment"),
     }
 
 
@@ -211,12 +213,10 @@ def main(argv: list[str] | None = None) -> int:
             "mode": args.mode,
             "chain": f"{source_major}->{target_major}",
             "final_status": "failed",
-            "failure": {
-                "category": "COMMAND_AUTHORITY",
-                "phase": "migration_execution",
-                "code": "PROVEN_RUN_NOT_INITIALIZED",
-                "message": "No persisted run is available; create it through the governed Factory lifecycle before pumping execution.",
-            },
+            "failure": _failure(
+                "PROVEN_RUN_NOT_INITIALIZED",
+                "No persisted run is available; create it through the governed Factory lifecycle before pumping execution.",
+            ),
         })
     payload = _pump(run_id, args.timeout_seconds)
     payload.update({"mode": args.mode, "chain": f"{source_major}->{target_major}"})
