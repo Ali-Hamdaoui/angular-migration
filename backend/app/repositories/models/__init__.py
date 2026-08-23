@@ -8,7 +8,6 @@ from app.repositories.preflight_models import (
     PreflightModel,
     UserDecisionModel,
 )
-from app.repositories.g02_models import G02ApprovalModel
 from app.repositories.baseline_models import BaselineQualificationModel
 from app.repositories.baseline_matrix_models import BaselineValidationModel
 from app.repositories.baseline_parity_models import BaselineParityEvidenceModel
@@ -201,3 +200,11 @@ __all__ = [
     "PreflightModel",
     "UserDecisionModel",
 ]
+
+
+def __getattr__(name: str):
+    if name == "G02ApprovalModel":
+        from app.repositories.g02_models import G02ApprovalModel
+
+        return G02ApprovalModel
+    raise AttributeError(name)
