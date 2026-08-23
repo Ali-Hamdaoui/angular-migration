@@ -147,9 +147,11 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def derive_runtime_matrix_roots(self) -> "Settings":
         if self.runtime_node_install_root is None:
-            object.__setattr__(
-                self, "runtime_node_install_root", Path.home() / ".nvm" / "versions" / "node"
+            candidates = (
+                Path.home() / "AppData" / "Local" / "nvm",
+                Path.home() / ".nvm" / "versions" / "node",
             )
+            object.__setattr__(self, "runtime_node_install_root", next((path for path in candidates if path.exists()), candidates[-1]))
         if self.runtime_angular_cli_root is None:
             object.__setattr__(self, "runtime_angular_cli_root", Path.home() / "migration-lab" / "runtimes")
         return self
