@@ -95,6 +95,69 @@ class TransformationNode(str, Enum):
     TERMINAL = "terminal"
 
 
+class ProvenTransformationNode(str, Enum):
+    """Proven-graph node vocabulary (V2.2 P0-1 contract names only).
+
+    These names are introduced by the semantic-version phase so the dispatcher
+    can select an immutable proven transition table from persisted plan JSON.
+    Concrete handlers arrive with their behavior phases (P03-P12); dispatching
+    to a node without a handler fails closed.
+    """
+
+    SELECT_RUN_MODE = "select_run_mode"
+    PREPARE_STAGE_LAYOUT = "prepare_stage_layout"
+    CREATE_SOURCE_BASELINE = "create_source_baseline"
+    CONSTRUCT_DEPENDENCY_INTENT = "construct_dependency_intent"
+    BIND_NPM_LOCK_AUTHORITY_POLICY = "bind_npm_lock_authority_policy"
+    SELECT_SOURCE_LOCK_AUTHORITY = "select_source_lock_authority"
+    READ_SOURCE_RESOLVED_LOCK = "read_source_resolved_lock"
+    PROVE_SOURCE_MANIFEST_VS_RESOLUTION = "prove_source_manifest_vs_resolution"
+    SOURCE_INSTALL_SAME_AUTHORITY = "source_install_same_authority"
+    SOURCE_TREE = "source_tree"
+    SOURCE_VERSION_PROOF = "source_version_proof"
+    SOURCE_BUILD = "source_build"
+    SOURCE_TEST = "source_test"
+    SOURCE_DIAGNOSTIC_CAPTURE = "source_diagnostic_capture"
+    FREEZE_SOURCE_BASELINE = "freeze_source_baseline"
+    CREATE_DISCOVERY_GENERATION = "create_discovery_generation"
+    PREPARE_DISCOVERY_TOOLCHAIN = "prepare_discovery_toolchain"
+    PROVE_DISCOVERY_CLI_AUTHORITY = "prove_discovery_cli_authority"
+    RUN_DISCOVERY = "run_discovery"
+    ASSESS_DISCOVERY = "assess_discovery"
+    PERSIST_TARGET_INTENT = "persist_target_intent"
+    DISCARD_DISCOVERY = "discard_discovery"
+    CREATE_AUTHORITATIVE_TARGET = "create_authoritative_target"
+    APPLY_TARGET_INTENT = "apply_target_intent"
+    DEPENDENCY_PLAN = "dependency_plan"
+    SELECT_TARGET_LOCK_AUTHORITY = "select_target_lock_authority"
+    LOCK_RESOLUTION = "lock_resolution"
+    CREATE_MATERIALIZATION = "create_materialization"
+    TARGET_INSTALL_SAME_AUTHORITY = "target_install_same_authority"
+    TARGET_TREE = "target_tree"
+    TARGET_VERSION_PROOF = "target_version_proof"
+    INSPECT_MIGRATION_METADATA = "inspect_migration_metadata"
+    BUILD_MIGRATION_LEDGER = "build_migration_ledger"
+    EXECUTE_MIGRATION_OWNER = "execute_migration_owner"
+    COMPARE_DEPENDENCY_AUTHORITY = "compare_dependency_authority"
+    FREEZE_TARGET_AUTHORITY = "freeze_target_authority"
+    CREATE_VALIDATION_GENERATION = "create_validation_generation"
+    VALIDATION_INSTALL = "validation_install"
+    VALIDATION_TREE = "validation_tree"
+    VALIDATION_VERSION_PROOF = "validation_version_proof"
+    VALIDATION_BUILD = "validation_build"
+    VALIDATION_TEST = "validation_test"
+    DIAGNOSTIC_DELTA = "diagnostic_delta"
+    AGGREGATE_PROVEN_VALIDATION = "aggregate_proven_validation"
+    PROMOTE_VALIDATED = "promote_validated"
+    PROMOTION_PENDING = "promotion_pending"
+
+
+#: Immutable proven transition table: every proven node the graph may dispatch,
+#: mapped to its behavior-phase owner. Nodes without a registered handler fail
+#: closed until their phase implements them.
+PROVEN_TRANSITION_NODES: frozenset[str] = frozenset(node.value for node in ProvenTransformationNode)
+
+
 class StageGateId(str, Enum):
     G07 = "G07"
     G08 = "G08"

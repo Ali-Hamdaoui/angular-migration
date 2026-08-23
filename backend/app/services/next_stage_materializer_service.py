@@ -7,7 +7,11 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from app.domain.planning import PlanGenerationRequest, StageExecutionPlan
+from app.domain.planning import (
+    PlanGenerationRequest,
+    StageExecutionPlan,
+    normalize_stage_plan_semantics,
+)
 from app.repositories.models import (
     CompatibilityResolutionModel,
     ExecutionProfileModel,
@@ -55,6 +59,15 @@ class NextStageMaterializerService:
             raise NextStageMaterializerError(
                 "NEXT_STAGE_CONTEXT_MISSING", "Approved route/runtime context is missing"
             )
+        try:
+            semantic_version, run_mode, qualification_authorization = normalize_stage_plan_semantics(
+                (current_plan.stage_plan or {})
+            )
+        except ValueError as error:
+            raise NextStageMaterializerError(
+                getattr(error, "code", "TRANSFORMER_SEMANTIC_VERSION_UNSUPPORTED"),
+                str(error),
+            ) from error
         if resolution.catalogue_version != (migration_plan.plan or {}).get("catalogue_version"):
             raise NextStageMaterializerError(
                 "CATALOGUE_DRIFT", "Compatibility catalogue differs from the approved plan"
@@ -101,6 +114,9 @@ class NextStageMaterializerService:
             "repair_policy_id": (
                 (current_plan.stage_plan or {}).get("repair_policy") or {}
             ).get("policy_id"),
+            "transformer_semantic_version": semantic_version,
+            "run_mode": run_mode,
+            "qualification_authorization_checksum": qualification_authorization,
             "plan_version": migration_plan.version,
         }
 
@@ -159,6 +175,11 @@ class NextStageMaterializerService:
             validation_policy_id=str(context["validation_policy_id"]),
             recovery_policy_id=str(context["recovery_policy_id"]),
             repair_policy_id=str(context["repair_policy_id"]),
+            # N+1 inherits the immutable predecessor semantics and mode; a
+            # plan cannot change semantic version or run mode after creation.
+            transformer_semantic_version=str(context["transformer_semantic_version"]),
+            run_mode=str(context["run_mode"]),
+            qualification_authorization_checksum=context.get("qualification_authorization_checksum"),
         )
         try:
             return self._planner.create(request, plan_version=int(context["plan_version"]))

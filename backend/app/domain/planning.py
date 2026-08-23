@@ -35,6 +35,61 @@ APPROVED_BUILDERS = frozenset({
     "@angular-devkit/build-angular:server",
 })
 
+#: Immutable graph semantic discriminators (V2.2 P0-1). Persisted stage-plan
+#: JSON without ``transformer_semantic_version`` normalizes to the legacy
+#: semantics on read and is never rewritten mid-flight.
+TRANSFORMER_SEMANTIC_VERSION_LEGACY = "transformer-plan-legacy-1"
+TRANSFORMER_SEMANTIC_VERSION_PROVEN = "transformer-plan-v2.2-proven-1"
+TransformerSemanticVersion = Literal[
+    "transformer-plan-legacy-1", "transformer-plan-v2.2-proven-1"
+]
+
+#: Immutable plan modes (V2.2 P0-0/P0-1). Missing mode reads as PRODUCTION;
+#: QUALIFICATION always binds an explicit authorization checksum.
+PlanRunMode = Literal["PRODUCTION", "QUALIFICATION"]
+
+#: Proven-plan writer readiness. Remains disabled until every behavior phase
+#: has registered its required command templates (flipped in P08); proven
+#: plan creation fails closed while this is False.
+PROVEN_PLAN_WRITER_ENABLED = False
+
+
+class TransformerSemanticVersionError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def normalize_stage_plan_semantics(payload: dict | None) -> tuple[str, str, str | None]:
+    """Resolve immutable semantics from persisted stage-plan JSON.
+
+    Returns ``(semantic_version, run_mode, qualification_authorization_checksum)``.
+    Unknown semantic versions fail closed with
+    ``TRANSFORMER_SEMANTIC_VERSION_UNSUPPORTED``; QUALIFICATION without an
+    authorization checksum fails closed.
+    """
+    data = payload or {}
+    version = data.get("transformer_semantic_version", TRANSFORMER_SEMANTIC_VERSION_LEGACY)
+    if version not in {TRANSFORMER_SEMANTIC_VERSION_LEGACY, TRANSFORMER_SEMANTIC_VERSION_PROVEN}:
+        raise TransformerSemanticVersionError(
+            "TRANSFORMER_SEMANTIC_VERSION_UNSUPPORTED",
+            f"unsupported transformer semantic version: {version!r}",
+        )
+    mode = data.get("run_mode", "PRODUCTION")
+    if mode not in {"PRODUCTION", "QUALIFICATION"}:
+        raise TransformerSemanticVersionError(
+            "TRANSFORMER_PLAN_MODE_UNSUPPORTED",
+            f"unsupported plan run mode: {mode!r}",
+        )
+    authorization = data.get("qualification_authorization_checksum")
+    if mode == "QUALIFICATION" and not authorization:
+        raise TransformerSemanticVersionError(
+            "TRANSFORMER_QUALIFICATION_AUTHORIZATION_REQUIRED",
+            "qualification plans require an explicit authorization checksum",
+        )
+    return version, mode, authorization
+
 class ValidationTarget(str, Enum):
     BUILD = "build"
     TEST = "test"
@@ -149,6 +204,11 @@ class MigrationPlan(ContractModel):
     stage_dependency_dispositions: dict[str, tuple[dict[str, str], ...]] = Field(default_factory=dict)
     command_policy: str = "structured-registry-v1"
     artifact_policy: str = "immutable-stage-scoped-v1"
+    transformer_semantic_version: TransformerSemanticVersion = (
+        TRANSFORMER_SEMANTIC_VERSION_LEGACY
+    )
+    run_mode: PlanRunMode = "PRODUCTION"
+    qualification_authorization_checksum: str | None = Field(default=None, pattern=_CHECKSUM)
     checksum: str = Field(pattern=_CHECKSUM)
 
 
@@ -159,6 +219,11 @@ class StageExecutionPlan(ContractModel):
     input_fingerprint: str = Field(pattern=_CHECKSUM)
     evidence_set_checksum: str | None = Field(default=None, pattern=_CHECKSUM)
     input_workspace_fingerprint: str | None = Field(default=None, pattern=_CHECKSUM)
+    transformer_semantic_version: TransformerSemanticVersion = (
+        TRANSFORMER_SEMANTIC_VERSION_LEGACY
+    )
+    run_mode: PlanRunMode = "PRODUCTION"
+    qualification_authorization_checksum: str | None = Field(default=None, pattern=_CHECKSUM)
     source_family: str = Field(pattern=r"^angular-(1[1-9]|2[01])\.x$")
     source_exact: str = Field(min_length=1, max_length=64)
     target_family: str = Field(pattern=r"^angular-(1[2-9]|2[01])\.x$")
@@ -182,12 +247,35 @@ class StageExecutionPlan(ContractModel):
 
     @model_validator(mode="after")
     def validate_commands(self) -> "StageExecutionPlan":
+        if self.run_mode == "QUALIFICATION" and not self.qualification_authorization_checksum:
+            raise ValueError("qualification plans require an explicit authorization checksum")
+        if self.transformer_semantic_version == TRANSFORMER_SEMANTIC_VERSION_PROVEN:
+            if not PROVEN_PLAN_WRITER_ENABLED:
+                raise ValueError("proven plan generation is not enabled yet")
+            self._validate_proven_commands()
+            return self
+        self._validate_legacy_commands()
+        return self
+
+    def _validate_legacy_commands(self) -> None:
         required = {"bootstrap_install", "angular_update", "target_version_check", "lockfile_generation", "final_install", "migrate_packages", "builds", "tests", "lint"}
         optional = {"installed_migration_fallback"}
         if set(self.commands) - required - optional or not required.issubset(self.commands):
             raise ValueError("stage plan commands must contain the complete standard command set")
         if self.commands.get("installed_migration_fallback") and len(self.commands["installed_migration_fallback"]) != 1:
             raise ValueError("installed migration fallback must contain one governed command")
+        self._validate_common_command_rules()
+
+    def _validate_proven_commands(self) -> None:
+        # Proven plans never prebind the legacy combined update or Core-only
+        # migration groups; their full group contract is completed by the
+        # behavior phases and enforced there.
+        forbidden = {"angular_update", "migrate_packages", "installed_migration_fallback"}
+        if forbidden & set(self.commands):
+            raise ValueError("proven plans must not prebind legacy update/migration command groups")
+        self._validate_common_command_rules()
+
+    def _validate_common_command_rules(self) -> None:
         if any(not refs for name, refs in self.commands.items() if name != "lint"):
             raise ValueError("required stage plan command groups cannot be empty")
         if self.build_system_decision.action == "blocked":
@@ -198,7 +286,7 @@ class StageExecutionPlan(ContractModel):
             or any(not _EXACT_VERSION.fullmatch(exact) for exact in self.target_cohort.values())
         ):
             raise ValueError("stage target cohort must contain exact approved core and CLI versions")
-        return self
+        return
 
 
 class PlanGenerationRequest(ContractModel):
@@ -233,9 +321,16 @@ class PlanGenerationRequest(ContractModel):
     capability_snapshot_id: str | None = None
     capability_snapshot_checksum: str | None = None
     installed_migration_fallback: bool = False
+    transformer_semantic_version: TransformerSemanticVersion = (
+        TRANSFORMER_SEMANTIC_VERSION_LEGACY
+    )
+    run_mode: PlanRunMode = "PRODUCTION"
+    qualification_authorization_checksum: str | None = Field(default=None, pattern=_CHECKSUM)
 
     @model_validator(mode="after")
     def validate_route(self) -> "PlanGenerationRequest":
+        if self.run_mode == "QUALIFICATION" and not self.qualification_authorization_checksum:
+            raise ValueError("qualification plans require an explicit authorization checksum")
         if self.package_manager != "npm":
             raise ValueError("only npm planning commands are supported")
         if any(not key or not value or any(token in value for token in "\r\n;|&<>`$()'\"") or any(character.isspace() for character in value) for key, value in {**self.resolved_scripts, **self.project_targets}.items()):
@@ -297,6 +392,29 @@ def _checksum(value: object) -> str:
 def checksum_model(value: ContractModel, *, exclude: tuple[str, ...] = ("checksum",)) -> str:
     payload = value.model_dump(mode="json", exclude=set(exclude))
     return _checksum(payload)
+
+
+#: Semantic metadata fields introduced after the legacy plan schema. Historical
+#: persisted plans bind only their original key set.
+SEMANTIC_METADATA_FIELDS = (
+    "transformer_semantic_version",
+    "run_mode",
+    "qualification_authorization_checksum",
+)
+
+
+def verify_persisted_plan_checksum(model: ContractModel, source_payload: dict | None) -> bool:
+    """Re-verify a persisted plan binding without rewriting historical rows.
+
+    Payloads created before the semantic-metadata fields existed bind exactly
+    their original key set; those fields are excluded from re-verification so
+    legacy plans keep validating under their original checksum. New plans
+    carry the fields and therefore verify against the full payload.
+    """
+    excludes = {"checksum"}
+    if not any(field in (source_payload or {}) for field in SEMANTIC_METADATA_FIELDS):
+        excludes.update(SEMANTIC_METADATA_FIELDS)
+    return model.checksum == checksum_model(model, exclude=tuple(excludes))
 
 
 class ValidationTargetUnionError(ValueError):

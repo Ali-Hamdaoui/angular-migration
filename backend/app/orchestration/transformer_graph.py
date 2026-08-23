@@ -27,10 +27,13 @@ from app.artifact_store import (
 )
 from app.domain.contracts import ArtifactType, WorkflowEventType
 from app.domain.planning import (
+    TRANSFORMER_SEMANTIC_VERSION_PROVEN,
     VALIDATION_TARGET_GROUPS,
     ValidationTargetUnionError,
+    normalize_stage_plan_semantics,
     validation_target_union,
 )
+from app.domain.transformation import PROVEN_TRANSITION_NODES
 from app.orchestration.transformer_sealing_flow import TransformerSealingFlow
 from app.repositories.models import (
     ActivePlanVersionModel,
@@ -228,6 +231,10 @@ class TransformerOrchestrator:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
             node = continuation.current_node
+            semantic_version = self._stage_semantic_version(session, continuation)
+        if semantic_version == TRANSFORMER_SEMANTIC_VERSION_PROVEN:
+            self._advance_proven(continuation_id, worker_id, node)
+            return
         if node == "validate_g06":
             self._validate_g06(continuation_id, worker_id)
         elif node == "prepare_workspace":
@@ -326,6 +333,43 @@ class TransformerOrchestrator:
             self._cancel(continuation_id, worker_id)
         else:
             raise TransformerStageError("TRANSFORMATION_NODE_UNSUPPORTED", f"Unsupported node: {node}")
+
+    def _stage_semantic_version(self, session, continuation) -> str:
+        """Resolve immutable graph semantics from the persisted stage plan once.
+
+        Persisted JSON without a semantic version normalizes to legacy; an
+        unknown version fails closed before any node handler runs.
+        """
+        row = (
+            session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+            if getattr(continuation, "stage_plan_id", None)
+            else None
+        )
+        try:
+            semantic_version, _mode, _authorization = normalize_stage_plan_semantics(
+                (row.stage_plan if row else None) or {}
+            )
+        except ValueError as error:
+            code = getattr(error, "code", "TRANSFORMER_SEMANTIC_VERSION_UNSUPPORTED")
+            raise TransformerStageError(code, str(error)) from error
+        return semantic_version
+
+    def _advance_proven(self, continuation_id: str, worker_id: str, node: str) -> None:
+        """Proven transition table.
+
+        The proven graph executes only through handlers registered by its
+        behavior phases; until then every proven node fails closed so no
+        persisted plan can silently run legacy semantics.
+        """
+        if node not in PROVEN_TRANSITION_NODES:
+            raise TransformerStageError(
+                "TRANSFORMATION_NODE_UNSUPPORTED",
+                f"Unsupported proven node: {node}",
+            )
+        raise TransformerStageError(
+            "TRANSFORMER_PROVEN_NODE_UNSUPPORTED",
+            f"proven node {node} has no registered handler yet",
+        )
 
     def fail(
         self,

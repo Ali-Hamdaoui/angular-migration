@@ -27,7 +27,7 @@ from app.repositories.models import (
     TransformationReplanRecoveryModel,
 )
 from app.repositories.session import session_scope
-from app.domain.planning import PlanGenerationRequest
+from app.domain.planning import PlanGenerationRequest, normalize_stage_plan_semantics
 from app.state.event_sequencer import append_workflow_event
 from app.services.planning_application_service import PlanningApplicationService
 from app.services.project_capability_service import ProjectCapabilityService
@@ -328,6 +328,13 @@ class TransformationReplanRecoveryService:
             snapshot = ProjectCapabilityService().get_snapshot(run_id, snapshot_id)
             capabilities = tuple(item.model_dump(mode="json") for item in snapshot.capabilities)
         capabilities = (*capabilities, {"key": "policy:installed-migration-fallback", "value": "approved"})
+        try:
+            semantic_version, run_mode, qualification_authorization = normalize_stage_plan_semantics(current)
+        except ValueError as error:
+            raise TransformationReplanRecoveryError(
+                getattr(error, "code", "TRANSFORMER_SEMANTIC_VERSION_UNSUPPORTED"),
+                str(error),
+            ) from error
         request_payload = PlanGenerationRequest(
             run_id=run_id,
             expected_state_version=1,
@@ -356,6 +363,11 @@ class TransformationReplanRecoveryService:
             capability_snapshot_id=snapshot_id,
             capability_snapshot_checksum=current.get("capability_snapshot_checksum"),
             installed_migration_fallback=True,
+            # A replan can never change graph semantics or run mode: they are
+            # reloaded from the persisted stage plan and fail closed if unsupported.
+            transformer_semantic_version=semantic_version,
+            run_mode=run_mode,
+            qualification_authorization_checksum=qualification_authorization,
         )
         generated = PlanningApplicationService().generate(request_payload)
         new_plan = generated.plan.model_dump(mode="json")

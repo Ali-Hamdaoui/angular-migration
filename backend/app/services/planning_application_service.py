@@ -30,11 +30,14 @@ from app.domain.planning import (
     CommandTemplateReference,
     ForbiddenChangePolicy,
     MigrationPlan,
+    PROVEN_PLAN_WRITER_ENABLED,
     PlanGenerationRequest,
     PlanGenerationResult,
     RepairPolicy,
     RecoveryPolicy,
     StageExecutionPlan,
+    TRANSFORMER_SEMANTIC_VERSION_LEGACY,
+    TRANSFORMER_SEMANTIC_VERSION_PROVEN,
     ValidationPolicy,
     checksum_model,
 )
@@ -92,6 +95,15 @@ class StageExecutionPlanService:
         self._catalogue = catalogue_provider or CompatibilityCatalogueProvider()
 
     def create(self, request: PlanGenerationRequest, *, plan_version: int = 1) -> StageExecutionPlan:
+        if (
+            request.transformer_semantic_version == TRANSFORMER_SEMANTIC_VERSION_PROVEN
+            and not PROVEN_PLAN_WRITER_ENABLED
+        ):
+            raise PlanningApplicationError(
+                "PLANNING_PROVEN_NOT_READY",
+                "Proven plan generation remains disabled until every required command template is registered.",
+                409,
+            )
         source_family, target_family, catalogue_stage_id, target_exact = request.stage_route[0][:4]
         stage_id = run_scoped_stage_id(request.run_id, catalogue_stage_id)
         target_cli_exact = request.target_cli_exact or (request.stage_route[0][4] if len(request.stage_route[0]) == 5 else target_exact)
@@ -174,7 +186,7 @@ class StageExecutionPlanService:
             )
         knowledge = StageKnowledgeRegistry().entry(_major(source_family), _major(target_family))
         dispositions = StageKnowledgeRegistry.dependency_dispositions(knowledge, request.capability_facts)
-        draft = StageExecutionPlan(stage_plan_id=f"stage-plan-{request.run_id}-{stage_id}-v{plan_version}", stage_id=stage_id, plan_version=plan_version, input_fingerprint=request.input_fingerprint, evidence_set_checksum=request.evidence_set_checksum, input_workspace_fingerprint=request.input_workspace_fingerprint, source_family=source_family, source_exact=request.source_exact, target_family=target_family, target_exact=target_exact, target_cli_exact=target_cli_exact, target_cohort=target_cohort, execution_profile_id=request.execution_profile_id, capability_snapshot_id=request.capability_snapshot_id, capability_snapshot_checksum=request.capability_snapshot_checksum, expected_dependency_changes=dispositions, package_manager=request.package_manager, resolved_scripts=dict(request.resolved_scripts), project_targets=dict(request.project_targets), commands=commands, build_system_decision=decision, validation_policy=validation, recovery_policy=recovery, repair_policy=repair, forbidden_change_policy=forbidden, checksum="sha256:" + "0" * 64)
+        draft = StageExecutionPlan(stage_plan_id=f"stage-plan-{request.run_id}-{stage_id}-v{plan_version}", stage_id=stage_id, plan_version=plan_version, input_fingerprint=request.input_fingerprint, evidence_set_checksum=request.evidence_set_checksum, input_workspace_fingerprint=request.input_workspace_fingerprint, transformer_semantic_version=request.transformer_semantic_version, run_mode=request.run_mode, qualification_authorization_checksum=request.qualification_authorization_checksum, source_family=source_family, source_exact=request.source_exact, target_family=target_family, target_exact=target_exact, target_cli_exact=target_cli_exact, target_cohort=target_cohort, execution_profile_id=request.execution_profile_id, capability_snapshot_id=request.capability_snapshot_id, capability_snapshot_checksum=request.capability_snapshot_checksum, expected_dependency_changes=dispositions, package_manager=request.package_manager, resolved_scripts=dict(request.resolved_scripts), project_targets=dict(request.project_targets), commands=commands, build_system_decision=decision, validation_policy=validation, recovery_policy=recovery, repair_policy=repair, forbidden_change_policy=forbidden, checksum="sha256:" + "0" * 64)
         return draft.model_copy(update={"checksum": checksum_model(draft)})
 
     @staticmethod
@@ -223,7 +235,7 @@ class MigrationPlanService:
             )
             for item in request.stage_route
         }
-        draft = MigrationPlan(plan_id=f"plan-{request.run_id}-v{plan_version}", run_id=request.run_id, version=plan_version, source_family=request.source_family, source_exact=request.source_exact, target_family=request.target_family, route=route, catalogue_version=request.catalogue_version, repair_policy=repair, capability_snapshot_id=request.capability_snapshot_id, capability_snapshot_checksum=request.capability_snapshot_checksum, stage_dependency_dispositions=dispositions, checksum="sha256:" + "0" * 64)
+        draft = MigrationPlan(plan_id=f"plan-{request.run_id}-v{plan_version}", run_id=request.run_id, version=plan_version, source_family=request.source_family, source_exact=request.source_exact, target_family=request.target_family, route=route, catalogue_version=request.catalogue_version, repair_policy=repair, capability_snapshot_id=request.capability_snapshot_id, capability_snapshot_checksum=request.capability_snapshot_checksum, stage_dependency_dispositions=dispositions, transformer_semantic_version=request.transformer_semantic_version, run_mode=request.run_mode, qualification_authorization_checksum=request.qualification_authorization_checksum, checksum="sha256:" + "0" * 64)
         return draft.model_copy(update={"checksum": checksum_model(draft)})
 
 
