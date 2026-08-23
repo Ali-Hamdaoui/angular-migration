@@ -162,6 +162,16 @@ _ANGULAR_RECOVERY_CHECKPOINT_KINDS = frozenset(
     {"pre_angular_update", "post_repair"}
 )
 
+#: Proven transition routing table (V2.3 activation).  Every proven node the
+#: persisted plan vocabulary may dispatch is registered here; the activation
+#: gate refuses to enable the proven writer until this table covers
+#: ``PROVEN_TRANSITION_NODES`` exactly.  The graph only routes: each entry
+#: resolves to the orchestrator handler that delegates execution to
+#: ``ProvenStageExecutionService``.
+PROVEN_ROUTING: dict[str, str] = {
+    node: "proven" for node in sorted(PROVEN_TRANSITION_NODES)
+}
+
 
 class TransformerPointer(TypedDict):
     continuation_id: str
@@ -203,6 +213,7 @@ class TransformerOrchestrator:
         lockfile_runner=None,
         dependency_transition_runner=None,
         sealing_flow=None,
+        proven_execution=None,
     ) -> None:
         self._scope = scope
         self._stage = stage_service or TransformerStageService(scope=scope)
@@ -225,6 +236,20 @@ class TransformerOrchestrator:
             scope=scope,
             stage_service=self._stage,
             gate_service=self._gates,
+        )
+        from app.services.proven_stage_execution_service import ProvenStageExecutionService
+        from app.services.candidate_promotion_service import CandidatePromotionService
+
+        self._promotion = CandidatePromotionService()
+        self._proven = proven_execution or ProvenStageExecutionService(
+            scope=scope,
+            stage_service=self._stage,
+            validation=self._validation,
+            lockfile_runner=self._lockfiles,
+            promotion=self._promotion,
+            sealing=self._sealing_flow,
+            failure_router=self._failures,
+            repair=self._repairs,
         )
 
     def advance(self, continuation_id: str, worker_id: str) -> None:
@@ -357,19 +382,18 @@ class TransformerOrchestrator:
     def _advance_proven(self, continuation_id: str, worker_id: str, node: str) -> None:
         """Proven transition table.
 
-        The proven graph executes only through handlers registered by its
-        behavior phases; until then every proven node fails closed so no
-        persisted plan can silently run legacy semantics.
+        The graph only orchestrates: every proven node dispatches to the
+        registered handler on ``ProvenStageExecutionService``, which composes
+        the existing stage/lock/validation/promotion/seal/repair services.
+        A node without a registered route fails closed — no proven plan can
+        silently run legacy semantics.
         """
-        if node not in PROVEN_TRANSITION_NODES:
+        if node not in PROVEN_ROUTING:
             raise TransformerStageError(
                 "TRANSFORMATION_NODE_UNSUPPORTED",
                 f"Unsupported proven node: {node}",
             )
-        raise TransformerStageError(
-            "TRANSFORMER_PROVEN_NODE_UNSUPPORTED",
-            f"proven node {node} has no registered handler yet",
-        )
+        self._proven.advance(continuation_id, worker_id, node)
 
     def fail(
         self,
