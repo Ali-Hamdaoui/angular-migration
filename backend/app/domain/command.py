@@ -42,10 +42,14 @@ class CommandClass(str, Enum):
 
 _COMMAND_CLASSES: dict[str, CommandClass] = {
     "angular-update-exact": CommandClass.ANGULAR_UPDATE,
+    "angular-update-discovery": CommandClass.ANGULAR_UPDATE,
+    "angular-migrate-range-v2": CommandClass.ANGULAR_UPDATE,
+    "angular-migrate-name-v2": CommandClass.ANGULAR_UPDATE,
     "angular-migrate-installed": CommandClass.ANGULAR_UPDATE,
     "angular-migrate-range": CommandClass.ANGULAR_UPDATE,
     "npm-ci-bootstrap": CommandClass.NPM_OPERATION,
     "npm-ci-final": CommandClass.NPM_OPERATION,
+    "npm-dependency-tree": CommandClass.NPM_OPERATION,
     "npm-dependency-materialize": CommandClass.NPM_OPERATION,
     "npm-lockfile-generate": CommandClass.LOCKFILE,
     "npm-script-build-production": CommandClass.BUILD_TEST_LINT,
@@ -55,6 +59,7 @@ _COMMAND_CLASSES: dict[str, CommandClass] = {
     "npm-dependency-uninstall": CommandClass.DEPENDENCY_TRANSITION,
     "npm-dependency-install": CommandClass.DEPENDENCY_TRANSITION,
     "angular-version-verify": CommandClass.VERSION_VERIFY,
+    "angular-cli-authority-version": CommandClass.VERSION_VERIFY,
     "python-version": CommandClass.VERSION_VERIFY,
     "node-version": CommandClass.VERSION_VERIFY,
     "npm-version": CommandClass.VERSION_VERIFY,
