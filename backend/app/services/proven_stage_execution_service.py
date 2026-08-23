@@ -289,7 +289,10 @@ class ProvenStageExecutionService:
         )
         execution = session.get(CommandExecutionModel, result.execution_id)
         if execution is not None:
-            evidence = build_command_execution_evidence(execution_row=execution)
+            evidence = build_command_execution_evidence(
+                execution_row=execution,
+                artifact_checksums=self._artifact_checksums(session, execution),
+            )
             store = self._artifact_store(session, continuation)
             self._record_evidence(
                 session,
@@ -299,6 +302,23 @@ class ProvenStageExecutionService:
                 evidence.model_dump(mode="json"),
                 "command-execution-evidence-v1",
             )
+
+    def _artifact_checksums(self, session, execution) -> dict[str, str]:
+        """Resolve committed artifact checksums for one execution row."""
+        checksums: dict[str, str] = {}
+        for artifact_id in (
+            execution.stdout_artifact_id,
+            execution.stderr_artifact_id,
+            execution.command_log_artifact_id,
+            execution.result_artifact_id,
+            execution.manifest_artifact_id,
+        ):
+            if not artifact_id:
+                continue
+            metadata = session.get(ArtifactMetadataModel, "metadata-" + artifact_id)
+            if metadata is not None:
+                checksums[artifact_id] = metadata.checksum
+        return checksums
 
     def _latest_terminal_execution(self, session, continuation, group: str) -> CommandExecutionModel | None:
         step = session.scalar(
