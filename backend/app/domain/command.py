@@ -630,6 +630,37 @@ TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinitio
         max_output_bytes=5_000_000,
         description="Run disposable target discovery through the proven absolute CLI authority",
     ),
+    # V2.2 P0-5: migrate-only execution through the exact materialized target
+    # CLI installed in the target generation; never generic npx/PATH lookup.
+    "angular-migrate-range-v2": TransformationCommandDefinition(
+        command_id="angular-migrate-range-v2",
+        template_id="tpl-angular-migrate-range-v2",
+        executable="{governed_node_absolute}",
+        argument_patterns=(
+            "{target_cli_entrypoint_absolute}", "update", "{package}",
+            "--migrate-only", "--from", "{from_version}", "--to", "{to_version}",
+        ),
+        timeout_seconds=1800,
+        network_profile="registry_only",
+        allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+        max_output_bytes=5_000_000,
+        description="Execute a governed migrate-only range update through the materialized target CLI authority",
+    ),
+    "angular-migrate-name-v2": TransformationCommandDefinition(
+        command_id="angular-migrate-name-v2",
+        template_id="tpl-angular-migrate-name-v2",
+        executable="{governed_node_absolute}",
+        argument_patterns=(
+            "{target_cli_entrypoint_absolute}", "update", "{package}",
+            "--migrate-only", "--from", "{from_version}", "--to", "{to_version}",
+            "--name", "{migration_name}",
+        ),
+        timeout_seconds=1800,
+        network_profile="registry_only",
+        allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+        max_output_bytes=5_000_000,
+        description="Execute one named optional migration through the materialized target CLI authority",
+    ),
 }
 
 

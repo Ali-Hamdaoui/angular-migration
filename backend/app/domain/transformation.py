@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import Enum
 import re
-from typing import Literal
+from typing import Literal, Mapping
 
 from pydantic import Field, field_validator, model_validator
 
@@ -692,6 +692,192 @@ def authorize_fresh_fallback(
             "status": "READY",
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# V2.2 P0-5 / section 11 — dynamic MigrationLedger (P06-A + P06-B).
+# ---------------------------------------------------------------------------
+
+class MigrationDecision(str, Enum):
+    RUN = "RUN"
+    SKIP = "SKIP"
+    PENDING_HUMAN = "PENDING_HUMAN"
+
+
+class MigrationOwnerEntry(ContractModel):
+    """One ordered migration owner or named optional migration."""
+
+    entry_id: str = Field(min_length=1)
+    package: str = Field(min_length=1)
+    from_exact: str = Field(min_length=1)
+    to_exact: str = Field(min_length=1)
+    required: bool = True
+    decision: MigrationDecision = MigrationDecision.RUN
+    collection_id: str | None = None
+    migration_name: str | None = None
+    ordering_index: int = Field(ge=0)
+    depends_on: tuple[str, ...] = ()
+    metadata_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    decision_authority: str = Field(default="ledger", min_length=1)
+
+
+class MigrationLedger(ContractModel):
+    """Immutable dynamic migration ledger built after target materialization."""
+
+    schema_version: str = "migration-ledger-v1"
+    run_id: str = Field(min_length=1)
+    stage_id: str = Field(min_length=1)
+    generation_id: str = Field(min_length=1)
+    source_dependency_intent_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    target_dependency_intent_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    npm_capability_policy_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    source_lock_filename: str = Field(min_length=1)
+    source_lock_kind: str = Field(min_length=1)
+    source_lock_raw_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    target_lock_filename: str = Field(min_length=1)
+    target_lock_kind: str = Field(min_length=1)
+    target_lock_raw_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    migration_toolchain_authority_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    installed_metadata_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    owners: tuple[MigrationOwnerEntry, ...] = ()
+    dependency_authority_changed: bool = False
+    status: Literal["OPEN", "READY", "EXECUTING", "COMPLETE", "BLOCKED"] = "OPEN"
+    blocked_reason_code: str | None = None
+    execution_records: tuple[dict[str, object], ...] = ()
+    checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def bind(self) -> "MigrationLedger":
+        if self.checksum == _DRAFT_CHECKSUM:
+            return self
+        expected = _canonical_checksum(self.model_dump(mode="json", exclude={"checksum"}))
+        if self.checksum != expected:
+            raise ValueError("migration ledger checksum does not bind its payload")
+        return self
+
+    @classmethod
+    def create(cls, **fields) -> "MigrationLedger":
+        draft = cls(**fields, checksum=_DRAFT_CHECKSUM)
+        checksum = _canonical_checksum(draft.model_dump(mode="json", exclude={"checksum"}))
+        return draft.model_copy(update={"checksum": checksum})
+
+
+def discover_changed_direct_owners(
+    *,
+    source_resolved: Mapping[str, str],
+    target_resolved: Mapping[str, str],
+    installed_metadata: Mapping[str, object],
+) -> tuple[str, ...]:
+    """P06-A: every changed direct package declaring migrations; no priority set.
+
+    ``installed_metadata`` maps package name -> parsed ``ng-update`` manifest
+    fragment (or None).  No package name is privileged and no Angular-major
+    branch exists.
+    """
+    owners: list[str] = []
+    for package in sorted(set(source_resolved) | set(target_resolved)):
+        before = source_resolved.get(package)
+        after = target_resolved.get(package)
+        if before == after or after is None:
+            continue
+        metadata = installed_metadata.get(package)
+        migrations = metadata.get("migrations") if isinstance(metadata, dict) else None
+        if isinstance(migrations, str) and migrations:
+            owners.append(package)
+    return tuple(owners)
+
+
+def traverse_migration_collections(
+    *,
+    metadata_payloads: Mapping[str, object],
+    from_version: str,
+    to_version: str,
+    explicit_decisions: Mapping[str, str] | None = None,
+) -> tuple[MigrationOwnerEntry, ...]:
+    """P06-B: traverse packageGroup/requirements collections in ``(from, to]``.
+
+    Deterministic ordering; individually named optional migrations are
+    discovered from the same metadata.  Unresolved requirements block by
+    returning a PENDING_HUMAN entry rather than silently omitting work.
+    """
+    from_major = int(from_version.split(".", 1)[0])
+    to_major = int(to_version.split(".", 1)[0])
+    decisions = dict(explicit_decisions or {})
+    entries: list[MigrationOwnerEntry] = []
+
+    def _decision_for(key: str, required: bool) -> MigrationDecision:
+        raw = decisions.get(key)
+        if raw is None:
+            return MigrationDecision.RUN if required else MigrationDecision.PENDING_HUMAN
+        return MigrationDecision(raw)
+
+    ordering = 0
+    for package in sorted(metadata_payloads):
+        payload = metadata_payloads[package]
+        if not isinstance(payload, dict):
+            continue
+        group = payload.get("packageGroup")
+        if isinstance(group, list):
+            for member in group:
+                if not isinstance(member, dict):
+                    continue
+                pkg = member.get("package")
+                version = member.get("version")
+                if not isinstance(pkg, str) or not isinstance(version, str):
+                    continue
+                major = int(version.split(".", 1)[0]) if version[:1].isdigit() else 0
+                if not (from_major < major <= to_major):
+                    continue
+                required_member = member.get("required") is not False
+                entries.append(
+                    MigrationOwnerEntry(
+                        entry_id=f"{pkg}@{version}",
+                        package=pkg,
+                        from_exact=from_version,
+                        to_exact=version,
+                        required=required_member,
+                        decision=_decision_for(f"{pkg}@{version}", required_member),
+                        collection_id=f"{package}:packageGroup",
+                        ordering_index=ordering,
+                        metadata_checksum=None,
+                    )
+                )
+                ordering += 1
+        requirements = payload.get("requirements")
+        if isinstance(requirements, list):
+            for requirement in requirements:
+                if not isinstance(requirement, dict):
+                    continue
+                requires_pkg = requirement.get("package")
+                if isinstance(requires_pkg, str):
+                    last = entries[-1] if entries else None
+                    if last is not None:
+                        entries[-1] = last.model_copy(update={"depends_on": (*last.depends_on, requires_pkg)})
+        named = payload.get("migrations")
+        if isinstance(named, str) and named:
+            # Named optional migration collections discovered from installed
+            # metadata receive explicit decisions only; unresolved stay pending.
+            key = f"{package}:{named}"
+            decision = _decision_for(key, required=False)
+            entries.append(
+                MigrationOwnerEntry(
+                    entry_id=key,
+                    package=package,
+                    from_exact=from_version,
+                    to_exact=to_version,
+                    required=False,
+                    decision=decision,
+                    migration_name=named,
+                    ordering_index=ordering,
+                )
+            )
+            ordering += 1
+    return tuple(entries)
+
+
+def pending_human_entries(owners: tuple[MigrationOwnerEntry, ...]) -> tuple[MigrationOwnerEntry, ...]:
+    """Entries that block execution until an explicit human decision exists."""
+    return tuple(entry for entry in owners if entry.decision is MigrationDecision.PENDING_HUMAN)
 
 
 class SourceBaselineEvidence(ContractModel):
