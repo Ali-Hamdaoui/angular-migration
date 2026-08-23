@@ -492,7 +492,29 @@ class ProvenStageExecutionService:
                     attempt_key=f"proven:{node}",
                 )
             except Exception as error:
-                self._block(session, continuation, "PROVEN_VALIDATION_ADVANCE_FAILED", str(error))
+                # ValidationRunner already queues ``classify_failure`` for
+                # failed command evidence; structural runner errors also route
+                # through the governed failure classification instead of
+                # inventing a repair path here.
+                from app.services.validation_runner import ValidationRunnerError
+
+                code = error.code if isinstance(error, ValidationRunnerError) else "PROVEN_VALIDATION_ADVANCE_FAILED"
+                expected_state_version = continuation.state_version
+                continuation.status = "queued"
+                continuation.current_node = "classify_failure"
+                continuation.last_error_code = code
+                continuation.last_error_message = str(error)
+                continuation.state_version += 1
+                continuation.updated_at = datetime.now(UTC)
+                session.flush()
+                append_continuation_event(
+                    session,
+                    continuation,
+                    event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_FAILED,
+                    key=f"failed:{expected_state_version}:{code}",
+                    reason="proven validation advance failed; failure classification queued",
+                    payload={"last_error_code": code, "expected_state_version": expected_state_version},
+                )
 
     def _node_source_diagnostic_capture(self, continuation_id: str, worker_id: str) -> None:
         self._advance_recorded(continuation_id, worker_id, ProvenTransformationNode.SOURCE_DIAGNOSTIC_CAPTURE.value)
