@@ -10,7 +10,6 @@ from sqlalchemy import select
 from app.api.compatibility_contracts import FeasibilityCreateRequest
 from app.repositories.models import (
     ArtifactMetadataModel,
-    CompatibilityCatalogueModel,
     ExecutionProfileModel,
     G04ApprovalModel,
     G03ApprovalModel,
@@ -52,9 +51,7 @@ class PlanningInputResolver:
             raise PlanningInputResolutionError("PLANNING_SOURCE_EVIDENCE_MISSING", "Persisted source evidence does not contain an exact Angular version.")
         source_family = run.source_version_family or f"angular-{source_exact.split('.', 1)[0]}.x"
         target_family = run.target_version_family or "angular-21.x"
-        catalogue = session.scalar(select(CompatibilityCatalogueModel).order_by(CompatibilityCatalogueModel.created_at.desc()))
-        if catalogue is None:
-            catalogue = CompatibilityCatalogueProvider().load()
+        catalogue = CompatibilityCatalogueProvider().load()
         registry = session.scalar(select(RegistrySnapshotModel).where(RegistrySnapshotModel.run_id == run_id).order_by(RegistrySnapshotModel.created_at.desc()))
         if registry is None:
             try:
