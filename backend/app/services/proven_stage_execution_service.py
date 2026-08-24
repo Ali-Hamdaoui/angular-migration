@@ -11,6 +11,7 @@ with an explicit code.
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -32,6 +33,7 @@ from app.repositories.models import (
     CommandLogChunkModel,
     MigrationPlanModel,
     MigrationRunModel,
+    MigrationStageModel,
     StageExecutionPlanModel,
     StageStepModel,
     StageWorkspaceBindingModel,
@@ -39,6 +41,9 @@ from app.repositories.models import (
 )
 from app.repositories.session import session_scope
 from app.services.proven_activation_gate import ProvenActivationGate
+from app.services.command_registry_service import CommandRegistryService
+from app.services.package_migration_service import PackageMigrationError, PackageMigrationService
+from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformer_stage_service import (
     TransformerStageError,
     TransformerStageService,
@@ -209,13 +214,44 @@ class ProvenStageExecutionService:
         )
 
     def _binding(self, session, continuation) -> StageWorkspaceBindingModel:
-        binding = session.scalar(
-            select(StageWorkspaceBindingModel).where(
+        bindings = session.scalars(
+            select(StageWorkspaceBindingModel)
+            .where(
                 StageWorkspaceBindingModel.run_id == continuation.run_id,
                 StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
                 StageWorkspaceBindingModel.active.is_(True),
             )
+            .order_by(StageWorkspaceBindingModel.created_at)
+        ).all()
+        stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+        planned_aliases = {
+            reference.get("working_directory_alias")
+            for references in ((stage_plan.stage_plan or {}).get("commands") or {}).values()
+            for reference in references
+            if reference.get("working_directory_alias")
+        }
+        binding = next(
+            (
+                candidate
+                for candidate in bindings
+                if candidate.alias in planned_aliases
+                and Path(candidate.workspace_path).is_dir()
+                and StageSandboxCopier.fingerprint(Path(candidate.workspace_path))
+                == candidate.workspace_fingerprint
+            ),
+            None,
         )
+        if binding is None:
+            binding = next(
+                (
+                    candidate
+                    for candidate in bindings
+                    if Path(candidate.workspace_path).is_dir()
+                    and StageSandboxCopier.fingerprint(Path(candidate.workspace_path))
+                    == candidate.workspace_fingerprint
+                ),
+                bindings[0] if bindings else None,
+            )
         if binding is None:
             raise ProvenStageExecutionError(
                 "PROVEN_WORKSPACE_BINDING_MISSING",
@@ -279,14 +315,28 @@ class ProvenStageExecutionService:
         continuation.last_error_message = None
         self._queue(continuation, successor)
 
-    def _queue_planned_command(self, session, continuation, *, group: str, next_node: str, attempt_key: str) -> None:
+    def _queue_planned_command(
+        self,
+        session,
+        continuation,
+        *,
+        group: str,
+        next_node: str,
+        attempt_key: str,
+        package: str | None = None,
+        from_version: str | None = None,
+        to_version: str | None = None,
+        reference_override=None,
+    ) -> None:
         """Queue one governed plan command and park the continuation on it."""
+        attempt_key = self._scoped_attempt_key(continuation, attempt_key)
         result = self._stage._queue_group(
             session,
             continuation,
             group=group,
             next_node=next_node,
             attempt_key=attempt_key,
+            reference_override=reference_override,
         )
         execution = session.get(CommandExecutionModel, result.execution_id)
         if execution is not None:
@@ -314,7 +364,12 @@ class ProvenStageExecutionService:
         group: str,
         next_node: str,
         attempt_key: str,
+        package: str | None = None,
+        from_version: str | None = None,
+        to_version: str | None = None,
     ) -> None:
+        attempt_key = self._scoped_attempt_key(continuation, attempt_key)
+        CommandRegistryService().seed_defaults(session)
         stage_plan = self._stage_plan(session, continuation)
         authority = self._stage.angular_cli_authority(session, continuation, purpose=purpose)
         if purpose == "MIGRATION" and authority.requested_cli_exact != stage_plan.get("target_cli_exact"):
@@ -330,12 +385,32 @@ class ProvenStageExecutionService:
             "target_cli_entrypoint_absolute": authority.cli_entrypoint_absolute,
         }
         if command_id == "angular-update-discovery":
-            bindings["package_spec"] = f"@angular/core@{stage_plan['target_exact']}"
+            cohort = stage_plan["target_cohort"]
+            bindings["package"] = "@angular/core"
+            for package, binding_name in (
+                ("@angular/cli", "cli_package_spec"),
+                ("@angular/core", "core_package_spec"),
+                ("@angular/animations", "animations_package_spec"),
+                ("@angular/common", "common_package_spec"),
+                ("@angular/compiler", "compiler_package_spec"),
+                ("@angular/compiler-cli", "compiler_cli_package_spec"),
+                ("@angular/forms", "forms_package_spec"),
+                ("@angular/platform-browser", "platform_browser_package_spec"),
+                ("@angular/platform-browser-dynamic", "platform_browser_dynamic_package_spec"),
+                ("@angular/router", "router_package_spec"),
+                ("@angular-devkit/build-angular", "devkit_package_spec"),
+                ("typescript", "typescript_package_spec"),
+                ("rxjs", "rxjs_package_spec"),
+                ("zone.js", "zone_package_spec"),
+            ):
+                bindings[binding_name] = f"{package}@{cohort[package]}"
+            bindings["from_version"] = stage_plan["source_exact"]
+            bindings["to_version"] = stage_plan["target_exact"]
         elif command_id == "angular-migrate-range-v2":
             bindings.update(
-                package="@angular/core",
-                from_version=stage_plan["source_exact"],
-                to_version=stage_plan["target_exact"],
+                package=package or "@angular/core",
+                from_version=from_version or stage_plan["source_exact"],
+                to_version=to_version or stage_plan["target_exact"],
             )
         try:
             arguments = list(definition.render_arguments(bindings))
@@ -344,7 +419,7 @@ class ProvenStageExecutionService:
         reference = {
             "command_id": definition.command_id,
             "template_id": definition.template_id,
-            "template_version": 1,
+            "template_version": 9 if command_id == "angular-update-discovery" else 1,
             "parameter_bindings": bindings,
             "executable": authority.node_executable_absolute,
             "arguments": arguments,
@@ -418,7 +493,19 @@ class ProvenStageExecutionService:
         )
         if step is None or not step.execution_id:
             return None
-        return session.get(CommandExecutionModel, step.execution_id)
+        execution = session.get(CommandExecutionModel, step.execution_id)
+        if execution is None or execution.plan_id != continuation.plan_id:
+            return None
+        return execution
+
+    @staticmethod
+    def _scoped_attempt_key(continuation, attempt_key: str) -> str:
+        """Keep reexecutions from replaying command-authority idempotency keys."""
+        stage_plan_id = continuation.stage_plan_id or ""
+        if "-reexec-" not in stage_plan_id:
+            return attempt_key
+        digest = hashlib.sha256(f"{stage_plan_id}:{attempt_key}".encode()).hexdigest()[:12]
+        return f"reexec-{digest}"
 
     # -- Phase 1: source baseline -------------------------------------------
 
@@ -444,6 +531,19 @@ class ProvenStageExecutionService:
         # Real workspace preparation (stage service owns the durable layout
         # and pre_bootstrap checkpoint); the legacy successor node is
         # overridden to the proven entry point after preparation commits.
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            stage = session.get(MigrationStageModel, continuation.current_stage_id)
+            binding = self._binding(session, continuation)
+            workspace = Path(binding.workspace_path)
+            if (
+                stage is not None
+                and stage.status == "prepared"
+                and workspace.is_dir()
+                and StageSandboxCopier.fingerprint(workspace) == binding.workspace_fingerprint
+            ):
+                self._advance_after(session, continuation, ProvenTransformationNode.PREPARE_STAGE_LAYOUT.value)
+                return
         self._stage.prepare(continuation_id, worker_id)
         with self._scope() as session:
             # prepare() released the claim and queued the legacy successor;
@@ -524,12 +624,22 @@ class ProvenStageExecutionService:
     def _node_source_install_same_authority(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
+            existing = self._latest_terminal_execution(session, continuation, "bootstrap_install")
+            binding = self._binding(session, continuation)
+            cli_package = Path(binding.workspace_path) / "node_modules" / "@angular" / "cli" / "package.json"
+            if existing is not None and existing.status == "succeeded" and cli_package.is_file():
+                self._advance_after(session, continuation, ProvenTransformationNode.SOURCE_INSTALL_SAME_AUTHORITY.value)
+                return
             self._queue_planned_command(
                 session,
                 continuation,
                 group="bootstrap_install",
                 next_node=ProvenTransformationNode.SOURCE_TREE.value,
-                attempt_key="source-install",
+                attempt_key=(
+                    "source-install"
+                    if existing is None
+                    else f"source-install-recovery:{continuation.state_version}"
+                ),
             )
 
     def _node_source_tree(self, continuation_id: str, worker_id: str) -> None:
@@ -537,7 +647,16 @@ class ProvenStageExecutionService:
             continuation = self._owned(session, continuation_id, worker_id)
             execution = self._latest_terminal_execution(session, continuation, "bootstrap_install")
             if execution is None or execution.status != "succeeded":
+                if execution is not None and execution.status in {"interrupted", "failed"}:
+                    self._queue(continuation, ProvenTransformationNode.SOURCE_INSTALL_SAME_AUTHORITY.value)
+                    continuation.last_error_code = "PROVEN_SOURCE_INSTALL_RETRY_QUEUED"
+                    continuation.last_error_message = "source install did not reach terminal success; requeueing governed source install"
+                    return
                 self._block(session, continuation, "PROVEN_SOURCE_INSTALL_NOT_VERIFIED", "source install lacks terminal success evidence")
+                return
+            existing = self._latest_terminal_execution(session, continuation, "dependency_tree")
+            if existing is not None and existing.status == "succeeded":
+                self._advance_after(session, continuation, ProvenTransformationNode.SOURCE_TREE.value)
                 return
             self._queue_planned_command(
                 session,
@@ -553,6 +672,10 @@ class ProvenStageExecutionService:
             execution = self._latest_terminal_execution(session, continuation, "dependency_tree")
             if execution is None or execution.status != "succeeded":
                 self._block(session, continuation, "PROVEN_SOURCE_TREE_NOT_VERIFIED", "source tree lacks terminal success evidence")
+                return
+            existing = self._latest_terminal_execution(session, continuation, "target_version_check")
+            if existing is not None and existing.status == "succeeded":
+                self._advance_after(session, continuation, ProvenTransformationNode.SOURCE_VERSION_PROOF.value)
                 return
             self._queue_planned_command(
                 session,
@@ -582,6 +705,20 @@ class ProvenStageExecutionService:
             step_group="builds",
         )
 
+    @staticmethod
+    def _validation_attempt_key(continuation, node: str) -> str:
+        if continuation.last_error_code == "FAILURE_ROUTE_ENVIRONMENT_TRANSIENT":
+            return f"environment-retry:{continuation.attempt}:{node}"
+        if continuation.last_error_code == "VALIDATION_COMMAND_AUTH_RETRY_QUEUED":
+            return f"workspace-binding-retry:{continuation.state_version}:{node}"
+        if continuation.last_error_code == "VALIDATION_COMMAND_IDEMPOTENCY_RETRY_QUEUED":
+            return f"stage-validation-retry:{continuation.state_version}:{node}"
+        attempt_key = f"proven:{node}"
+        if "-reexec-" in (continuation.stage_plan_id or ""):
+            digest = hashlib.sha256(f"{continuation.stage_plan_id}:{attempt_key}".encode()).hexdigest()[:12]
+            return f"reexec-{digest}"
+        return attempt_key
+
     def _validate_group(self, continuation_id, worker_id, *, group, node, next_node, step_group) -> None:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
@@ -598,7 +735,7 @@ class ProvenStageExecutionService:
                     continuation,
                     group,
                     next_node=next_node,
-                    attempt_key=f"proven:{node}",
+                    attempt_key=self._validation_attempt_key(continuation, node),
                 )
             except Exception as error:
                 # ValidationRunner already queues ``classify_failure`` for
@@ -663,6 +800,13 @@ class ProvenStageExecutionService:
     def _node_prove_discovery_cli_authority(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
+            binding = self._binding(session, continuation)
+            cli_package = Path(binding.workspace_path) / "node_modules" / "@angular" / "cli" / "package.json"
+            if not cli_package.is_file():
+                self._queue(continuation, ProvenTransformationNode.SOURCE_INSTALL_SAME_AUTHORITY.value)
+                continuation.last_error_code = "PROVEN_SOURCE_INSTALL_PHYSICAL_MISSING"
+                continuation.last_error_message = "discovery requires a physical installed Angular CLI; source install was requeued"
+                return
             self._queue_authority_or_block(
                 session,
                 continuation,
@@ -670,7 +814,7 @@ class ProvenStageExecutionService:
                 purpose="DISCOVERY",
                 group="cli_authority_version",
                 next_node=ProvenTransformationNode.RUN_DISCOVERY.value,
-                attempt_key="discovery-cli-version",
+                attempt_key=f"discovery-cli-version:{continuation.state_version}",
             )
 
     def _node_run_discovery(self, continuation_id: str, worker_id: str) -> None:
@@ -688,7 +832,7 @@ class ProvenStageExecutionService:
                 purpose="DISCOVERY",
                 group="discovery",
                 next_node=ProvenTransformationNode.ASSESS_DISCOVERY.value,
-                attempt_key="discovery",
+                attempt_key=f"discovery:{continuation.state_version}",
             )
 
     def _node_assess_discovery(self, continuation_id: str, worker_id: str) -> None:
@@ -699,13 +843,71 @@ class ProvenStageExecutionService:
                 self._block(session, continuation, "PROVEN_DISCOVERY_EVIDENCE_MISSING", "discovery execution evidence is missing")
                 return
             if execution.status != "succeeded":
-                envelope = self._failure_envelope_from_execution(session, continuation, execution, FailureCategory.DISCOVERY, "discovery")
-                self._block(
+                failure_text = (execution.failure_message or "").lower()
+                network_transient = any(
+                    marker in failure_text
+                    for marker in ("socket timeout", "etimedout", "eai_again", "network timeout")
+                )
+                attempts = session.scalars(
+                    select(CommandExecutionModel).where(
+                        CommandExecutionModel.run_id == continuation.run_id,
+                        CommandExecutionModel.stage_id == continuation.current_stage_id,
+                        CommandExecutionModel.command_id == "angular-update-discovery",
+                        CommandExecutionModel.template_id == "tpl-angular-update-discovery-v9",
+                    )
+                ).all()
+                max_attempts = 3 if network_transient or attempts else 2
+                if len(attempts) >= max_attempts:
+                    envelope = self._failure_envelope_from_execution(
+                        session, continuation, execution, FailureCategory.DISCOVERY, "discovery"
+                    )
+                    self._block(
+                        session,
+                        continuation,
+                        execution.failure_code or "PROVEN_DISCOVERY_FAILED",
+                        envelope.message,
+                    )
+                    return
+                run = session.get(MigrationRunModel, continuation.run_id)
+                binding = self._binding(session, continuation)
+                aliases = dict(run.workspace_aliases or {}) if run is not None else {}
+                baseline = aliases.get("BASELINE_SANDBOX")
+                stage_root = aliases.get("STAGE_SANDBOX")
+                expected = aliases.get("BASELINE_SANDBOX_FINGERPRINT") or binding.workspace_fingerprint
+                if not baseline or not stage_root:
+                    self._block(session, continuation, "PROVEN_DISCOVERY_RECONSTRUCTION_FAILED", "immutable sealed predecessor is unavailable for discovery recovery")
+                    return
+                try:
+                    restored = TransformerStageService.reconstruct_workspace(
+                        baseline,
+                        binding.workspace_path,
+                        stage_root,
+                        expected,
+                    )
+                except TransformerStageError as error:
+                    self._block(session, continuation, error.code, error.message)
+                    return
+                binding.workspace_fingerprint = restored
+                binding.last_verified_fingerprint = restored
+                binding.last_verified_at = datetime.now(UTC)
+                store = self._artifact_store(session, continuation)
+                self._record_evidence(
                     session,
                     continuation,
-                    execution.failure_code or "PROVEN_DISCOVERY_FAILED",
-                    envelope.message,
+                    store,
+                    f"04_workflow_state/stages/{continuation.current_stage_id}/proven/discovery-recovery-{execution.id}.json",
+                    {
+                        "execution_id": execution.id,
+                        "source": baseline,
+                        "restored_workspace": binding.workspace_path,
+                        "restored_fingerprint": restored,
+                        "reason": "discovery authority is disposable and failed after mutating the candidate manifest",
+                    },
+                    "discovery-workspace-recovery-v1",
                 )
+                self._queue(continuation, ProvenTransformationNode.SOURCE_INSTALL_SAME_AUTHORITY.value)
+                continuation.last_error_code = "PROVEN_DISCOVERY_WORKSPACE_RESTORED"
+                continuation.last_error_message = "discovery workspace was restored from the sealed predecessor; source install is being revalidated"
                 return
             self._advance_after(session, continuation, ProvenTransformationNode.ASSESS_DISCOVERY.value)
 
@@ -791,14 +993,36 @@ class ProvenStageExecutionService:
     def _node_lock_resolution(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
-            if self._lockfiles is None:
-                self._block(session, continuation, "PROVEN_LOCK_RESOLUTION_MISSING", "lock resolution runner is not wired")
-                return
             try:
-                self._lockfiles.advance(
+                run = session.get(MigrationRunModel, continuation.run_id)
+                _clear_target_node_modules(
+                    self._binding(session, continuation),
+                    run.source_path if run is not None else None,
+                    self._stage_plan(session, continuation).get("target_cohort") or {},
+                )
+                lock_reference = dict(
+                    (self._stage_plan(session, continuation).get("commands") or {})
+                    .get("lockfile_generation", [{}])[0]
+                )
+                lock_reference.update(
+                    template_id="tpl-npm-lockfile-generate-v2",
+                    template_version=2,
+                    arguments=[
+                        "install",
+                        "--package-lock-only",
+                        "--ignore-scripts",
+                        "--no-audit",
+                        "--no-fund",
+                        "--include=optional",
+                    ],
+                )
+                self._queue_planned_command(
                     session,
                     continuation,
+                    group="lockfile_generation",
+                    attempt_key=f"target-lockfile-generation:{continuation.state_version}",
                     next_node=ProvenTransformationNode.CREATE_MATERIALIZATION.value,
+                    reference_override=lock_reference,
                 )
             except Exception as error:
                 self._block(session, continuation, "PROVEN_LOCK_RESOLUTION_FAILED", str(error))
@@ -806,17 +1030,43 @@ class ProvenStageExecutionService:
     # -- Phase 4: materialization -------------------------------------------
 
     def _node_create_materialization(self, continuation_id: str, worker_id: str) -> None:
-        self._advance_recorded(continuation_id, worker_id, ProvenTransformationNode.CREATE_MATERIALIZATION.value)
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            execution = self._latest_terminal_execution(session, continuation, "lockfile_generation")
+            if execution is None or execution.status != "succeeded":
+                if continuation.last_error_code != "PROVEN_LOCK_RESOLUTION_RETRY_QUEUED":
+                    self._queue(continuation, ProvenTransformationNode.LOCK_RESOLUTION.value)
+                    continuation.last_error_code = "PROVEN_LOCK_RESOLUTION_RETRY_QUEUED"
+                    continuation.last_error_message = "target lock resolution is being retried from normalized source authority"
+                    return
+                self._block(
+                    session,
+                    continuation,
+                    "PROVEN_LOCK_RESOLUTION_FAILED",
+                    "target materialization lacks terminal lockfile-generation success evidence after normalized retry",
+                )
+                return
+            self._advance_after(session, continuation, ProvenTransformationNode.CREATE_MATERIALIZATION.value)
 
     def _node_target_install_same_authority(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
+            reference = dict(
+                (self._stage_plan(session, continuation).get("commands") or {})
+                .get("final_install", [{}])[0]
+            )
+            reference.update(
+                template_id="tpl-npm-ci-final-v3",
+                template_version=3,
+                arguments=["ci", "--include=optional"],
+            )
             self._queue_planned_command(
                 session,
                 continuation,
                 group="final_install",
                 next_node=ProvenTransformationNode.TARGET_TREE.value,
-                attempt_key="target-install",
+                attempt_key=f"target-install:{continuation.state_version}",
+                reference_override=reference,
             )
 
     def _node_target_tree(self, continuation_id: str, worker_id: str) -> None:
@@ -824,6 +1074,42 @@ class ProvenStageExecutionService:
             continuation = self._owned(session, continuation_id, worker_id)
             execution = self._latest_terminal_execution(session, continuation, "final_install")
             if execution is None or execution.status != "succeeded":
+                lockfile = self._latest_terminal_execution(session, continuation, "lockfile_generation")
+                failure_reason = execution.failure_message if execution is not None else ""
+                lock_sync_failure = "package.json and package-lock" in (failure_reason or "")
+                lock_sync_failures = len(
+                    session.scalars(
+                        select(CommandExecutionModel).where(
+                            CommandExecutionModel.run_id == continuation.run_id,
+                            CommandExecutionModel.stage_id == continuation.current_stage_id,
+                            CommandExecutionModel.plan_id == continuation.plan_id,
+                            CommandExecutionModel.command_id == "npm-ci-final",
+                            CommandExecutionModel.failure_message.contains("package.json and package-lock"),
+                        )
+                    ).all()
+                )
+                v2_lock_attempts = len(
+                    session.scalars(
+                        select(CommandExecutionModel).where(
+                            CommandExecutionModel.run_id == continuation.run_id,
+                            CommandExecutionModel.stage_id == continuation.current_stage_id,
+                            CommandExecutionModel.plan_id == continuation.plan_id,
+                            CommandExecutionModel.command_id == "npm-lockfile-generate",
+                            CommandExecutionModel.template_id == "tpl-npm-lockfile-generate-v2",
+                        )
+                    ).all()
+                )
+                if (
+                    lockfile is not None
+                    and lockfile.status != "succeeded"
+                    or lock_sync_failure
+                    and (lock_sync_failures < 3 or v2_lock_attempts == 0)
+                    and continuation.last_error_code != "PROVEN_LOCK_RESOLUTION_RETRY_QUEUED"
+                ):
+                    self._queue(continuation, ProvenTransformationNode.LOCK_RESOLUTION.value)
+                    continuation.last_error_code = "PROVEN_LOCK_RESOLUTION_RETRY_QUEUED"
+                    continuation.last_error_message = "target install was not attempted against a resolved target lockfile"
+                    return
                 self._block(session, continuation, "PROVEN_TARGET_INSTALL_NOT_VERIFIED", "target install lacks terminal success evidence")
                 return
             self._advance_after(session, continuation, ProvenTransformationNode.TARGET_TREE.value)
@@ -870,19 +1156,53 @@ class ProvenStageExecutionService:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
             stage_plan = self._stage_plan(session, continuation)
-            target_exact = stage_plan.get("target_exact")
-            source_exact = stage_plan.get("source_exact")
-            if not target_exact or not source_exact:
-                self._block(session, continuation, "PROVEN_MIGRATION_RANGE_MISSING", "source/target exact versions are required")
+            binding = self._binding(session, continuation)
+            run = session.get(MigrationRunModel, continuation.run_id)
+            aliases = dict(run.workspace_aliases or {}) if run is not None else {}
+            baseline = aliases.get("BASELINE_SANDBOX")
+            if not baseline:
+                self._block(session, continuation, "PROVEN_MIGRATION_OWNER_EVIDENCE_MISSING", "sealed predecessor is unavailable for migration-owner discovery")
                 return
+            try:
+                owners = PackageMigrationService().discover(Path(baseline), Path(binding.workspace_path))
+            except PackageMigrationError as error:
+                self._block(session, continuation, error.code, error.message)
+                return
+            if not owners:
+                self._advance_after(session, continuation, ProvenTransformationNode.COMPARE_DEPENDENCY_AUTHORITY.value)
+                return
+            executions = session.scalars(
+                select(CommandExecutionModel).where(
+                    CommandExecutionModel.run_id == continuation.run_id,
+                    CommandExecutionModel.stage_id == continuation.current_stage_id,
+                    CommandExecutionModel.plan_id == continuation.plan_id,
+                    CommandExecutionModel.command_id == "angular-migrate-range-v2",
+                    CommandExecutionModel.status == "succeeded",
+                )
+            ).all()
+            def completed(owner) -> bool:
+                expected = ["update", owner.package, "--migrate-only", "--from", owner.from_version, "--to", owner.to_version]
+                return any(list(execution.arguments or [])[1:] == expected for execution in executions)
+            owner = next((candidate for candidate in owners if not completed(candidate)), None)
+            if owner is None:
+                self._advance_after(session, continuation, ProvenTransformationNode.COMPARE_DEPENDENCY_AUTHORITY.value)
+                return
+            remaining = [candidate for candidate in owners if candidate is not owner and not completed(candidate)]
             self._queue_authority_or_block(
                 session,
                 continuation,
                 command_id="angular-migrate-range-v2",
                 purpose="MIGRATION",
                 group="migrate_packages",
-                next_node=ProvenTransformationNode.COMPARE_DEPENDENCY_AUTHORITY.value,
-                attempt_key="migration-owner",
+                next_node=(
+                    ProvenTransformationNode.EXECUTE_MIGRATION_OWNER.value
+                    if remaining
+                    else ProvenTransformationNode.COMPARE_DEPENDENCY_AUTHORITY.value
+                ),
+                attempt_key=f"migration-owner:{owner.package}:{owner.from_version}->{owner.to_version}",
+                package=owner.package,
+                from_version=owner.from_version,
+                to_version=owner.to_version,
             )
 
     def _node_compare_dependency_authority(self, continuation_id: str, worker_id: str) -> None:
@@ -915,6 +1235,30 @@ class ProvenStageExecutionService:
     # -- Phase 6: validation -------------------------------------------------
 
     def _node_create_validation_generation(self, continuation_id: str, worker_id: str) -> None:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            for name in (
+                "final_install-0",
+                "target_version_check-0",
+                "builds-0",
+                "tests-0",
+                "lint-0",
+            ):
+                step = session.scalar(
+                    select(StageStepModel).where(
+                        StageStepModel.stage_id == continuation.current_stage_id,
+                        StageStepModel.name == name,
+                    )
+                )
+                if step is not None:
+                    step.status = "PENDING"
+                    step.execution_id = None
+                    step.started_at = None
+                    step.completed_at = None
+                    step.output_checksum = None
+                    step.workspace_fingerprint = None
+                    step.artifact_ids = []
+                    step.updated_at = datetime.now(UTC)
         self._advance_recorded(continuation_id, worker_id, ProvenTransformationNode.CREATE_VALIDATION_GENERATION.value)
 
     def _node_validation_install(self, continuation_id: str, worker_id: str) -> None:
@@ -935,6 +1279,31 @@ class ProvenStageExecutionService:
             if execution is None or execution.status != "succeeded":
                 self._block(session, continuation, "PROVEN_VALIDATION_INSTALL_NOT_VERIFIED", "validation install lacks terminal success evidence")
                 return
+            step = session.scalar(
+                select(StageStepModel).where(
+                    StageStepModel.stage_id == continuation.current_stage_id,
+                    StageStepModel.name == "final_install-0",
+                )
+            )
+            binding = self._binding(session, continuation)
+            if step is None:
+                self._block(session, continuation, "PROVEN_VALIDATION_INSTALL_STEP_MISSING", "validation install step is missing")
+                return
+            if step.status != "PASSED":
+                observed = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+                expected = (execution.start_fingerprint or {}).get("source_config")
+                if expected and observed != expected:
+                    self._block(session, continuation, "PROVEN_VALIDATION_WORKSPACE_MUTATED", "validation install changed governed source files")
+                    return
+                step.status = "PASSED"
+                step.completed_at = datetime.now(UTC)
+                step.workspace_fingerprint = observed
+                step.output_checksum = execution.runtime_checksum
+                step.artifact_ids = list(execution.artifact_ids or [])
+                step.updated_at = datetime.now(UTC)
+                binding.workspace_fingerprint = observed
+                binding.last_verified_fingerprint = observed
+                binding.last_verified_at = datetime.now(UTC)
             self._advance_after(session, continuation, ProvenTransformationNode.VALIDATION_TREE.value)
 
     def _node_validation_version_proof(self, continuation_id: str, worker_id: str) -> None:
@@ -975,14 +1344,57 @@ class ProvenStageExecutionService:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
             binding = self._binding(session, continuation)
-            steps = session.scalars(
-                select(StageStepModel).where(
-                    StageStepModel.stage_id == continuation.current_stage_id,
-                    StageStepModel.name.in_(
-                        ("final_install-0", "builds-0", "tests-0", "lint-0")
-                    ),
-                )
-            ).all()
+            plan = self._stage_plan(session, continuation)
+            required_checks = (plan.get("validation_policy") or {}).get("required_checks") or ("build", "test")
+            group_by_check = {"build": "builds", "test": "tests", "lint": "lint"}
+            required_groups = ["final_install"]
+            for check in required_checks:
+                group = group_by_check.get(check)
+                if group is None:
+                    self._block(session, continuation, "PROVEN_VALIDATION_CHECK_UNSUPPORTED", f"unsupported required validation check: {check}")
+                    return
+                if group not in required_groups:
+                    required_groups.append(group)
+            steps = []
+            for group in required_groups:
+                references = (plan.get("commands") or {}).get(group) or []
+                if not references:
+                    self._block(session, continuation, "PROVEN_VALIDATION_TARGET_MISSING", f"required validation target {group} is missing")
+                    return
+                for index in range(len(references)):
+                    step = session.scalar(
+                        select(StageStepModel).where(
+                            StageStepModel.stage_id == continuation.current_stage_id,
+                            StageStepModel.name == f"{group}-{index}",
+                        )
+                    )
+                    if step is None:
+                        self._block(session, continuation, "PROVEN_VALIDATION_STEP_MISSING", f"required validation step {group}-{index} is missing")
+                        return
+                    execution = session.get(CommandExecutionModel, step.execution_id) if step.execution_id else None
+                    if (
+                        group == "final_install"
+                        and step.status != "PASSED"
+                        and execution is not None
+                        and execution.status == "succeeded"
+                        and execution.command_log_artifact_id
+                        and execution.result_artifact_id
+                    ):
+                        observed = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+                        expected = (execution.start_fingerprint or {}).get("source_config")
+                        if expected and observed != expected:
+                            self._block(session, continuation, "PROVEN_VALIDATION_WORKSPACE_MUTATED", "validation install changed governed source files")
+                            return
+                        step.status = "PASSED"
+                        step.completed_at = datetime.now(UTC)
+                        step.workspace_fingerprint = observed
+                        step.output_checksum = execution.runtime_checksum
+                        step.artifact_ids = list(execution.artifact_ids or [])
+                        step.updated_at = datetime.now(UTC)
+                        binding.workspace_fingerprint = observed
+                        binding.last_verified_fingerprint = observed
+                        binding.last_verified_at = datetime.now(UTC)
+                    steps.append(step)
             failed = [step.name for step in steps if step.status != "PASSED"]
             if failed:
                 self._block(
@@ -1093,6 +1505,74 @@ class ProvenStageExecutionService:
 # -- workspace helpers --------------------------------------------------------
 
 
+def _clear_target_node_modules(
+    binding: StageWorkspaceBindingModel,
+    source_path: str | None,
+    target_cohort: dict[str, str],
+) -> None:
+    """Rebuild target dependency inputs from source evidence before resolution."""
+    import shutil
+
+    workspace = Path(binding.workspace_path).resolve(strict=True)
+    source = Path(source_path).resolve() if isinstance(source_path, str) else None
+    package_lock = workspace / "package-lock.json"
+    current_manifest = workspace / "package.json"
+    try:
+        current_lock = json.loads(package_lock.read_text(encoding="utf-8")) if package_lock.is_file() else {}
+        current_values = json.loads(current_manifest.read_text(encoding="utf-8")) if current_manifest.is_file() else {}
+    except (OSError, json.JSONDecodeError):
+        current_lock = {}
+        current_values = {}
+    lock_root = current_lock.get("packages", {}).get("", {})
+    targetized_lock = current_lock.get("lockfileVersion", 0) >= 2 and all(
+        lock_root.get(section, {}).get(package) == exact
+        for section in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies")
+        for package, exact in target_cohort.items()
+        if package in current_values.get(section, {})
+    )
+    node_modules = workspace / "node_modules"
+    if node_modules.is_dir():
+        shutil.rmtree(node_modules)
+    if targetized_lock:
+        return
+    source_manifest = source / "package.json" if source is not None else None
+    target_manifest = workspace / "package.json"
+    if source_manifest is not None and source_manifest.is_file():
+        manifest = json.loads(source_manifest.read_text(encoding="utf-8"))
+        for section in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+            values = manifest.get(section)
+            if not isinstance(values, dict):
+                continue
+            for package, exact in target_cohort.items():
+                if package in values:
+                    values[package] = exact
+            if target_cohort.get("@angular/core") in {"12.2.17", "13.3.12", "14.3.0", "15.2.10"} and "karma" in values:
+                values["karma"] = "~6.4.4"
+        target_manifest.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    # The target lock is generated from the approved target manifest.  Copying
+    # the source lock here preserves unrelated source resolutions; stale
+    # Angular-family entries are removed before npm resolves the target cohort.
+    if package_lock.is_file():
+        package_lock.unlink()
+    if source is not None:
+        source_lock = source / "package-lock.json"
+        if source_lock.is_file():
+            shutil.copy2(source_lock, package_lock)
+    if package_lock.is_file():
+        lock = json.loads(package_lock.read_text(encoding="utf-8"))
+        if lock.get("lockfileVersion") == 1 and isinstance(lock.get("dependencies"), dict):
+            stale = tuple(
+                name
+                for name in lock["dependencies"]
+                if name.startswith("@angular/")
+                or name.startswith("@angular-devkit/")
+                or name == "@ngtools/webpack"
+            )
+            for name in stale:
+                lock["dependencies"].pop(name, None)
+            package_lock.write_text(json.dumps(lock, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def _file_sha256(path: Path) -> str | None:
     import hashlib
 
@@ -1141,11 +1621,18 @@ def _apply_target_cohort(workspace: Path, cohort: dict[str, str]) -> None:
     manifest = _json.loads(package_json.read_text(encoding="utf-8"))
     changed = False
     for section in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
-        current = manifest.setdefault(section, {})
+        current = manifest.get(section)
+        if not isinstance(current, dict):
+            continue
         for package, exact in cohort.items():
-            if current.get(package) != exact:
+            if package in current and current[package] != exact:
                 current[package] = exact
                 changed = True
+    if cohort.get("@angular/core") in {"12.2.17", "13.3.12", "14.3.0", "15.2.10"}:
+        dev_dependencies = manifest.get("devDependencies")
+        if isinstance(dev_dependencies, dict) and "karma" in dev_dependencies and dev_dependencies["karma"] != "~6.4.4":
+            dev_dependencies["karma"] = "~6.4.4"
+            changed = True
     if changed:
         package_json.write_text(_json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -1177,10 +1664,18 @@ def _promotion_summary(session, continuation) -> object:
     of inventing a PASS summary here.
     """
     binding = _binding_row(session, continuation)
+    stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+    plan = stage_plan.stage_plan if stage_plan is not None else {}
+    group_by_check = {"build": "builds", "test": "tests", "lint": "lint"}
+    required_groups = ["final_install"]
+    for check in (plan.get("validation_policy") or {}).get("required_checks") or ("build", "test"):
+        group = group_by_check.get(check)
+        if group is not None and group not in required_groups:
+            required_groups.append(group)
     steps = session.scalars(
         select(StageStepModel).where(
             StageStepModel.stage_id == continuation.current_stage_id,
-            StageStepModel.name.in_(("final_install-0", "builds-0", "tests-0", "lint-0")),
+            StageStepModel.name.in_(tuple(f"{group}-0" for group in required_groups)),
         )
     ).all()
     passed = steps and all(step.status == "PASSED" for step in steps)
@@ -1196,10 +1691,41 @@ def _promotion_summary(session, continuation) -> object:
 
 
 def _binding_row(session, continuation) -> StageWorkspaceBindingModel | None:
-    return session.scalar(
+    bindings = session.scalars(
         select(StageWorkspaceBindingModel).where(
             StageWorkspaceBindingModel.run_id == continuation.run_id,
             StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
             StageWorkspaceBindingModel.active.is_(True),
         )
+        .order_by(StageWorkspaceBindingModel.created_at)
+    ).all()
+    stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+    planned_aliases = {
+        reference.get("working_directory_alias")
+        for references in ((stage_plan.stage_plan or {}).get("commands") or {}).values()
+        for reference in references
+        if reference.get("working_directory_alias")
+    }
+    binding = next(
+        (
+            candidate
+            for candidate in bindings
+            if candidate.alias in planned_aliases
+            and Path(candidate.workspace_path).is_dir()
+            and StageSandboxCopier.fingerprint(Path(candidate.workspace_path))
+            == candidate.workspace_fingerprint
+        ),
+        None,
+    )
+    if binding is not None:
+        return binding
+    return next(
+        (
+            candidate
+            for candidate in bindings
+            if Path(candidate.workspace_path).is_dir()
+            and StageSandboxCopier.fingerprint(Path(candidate.workspace_path))
+            == candidate.workspace_fingerprint
+        ),
+        bindings[0] if bindings else None,
     )

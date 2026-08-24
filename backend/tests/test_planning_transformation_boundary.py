@@ -264,6 +264,27 @@ def test_v5_angular_update_invokes_workspace_local_cli():
     assert rendered == ("ng", "update", "@angular/cli@12.0.0", "@angular/core@12.0.0")
 
 
+def test_proven_discovery_binds_the_adjacent_cli_and_core_cohort():
+    discovery = TRANSFORMATION_COMMAND_CATALOGUE["angular-update-discovery"]
+    assert discovery.template_id == "tpl-angular-update-discovery-v9"
+    rendered = discovery.render_arguments({
+        "angular_cli_entrypoint_absolute": r"C:\sandbox\node_modules\@angular\cli\bin\ng",
+        "package": "@angular/core",
+        "from_version": "12.2.17",
+        "to_version": "13.3.12",
+    })
+    assert rendered == (
+        r"C:\sandbox\node_modules\@angular\cli\bin\ng",
+        "update",
+        "@angular/core",
+        "--migrate-only",
+        "--from",
+        "12.2.17",
+        "--to",
+        "13.3.12",
+    )
+
+
 def test_rebuilt_plan_uses_catalogue_for_arguments():
     """Revised angular_update commands use the current local-CLI renderer."""
     from app.services.planning_application_service import PlanningApplicationService

@@ -93,7 +93,10 @@ class ValidationRunner:
             if execution is None:
                 fingerprint = self.source_fingerprint(Path(binding.workspace_path))
                 persisted_key = validation_execution_key(
-                    str(continuation.id), attempt_key, group, index
+                    f"{continuation.id}:{continuation.current_stage_id}",
+                    attempt_key,
+                    group,
+                    index,
                 )
                 request = SimpleNamespace(
                     idempotency_key=persisted_key
@@ -455,13 +458,44 @@ class ValidationRunner:
 
     @staticmethod
     def _binding(session, continuation):
-        binding = session.scalar(
-            select(StageWorkspaceBindingModel).where(
+        bindings = session.scalars(
+            select(StageWorkspaceBindingModel)
+            .where(
                 StageWorkspaceBindingModel.run_id == continuation.run_id,
                 StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
                 StageWorkspaceBindingModel.active.is_(True),
             )
+            .order_by(StageWorkspaceBindingModel.created_at)
+        ).all()
+        stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+        planned_aliases = {
+            reference.get("working_directory_alias")
+            for references in ((stage_plan.stage_plan or {}).get("commands") or {}).values()
+            for reference in references
+            if reference.get("working_directory_alias")
+        }
+        binding = next(
+            (
+                candidate
+                for candidate in bindings
+                if candidate.alias in planned_aliases
+                and Path(candidate.workspace_path).is_dir()
+                and StageSandboxCopier.fingerprint(Path(candidate.workspace_path))
+                == candidate.workspace_fingerprint
+            ),
+            None,
         )
+        if binding is None:
+            binding = next(
+                (
+                    candidate
+                    for candidate in bindings
+                    if Path(candidate.workspace_path).is_dir()
+                    and StageSandboxCopier.fingerprint(Path(candidate.workspace_path))
+                    == candidate.workspace_fingerprint
+                ),
+                bindings[0] if bindings else None,
+            )
         if binding is None:
             raise ValidationRunnerError("STAGE_WORKSPACE_MISSING", "Stage workspace is missing")
         return binding

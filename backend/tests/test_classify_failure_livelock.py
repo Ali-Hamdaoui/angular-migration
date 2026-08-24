@@ -4,6 +4,7 @@ import json
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -31,6 +32,60 @@ from app.services.transformation_continuation_service import TransformationConti
 from app.services.transformer_stage_service import TransformerStageService
 
 NOW = datetime(2026, 7, 31, tzinfo=UTC)
+
+
+def test_stale_source_route_is_eligible_for_environment_retry():
+    continuation = SimpleNamespace(last_error_code="REPAIR_CAUSAL_KIND_MISMATCH")
+    attempt = SimpleNamespace(
+        status="evidence_frozen",
+        proposal_artifact_id=None,
+        review_artifact_id=None,
+        proposer_invocation_id=None,
+        reviewer_invocation_id=None,
+    )
+    evidence = {
+        "causal_repair": {"causal_kind": "test"},
+    }
+
+    assert TransformerOrchestrator._eligible_stale_environment_retry(
+        continuation,
+        attempt,
+        evidence,
+        persisted_route="repairable_source",
+        recomputed_route="environment_transient",
+    )
+
+
+def test_environment_retry_uses_proven_validation_install_node():
+    assert (
+        TransformerOrchestrator._environment_retry_node("transformer-plan-v2.2-proven-1")
+        == "validation_install"
+    )
+    assert TransformerOrchestrator._proven_retry_node("final_install") == "validation_install"
+    assert (
+        TransformerOrchestrator._environment_retry_attempt_key(SimpleNamespace(attempt=2))
+        == "environment-retry:2"
+    )
+
+
+def test_unexecuted_environment_retry_can_recover_exhausted_budget():
+    continuation = SimpleNamespace(attempt=3, max_attempts=3)
+    attempt = SimpleNamespace(
+        causal_execution_id="exec-test",
+        status="FAILED",
+        execution_id="exec-test",
+    )
+    evidence = {
+        "causal_repair": {"causal_kind": "test", "causal_execution_id": "exec-test"},
+    }
+
+    assert TransformerOrchestrator._unexecuted_environment_retry_recovery_allowed(
+        continuation, evidence, attempt
+    )
+    evidence["causal_repair"]["causal_kind"] = "environment"
+    assert TransformerOrchestrator._unexecuted_environment_retry_recovery_allowed(
+        continuation, evidence, attempt
+    )
 
 
 def _database(tmp_path: Path):

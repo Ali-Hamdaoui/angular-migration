@@ -331,6 +331,33 @@ def test_g05_uses_generic_adjacent_route_for_arbitrary_target():
     assert result.target_family == "angular-18.x"
 
 
+def test_angular_14_to_15_uses_the_proven_exact_target_cohort():
+    entry = next(
+        item
+        for item in CompatibilityCatalogueProvider().load().entries
+        if item.stage_id == "angular-14-to-15"
+    )
+
+    assert entry.target_angular_exact == "15.2.10"
+    assert entry.target_cli_exact == "15.2.11"
+    assert entry.target_cohort() == {
+        "@angular/animations": "15.2.10",
+        "@angular/common": "15.2.10",
+        "@angular/compiler": "15.2.10",
+        "@angular/compiler-cli": "15.2.10",
+        "@angular/core": "15.2.10",
+        "@angular/forms": "15.2.10",
+        "@angular/platform-browser": "15.2.10",
+        "@angular/platform-browser-dynamic": "15.2.10",
+        "@angular/router": "15.2.10",
+        "@angular/cli": "15.2.11",
+        "@angular-devkit/build-angular": "15.2.11",
+        "typescript": "4.9.5",
+        "rxjs": "7.8.0",
+        "zone.js": "0.12.0",
+    }
+
+
 @pytest.mark.parametrize(
     ("source", "target", "count"),
     [("11.2.14", "angular-21.x", 10), ("20.3.27", "angular-21.x", 1)],

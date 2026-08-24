@@ -115,6 +115,7 @@ class CommandRegistryService:
             select(CommandTemplateModel)
             .where(CommandTemplateModel.command_id == command_id)
             .where(CommandTemplateModel.status == CommandTemplateStatus.ACTIVE.value)
+            .order_by(CommandTemplateModel.version.desc())
             .limit(1)
         )
         if row is None:
@@ -743,11 +744,24 @@ class CommandPolicyEngineService:
                     or planned.get("shell", False) is not False
                     or request.template_id is None
                 )
-            ) is False
+                ) is False
             if authority_command:
                 command_matches_plan = authority_executable_is_bound(request.command_id, request.executable)
                 if request.command_id == "angular-cli-authority-version":
                     command_matches_plan = command_matches_plan and len(request.arguments) == 2
+            elif (
+                request.command_id == "npm-lockfile-generate"
+                and request.template_id == "tpl-npm-lockfile-generate-v2"
+                and planned is not None
+                and planned.get("command_id") == "npm-lockfile-generate"
+                and planned.get("template_id") == "tpl-npm-lockfile-generate"
+                and stage_data.get("transformer_semantic_version") == "transformer-plan-v2.2-proven-1"
+                and request.executable == planned.get("executable")
+            ):
+                # Proven lock normalization is a bounded successor of the
+                # original planned lock authority, adding optional entries
+                # required by npm ci without changing the package authority.
+                command_matches_plan = True
         if not command_matches_plan and supersedes_authorization_id and self._valid_angular_update_supersession(
             session,
             request,
@@ -761,9 +775,9 @@ class CommandPolicyEngineService:
             command_matches_plan = True
         if request.shell is not False:
             return reject("SHELL_EXECUTION_FORBIDDEN", "shell execution is forbidden")
-        if planned is not None and planned.get("timeout_seconds") != request.timeout_seconds:
+        if not authority_command and planned is not None and planned.get("timeout_seconds") != request.timeout_seconds:
             return reject("COMMAND_NOT_IN_APPROVED_PLAN", "timeout does not match the approved planned command")
-        if planned is not None and planned.get("cancellation_policy") is not None and planned.get("cancellation_policy") != request.cancellation_policy:
+        if not authority_command and planned is not None and planned.get("cancellation_policy") is not None and planned.get("cancellation_policy") != request.cancellation_policy:
             return reject("COMMAND_NOT_IN_APPROVED_PLAN", "cancellation policy does not match the approved planned command")
 
         aliases = run.workspace_aliases or {}

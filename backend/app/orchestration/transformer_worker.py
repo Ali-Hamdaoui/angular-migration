@@ -20,6 +20,7 @@ from app.services.transformation_continuation_service import (
     append_continuation_event,
 )
 from app.services.factory_runtime_service import FactoryRuntimeService, StaleFactoryRuntimeError
+from app.services.proven_activation_gate import ProvenActivationGate
 from app.services.stage_recovery_service import StageRecoveryService
 from app.orchestration.transformer_graph import TransformerWorkflow
 from app.domain.contracts import WorkflowEventType
@@ -404,6 +405,15 @@ class TransformerWorker:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
+    activation = ProvenActivationGate().activate()
+    LOGGER.info(
+        "proven_activation passed=%s enabled_writer=%s missing=%s",
+        activation.passed,
+        activation.enabled_writer,
+        list(activation.missing),
+    )
+    if not activation.passed:
+        return
     TransformerWorker().run_forever()
 
 

@@ -335,7 +335,12 @@ def _command_environment_overrides(
     chrome_bin = os.environ.get("CHROME_BIN")
     if chrome_bin and Path(chrome_bin).is_file():
         overrides["CHROME_BIN"] = str(Path(chrome_bin).resolve())
-    if command_id in ("angular-update-exact", "angular-migrate-range"):
+    if command_id in (
+        "angular-update-exact",
+        "angular-update-discovery",
+        "angular-migrate-range",
+        "angular-migrate-range-v2",
+    ):
         overrides["NG_DISABLE_VERSION_CHECK"] = "true"
     return overrides
 
@@ -962,6 +967,7 @@ class CommandExecutorService:
             NPM_DEPENDENCY_MATERIALIZE_RENDERER,
             NPM_DEPENDENCY_INSTALL_RENDERER,
             NPM_DEPENDENCY_UNINSTALL_RENDERER,
+            NPM_LOCKFILE_GENERATE_V2_RENDERER,
             TRANSFORMATION_COMMAND_CATALOGUE,
         )
         from app.repositories.models.workflow import RepairAttemptModel
@@ -977,8 +983,8 @@ class CommandExecutorService:
             "npm-dependency-install": (NPM_DEPENDENCY_INSTALL_RENDERER, 1),
             "npm-dependency-materialize": (NPM_DEPENDENCY_MATERIALIZE_RENDERER, 1),
             "npm-lockfile-generate": (
-                TRANSFORMATION_COMMAND_CATALOGUE["npm-lockfile-generate"],
-                1,
+                NPM_LOCKFILE_GENERATE_V2_RENDERER if template_id == NPM_LOCKFILE_GENERATE_V2_RENDERER.template_id else TRANSFORMATION_COMMAND_CATALOGUE["npm-lockfile-generate"],
+                template_version,
             ),
         }
         angular_renderers = {

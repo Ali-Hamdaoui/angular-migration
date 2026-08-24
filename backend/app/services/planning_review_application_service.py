@@ -39,6 +39,7 @@ from app.domain.planning_review import (
     PlanningReviewOutcome,
 )
 from app.llm_gateway import AzureGatewayError, LlmContextSegment, LlmRequest, LlmRole, LlmTaskType, PromptSchemaRegistry
+from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
 
 
 class PlanningReviewApplicationError(ValueError):
@@ -367,6 +368,19 @@ class PlanRevisionService:
             if changes.catalogue_version not in APPROVED_CATALOGUE_VERSIONS:
                 raise PlanningReviewApplicationError("UNAPPROVED_CATALOGUE", "The catalogue is not approved.", 409)
             plan_values["catalogue_version"] = changes.catalogue_version
+            try:
+                entry = CompatibilityCatalogueProvider().load(changes.catalogue_version).entry_for(
+                    stage.source_family, stage.target_family
+                )
+            except (ValueError, KeyError) as error:
+                raise PlanningReviewApplicationError(
+                    "CATALOGUE_STAGE_UNAVAILABLE", "The selected catalogue has no exact cohort for this stage.", 409
+                ) from error
+            stage_values.update(
+                target_exact=entry.target_angular_exact,
+                target_cli_exact=entry.target_cli_exact,
+                target_cohort=entry.target_cohort(),
+            )
         if changes.execution_profile_id is not None:
             if not changes.execution_profile_id.strip():
                 raise PlanningReviewApplicationError("UNAPPROVED_EXECUTION_PROFILE", "The execution profile is not approved.", 409)

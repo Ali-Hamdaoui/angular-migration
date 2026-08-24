@@ -342,11 +342,13 @@ class StageExecutionApplicationService:
         aliases[preparation.workspace_alias] = preparation.workspace_path
         run.workspace_aliases = aliases
         binding = session.scalar(
-            select(StageWorkspaceBindingModel).where(
+            select(StageWorkspaceBindingModel)
+            .where(
                 StageWorkspaceBindingModel.run_id == run.id,
                 StageWorkspaceBindingModel.stage_id == stage_id,
-                StageWorkspaceBindingModel.alias == preparation.workspace_alias,
+                StageWorkspaceBindingModel.active.is_(True),
             )
+            .order_by(StageWorkspaceBindingModel.created_at)
         )
         if binding is None:
             session.add(StageWorkspaceBindingModel(

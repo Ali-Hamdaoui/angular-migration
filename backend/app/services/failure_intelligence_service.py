@@ -50,7 +50,8 @@ _ANGULAR_INCOMPAT_RE = re.compile(
 _ENVIRONMENT_RE = re.compile(
     r"enet|econn|etimedout|enotfound|eai_again|enospc|enomen|eacces|eperm|permission denied|"
     r"read.only|disk.*full|no space left|e401|e403|unauthorized|forbidden|registry.*auth|"
-    r"node-gyp|gyp err|prebuild|native.*binary|worker.*lost|claim.*expir|interrupted|timed.?out|"
+    r"node-gyp|gyp err|prebuild|native.*binary|no binary for chrome|chrome.*binary|"
+    r"set [\"']?chrome_bin|karma.*chrome|worker.*lost|claim.*expir|interrupted|timed.?out|"
     r"command.*timeout|network error|registry timeout",
     re.I,
 )

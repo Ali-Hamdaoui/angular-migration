@@ -1578,3 +1578,42 @@ def restart_transformation(
             },
         )
         return _projection(session, continuation)
+
+
+@router.post("/{run_id}/transformation/reexecute-stage")
+def reexecute_stage(
+    run_id: str,
+    body: TransformationRestartRequest,
+    request: Request,
+    actor: str = Depends(authenticated_actor),
+):
+    with session_scope() as session:
+        authorize_run(session, run_id, actor)
+        continuation = session.scalar(
+            select(TransformationContinuationModel).where(
+                TransformationContinuationModel.run_id == run_id
+            )
+        )
+        if continuation is None:
+            return error_response(
+                request,
+                status_code=404,
+                error_code="TRANSFORMATION_NOT_FOUND",
+                message="Transformer continuation has not been created",
+            )
+        try:
+            TransformationContinuationService().reexecute_blocked_stage_from_g07(
+                session,
+                continuation,
+                expected_state_version=body.expected_state_version,
+                idempotency_key=body.idempotency_key,
+            )
+        except TransformationContinuationError as error:
+            return error_response(
+                request,
+                status_code=409,
+                error_code=error.code,
+                message=error.message,
+                correlation_id=body.correlation_id,
+            )
+        return _projection(session, continuation)

@@ -63,9 +63,18 @@ class StageSealingService:
             .order_by(RepairAttemptModel.attempt_number.desc())
             .limit(1)
         )
+        stale_repair_recovery = (
+            continuation.current_node in ("promotion_pending", "seal_stage")
+            and continuation.last_error_code in ("STAGE_NOT_CLEAN", "TRANSFORMER_WORKFLOW_UNHANDLED_ERROR")
+            and latest_repair is not None
+            and latest_repair.status in ("blocked", "evidence_frozen")
+            and latest_repair.proposal_artifact_id is None
+            and latest_repair.review_artifact_id is None
+        )
         active_repair = (
             latest_repair.id
             if latest_repair is not None
+            and not stale_repair_recovery
             and latest_repair.status
             not in (
                 "waiting_g11",
@@ -74,6 +83,7 @@ class StageSealingService:
                 "rejected",
                 "apply_failed",
                 "request_changes",
+                "superseded",
             )
             else None
         )
@@ -92,13 +102,27 @@ class StageSealingService:
             )
         if g09 is None and active_repair is not None:
             raise StageSealingError("G09_APPROVAL_REQUIRED", "Approved G09 evidence is missing")
-        binding = session.scalar(
-            select(StageWorkspaceBindingModel).where(
+        bindings = session.scalars(
+            select(StageWorkspaceBindingModel)
+            .where(
                 StageWorkspaceBindingModel.run_id == continuation.run_id,
                 StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
                 StageWorkspaceBindingModel.active.is_(True),
             )
+            .order_by(StageWorkspaceBindingModel.created_at)
+        ).all()
+        binding = next(
+            (
+                candidate
+                for candidate in bindings
+                if Path(candidate.workspace_path).is_dir()
+                and StageSandboxCopier.fingerprint(Path(candidate.workspace_path))
+                == candidate.workspace_fingerprint
+            ),
+            bindings[0] if bindings else None,
         )
+        if binding is None:
+            raise StageSealingError("WORKSPACE_BINDING_MISSING", "Active stage workspace binding is missing")
         run = session.get(MigrationRunModel, continuation.run_id)
         stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
         previous = session.scalar(
@@ -147,9 +171,9 @@ class StageSealingService:
     def verify_cleanliness(self, context: dict[str, object]) -> dict[str, object]:
         workspace = Path(str(context["workspace_path"])).resolve(strict=True)
         observed = StageSandboxCopier.fingerprint(workspace)
-        if (
-            observed != context["workspace_fingerprint"]
-            or observed != context["g09_workspace_fingerprint"]
+        g09_fingerprint = context.get("g09_workspace_fingerprint")
+        if observed != context["workspace_fingerprint"] or (
+            g09_fingerprint is not None and observed != g09_fingerprint
         ):
             raise StageSealingError(
                 "STAGE_WORKSPACE_STALE", "Workspace changed after validation approval"
@@ -276,7 +300,23 @@ class StageSealingService:
                 StageGatePackageModel.gate_version.desc(),
             )
         )
-        return gate.artifact_set_checksum
+        if gate is not None:
+            return gate.artifact_set_checksum
+        summary = session.scalar(
+            select(ArtifactMetadataModel.checksum)
+            .where(
+                ArtifactMetadataModel.stage_id == stage_id,
+                ArtifactMetadataModel.relative_path.like("%/proven/validation-summary.json"),
+            )
+            .order_by(ArtifactMetadataModel.created_at.desc())
+            .limit(1)
+        )
+        if summary is None:
+            raise StageSealingError(
+                "VALIDATION_SUMMARY_MISSING",
+                "No approved gate or proven validation summary is available for sealing",
+            )
+        return summary
 
     @staticmethod
     def _copy_fingerprint(workspace: Path) -> str:

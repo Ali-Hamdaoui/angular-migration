@@ -15,6 +15,7 @@ from app.services.failure_evidence_service import (
     FailureEvidenceService,
     validate_context_pack,
 )
+from app.services.failure_evidence_service import _failure_matches_current_route
 from app.services import repair_application_service
 from app.services.repair_application_service import RepairApplicationError, RepairApplicationService
 
@@ -39,6 +40,31 @@ def test_classifier_has_closed_deterministic_routes(code, expected):
     }
 
     assert FailureEvidenceService().classify(evidence) == expected
+
+
+def test_chrome_binary_failure_is_environment_transient():
+    evidence = {
+        "normalized_failure": {
+            "error_code": "COMMAND_EXIT_NONZERO",
+            "failure_message": (
+                'No binary for Chrome browser on your platform. '
+                'Please, set "CHROME_BIN" env variable.'
+            ),
+        },
+        "failure_fingerprint": "sha256:chrome",
+        "prior_fingerprints": [],
+    }
+
+    assert FailureEvidenceService().classify(evidence) == FailureRoute.ENVIRONMENT_TRANSIENT
+
+
+def test_environment_route_preserves_command_failure_binding():
+    assert _failure_matches_current_route(
+        "FAILURE_ROUTE_ENVIRONMENT_TRANSIENT", "COMMAND_EXIT_NONZERO"
+    )
+    assert _failure_matches_current_route(
+        "CAUSAL_EXECUTION_AMBIGUOUS", "COMMAND_EXIT_NONZERO"
+    )
 
 
 def test_identical_failure_is_no_progress():

@@ -178,6 +178,11 @@ PROVEN_ROUTING: dict[str, str] = {
 #: proven plan never runs legacy stage phases, only shared governance nodes.
 PROVEN_SHARED_ROUTING: dict[str, str] = {
     "validate_g06": "_validate_g06_proven",
+    "prepare_workspace": "_prepare_workspace",
+    "resolve_runtime": "_resolve_runtime",
+    "dependency_preflight": "_preflight",
+    "collect_known_decisions": "_collect_decisions",
+    "create_g07": "_create_g07",
     "classify_failure": "_classify_failure",
     "deterministic_replan": "_deterministic_replan",
     "propose_repair": "_propose_repair",
@@ -413,6 +418,16 @@ class TransformerOrchestrator:
         registered route fails closed — no proven plan can silently run
         legacy stage semantics.
         """
+        original_node = node
+        node = self._proven_retry_node(node)
+        if original_node == "final_install":
+            with self._scope() as session:
+                continuation = self._owned(session, continuation_id, worker_id)
+                if continuation.last_error_code in {
+                    "COMMAND_EXIT_NONZERO",
+                    "FAILURE_ROUTE_ENVIRONMENT_TRANSIENT",
+                }:
+                    self._reset_environment_retry_target(session, continuation)
         shared = PROVEN_SHARED_ROUTING.get(node)
         if shared is not None:
             getattr(self, shared)(continuation_id, worker_id)
@@ -425,12 +440,16 @@ class TransformerOrchestrator:
         self._proven.advance(continuation_id, worker_id, node)
 
     def _validate_g06_proven(self, continuation_id: str, worker_id: str) -> None:
-        """Proven G06 entry: same binding proof, proven successor.
+        """Proven G06 entry: same binding proof, shared governance chain.
 
         The continuation is created on ``validate_g06`` regardless of graph
         semantics; the proven table validates the approved G06 binding exactly
-        like the legacy table and then routes to ``select_run_mode`` instead
-        of the legacy ``prepare_workspace``.
+        like the legacy table and then routes to ``prepare_workspace`` (the
+        shared pre-G07 chain: workspace preparation, certified runtime
+        binding, dependency preflight, known decisions, G07 gate creation
+        with qualification certification) instead of ``select_run_mode``.
+        The G07 approval successor is selected by the persisted plan
+        semantics (proven: ``create_source_baseline``).
         """
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
@@ -451,7 +470,7 @@ class TransformerOrchestrator:
             ):
                 self._block(session, continuation, "G06_BINDING_STALE", "Approved G06 binding changed")
                 return
-            self._queue(continuation, ProvenTransformationNode.SELECT_RUN_MODE.value)
+            self._queue(continuation, "prepare_workspace")
 
     def _create_g10_proven(self, continuation_id: str, worker_id: str) -> None:
         self._create_repair_gate(continuation_id, worker_id, "G10")
@@ -503,6 +522,9 @@ class TransformerOrchestrator:
                 self._block(session, continuation, "G06_BINDING_STALE", "Approved G06 binding changed")
                 return
             self._queue(continuation, "prepare_workspace")
+
+    def _prepare_workspace(self, continuation_id: str, worker_id: str) -> None:
+        self._stage.prepare(continuation_id, worker_id)
 
     def _resolve_runtime(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
@@ -1756,6 +1778,57 @@ class TransformerOrchestrator:
                     session, continuation
                 )
             except CausalExecutionError as error:
+                build_step = session.scalar(
+                    select(StageStepModel).where(
+                        StageStepModel.stage_id == continuation.current_stage_id,
+                        StageStepModel.name == "builds-0",
+                    )
+                )
+                prior_stage_build = session.scalar(
+                    select(CommandAuthorizationAuditModel).where(
+                        CommandAuthorizationAuditModel.run_id == continuation.run_id,
+                        CommandAuthorizationAuditModel.stage_id != continuation.current_stage_id,
+                        CommandAuthorizationAuditModel.command_id == "npm-script-build-production",
+                        CommandAuthorizationAuditModel.decision == "accepted",
+                        CommandAuthorizationAuditModel.idempotency_key.contains(":validation:proven:source_build:builds:builds"),
+                    ).order_by(CommandAuthorizationAuditModel.created_at.desc())
+                )
+                if (
+                    error.code == "CAUSAL_EXECUTION_MISSING"
+                    and continuation.last_error_code == "CAUSAL_EXECUTION_MISSING"
+                    and build_step is not None
+                    and build_step.status == "PENDING"
+                    and build_step.execution_id is None
+                    and prior_stage_build is not None
+                ):
+                    self._queue(continuation, "source_build")
+                    continuation.last_error_code = "VALIDATION_COMMAND_IDEMPOTENCY_RETRY_QUEUED"
+                    continuation.last_error_message = "source build validation is being retried with a stage-scoped idempotency key"
+                    return
+                if error.code == "CAUSAL_EXECUTION_AMBIGUOUS":
+                    rejected_builds = session.scalars(
+                        select(CommandAuthorizationAuditModel).where(
+                            CommandAuthorizationAuditModel.run_id == continuation.run_id,
+                            CommandAuthorizationAuditModel.stage_id == continuation.current_stage_id,
+                            CommandAuthorizationAuditModel.command_id == "npm-script-build-production",
+                            CommandAuthorizationAuditModel.decision == "rejected",
+                        ).order_by(CommandAuthorizationAuditModel.created_at.desc())
+                    ).all()
+                    if (
+                        continuation.last_error_code in {
+                            "CAUSAL_EXECUTION_AMBIGUOUS",
+                            "FIRST_COMMAND_NOT_AUTHORIZED",
+                        }
+                        and
+                        len(rejected_builds) <= 2
+                        and build_step is not None
+                        and build_step.status == "PENDING"
+                        and "WORKSPACE_NOT_APPROVED" in json.dumps(rejected_builds[0].reasons or [])
+                    ):
+                        self._queue(continuation, "validation_build")
+                        continuation.last_error_code = "VALIDATION_COMMAND_AUTH_RETRY_QUEUED"
+                        continuation.last_error_message = "validation build authorization is being retried against the plan-bound workspace alias"
+                        return
                 self._block(session, continuation, error.code, error.message)
                 return
             binding = self._stage._binding(session, continuation)
@@ -2219,6 +2292,29 @@ class TransformerOrchestrator:
                         )
                         return
 
+                retry_budget_recovered = False
+                if (
+                    route.value == "environment_transient"
+                    and continuation.attempt >= continuation.max_attempts
+                ):
+                    causal = evidence.get("causal_repair") or {}
+                    failed_step = session.scalar(
+                        select(StageStepModel).where(
+                            StageStepModel.stage_id == continuation.current_stage_id,
+                            StageStepModel.name == str(causal.get("causal_step_name") or ""),
+                        )
+                    )
+                    if self._unexecuted_environment_retry_recovery_allowed(
+                        continuation, evidence, failed_step
+                    ):
+                        if self._reset_environment_retry_target(
+                            session,
+                            continuation,
+                            str(causal.get("causal_step_name") or ""),
+                        ) is not None:
+                            continuation.attempt = max(0, continuation.max_attempts - 1)
+                            retry_budget_recovered = True
+
                 if not self._repairable_route(route):
                     if route.value == "environment_transient" and continuation.attempt < continuation.max_attempts:
                         expected_state_version = continuation.state_version
@@ -2240,6 +2336,7 @@ class TransformerOrchestrator:
                             payload={
                                 "last_error_code": f"FAILURE_ROUTE_{route.value.upper()}",
                                 "expected_state_version": expected_state_version,
+                                "retry_budget_recovered": retry_budget_recovered,
                             },
                         )
                     else:
@@ -2844,6 +2941,203 @@ class TransformerOrchestrator:
         self._queue(continuation, "final_install")
         return True
 
+    @staticmethod
+    def _eligible_stale_environment_retry(
+        continuation,
+        attempt,
+        evidence: dict[str, object],
+        *,
+        persisted_route: str,
+        recomputed_route: str,
+    ) -> bool:
+        return (
+            continuation.last_error_code == "REPAIR_CAUSAL_KIND_MISMATCH"
+            and attempt is not None
+            and attempt.status == "evidence_frozen"
+            and not any(
+                getattr(attempt, field, None)
+                for field in (
+                    "proposal_artifact_id",
+                    "review_artifact_id",
+                    "proposer_invocation_id",
+                    "reviewer_invocation_id",
+                )
+            )
+            and (evidence.get("causal_repair") or {}).get("causal_kind") == "test"
+            and persisted_route == "repairable_source"
+            and recomputed_route == "environment_transient"
+        )
+
+    @staticmethod
+    def _environment_retry_node(semantic_version: str | None) -> str:
+        return (
+            "validation_install"
+            if semantic_version == TRANSFORMER_SEMANTIC_VERSION_PROVEN
+            else "final_install"
+        )
+
+    @staticmethod
+    def _proven_retry_node(node: str) -> str:
+        return "validation_install" if node == "final_install" else node
+
+    @staticmethod
+    def _environment_retry_attempt_key(continuation) -> str:
+        return f"environment-retry:{continuation.attempt}"
+
+    @staticmethod
+    def _unexecuted_environment_retry_recovery_allowed(continuation, evidence, step) -> bool:
+        causal = evidence.get("causal_repair") or {}
+        return bool(
+            continuation.attempt >= continuation.max_attempts
+            and step is not None
+            and step.status == "FAILED"
+            and step.execution_id == causal.get("causal_execution_id")
+            and causal.get("causal_kind") in {"test", "environment"}
+        )
+
+    @staticmethod
+    def _reset_environment_retry_target(session, continuation, step_name: str | None = None) -> str | None:
+        if step_name is not None and not step_name.startswith("tests-"):
+            return None
+        query = select(StageStepModel).where(
+            StageStepModel.stage_id == continuation.current_stage_id,
+            StageStepModel.name.like("tests-%"),
+            StageStepModel.status != "PASSED",
+        )
+        if step_name:
+            query = query.where(StageStepModel.name == step_name)
+        step = session.scalar(query.order_by(StageStepModel.name).limit(1))
+        if step is None:
+            return None
+        step.status = "PENDING"
+        step.execution_id = None
+        step.started_at = None
+        step.completed_at = None
+        step.updated_at = datetime.now(UTC)
+        continuation.last_error_code = "FAILURE_ROUTE_ENVIRONMENT_TRANSIENT"
+        continuation.last_error_message = "Targeted test queued for governed environment retry"
+        return step.name
+
+    def _recover_stale_environment_retry(self, session, continuation, attempt) -> bool:
+        if attempt is None or not attempt.failure_evidence_artifact_id:
+            return False
+        run = session.get(MigrationRunModel, continuation.run_id)
+        if run is None or not run.artifact_root or not attempt.failure_evidence_checksum:
+            return False
+        failure_metadata = session.get(
+            ArtifactMetadataModel,
+            "metadata-" + str(attempt.failure_evidence_artifact_id),
+        )
+        route_metadata = session.get(
+            ArtifactMetadataModel,
+            "metadata-" + str(attempt.failure_route_artifact_id),
+        )
+        if (
+            failure_metadata is None
+            or route_metadata is None
+            or not failure_metadata.immutable
+            or failure_metadata.checksum != attempt.failure_evidence_checksum
+            or route_metadata.checksum != attempt.failure_route_checksum
+        ):
+            return False
+        store = LocalFilesystemArtifactStore(
+            Path(run.artifact_root).parent,
+            fixed_run_root=Path(run.artifact_root),
+        )
+        try:
+            failure = store.read_artifact(continuation.run_id, failure_metadata.relative_path)
+            route = store.read_artifact(continuation.run_id, route_metadata.relative_path)
+            if (
+                failure.ref.artifact_id != attempt.failure_evidence_artifact_id
+                or failure.ref.checksum != attempt.failure_evidence_checksum
+                or route.ref.checksum != attempt.failure_route_checksum
+            ):
+                return False
+            evidence = json.loads(failure.content)
+            persisted_route = str(json.loads(route.content).get("route") or "")
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError, TypeError, ValueError, json.JSONDecodeError):
+            return False
+        recomputed_route = FailureEvidenceService().classify(evidence).value
+        if not self._eligible_stale_environment_retry(
+            continuation,
+            attempt,
+            evidence,
+            persisted_route=persisted_route,
+            recomputed_route=recomputed_route,
+        ):
+            return False
+        binding = self._stage._binding(session, continuation)
+        if evidence.get("workspace_fingerprint") != binding.workspace_fingerprint:
+            self._block(
+                session,
+                continuation,
+                "RETRY_WORKSPACE_FINGERPRINT_MISMATCH",
+                "Immutable environment failure evidence is not bound to the active workspace",
+            )
+            return True
+        if continuation.attempt >= continuation.max_attempts:
+            self._block(
+                session,
+                continuation,
+                "RETRY_ATTEMPT_LIMIT",
+                "Governed environment retry limit reached",
+            )
+            return True
+        now = datetime.now(UTC)
+        target_step = self._reset_environment_retry_target(
+            session,
+            continuation,
+            str((evidence.get("causal_repair") or {}).get("causal_step_name") or ""),
+        )
+        if target_step is None:
+            self._block(
+                session,
+                continuation,
+                "RETRY_TARGET_MISSING",
+                "Immutable test failure does not bind to a pending targeted test step",
+            )
+            return True
+        retry_node = self._environment_retry_node(
+            self._stage_semantic_version(session, continuation)
+        )
+        RepairLifecycleService.transition_in_session(
+            session,
+            attempt,
+            "superseded",
+            reason="stale source route superseded by deterministic environment classification",
+        )
+        attempt.completed_at = now
+        continuation.attempt += 1
+        continuation.status = "waiting_retry"
+        continuation.current_node = retry_node
+        continuation.next_attempt_at = now + timedelta(seconds=30)
+        continuation.worker_id = None
+        continuation.lease_expires_at = None
+        continuation.waiting_execution_id = None
+        continuation.last_error_code = "FAILURE_ROUTE_ENVIRONMENT_TRANSIENT"
+        continuation.last_error_message = "Immutable failure evidence routed to governed environment retry"
+        previous_state_version = continuation.state_version
+        continuation.state_version += 1
+        continuation.updated_at = now
+        append_continuation_event(
+            session,
+            continuation,
+            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_WAITING,
+            key=f"wait:environment-route-correction:{previous_state_version}",
+            reason="stale repair route corrected from immutable evidence; governed environment retry queued",
+            payload={
+                "attempt_id": attempt.id,
+                "failure_evidence_checksum": attempt.failure_evidence_checksum,
+                "persisted_route": persisted_route,
+                "recomputed_route": recomputed_route,
+                "retry_node": retry_node,
+                "validation_target": target_step,
+                "expected_state_version": previous_state_version,
+            },
+            occurred_at=now,
+        )
+        return True
+
     def _propose_repair(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
@@ -2854,6 +3148,8 @@ class TransformerOrchestrator:
             attempt = self._latest_repair(
                 session, continuation, exclude_statuses={"superseded"}
             )
+            if self._recover_stale_environment_retry(session, continuation, attempt):
+                return
             attempt_id = attempt.id
         try:
             proposal = self._repairs.propose(attempt_id)
@@ -6751,6 +7047,8 @@ class TransformerOrchestrator:
 
     @staticmethod
     def _validation_attempt_key(session, continuation) -> str:
+        if continuation.last_error_code == "FAILURE_ROUTE_ENVIRONMENT_TRANSIENT":
+            return TransformerOrchestrator._environment_retry_attempt_key(continuation)
         attempt = session.query(RepairAttemptModel).filter_by(
             run_id=continuation.run_id, stage_id=continuation.current_stage_id
         ).filter(

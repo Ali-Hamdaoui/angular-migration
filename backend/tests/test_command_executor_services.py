@@ -131,6 +131,12 @@ def test_angular_update_environment_disables_only_cli_latest_redirect(monkeypatc
     assert _command_environment_overrides("angular-update-exact", {}) == {
         "NG_DISABLE_VERSION_CHECK": "true",
     }
+    assert _command_environment_overrides("angular-update-discovery", {}) == {
+        "NG_DISABLE_VERSION_CHECK": "true",
+    }
+    assert _command_environment_overrides("angular-migrate-range-v2", {}) == {
+        "NG_DISABLE_VERSION_CHECK": "true",
+    }
     assert _command_environment_overrides("npm-ci-bootstrap", {}) == {}
 
 

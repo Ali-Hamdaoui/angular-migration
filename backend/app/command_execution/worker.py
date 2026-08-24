@@ -32,6 +32,7 @@ from app.domain.command import (
     ANGULAR_UPDATE_V6_RENDERER,
     ANGULAR_INSTALLED_MIGRATION_RENDERER,
     NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
+    NPM_LOCKFILE_GENERATE_V2_RENDERER,
     TRANSFORMATION_COMMAND_CATALOGUE,
     authority_executable_is_bound,
     command_arguments_match,
@@ -218,6 +219,12 @@ def _transformation_command_definitions() -> tuple[CommandDefinition, ...]:
             NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.executable,
             NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.argument_patterns,
             NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.executable_aliases,
+        ),
+        CommandDefinition(
+            NPM_LOCKFILE_GENERATE_V2_RENDERER.command_id,
+            NPM_LOCKFILE_GENERATE_V2_RENDERER.executable,
+            NPM_LOCKFILE_GENERATE_V2_RENDERER.argument_patterns,
+            NPM_LOCKFILE_GENERATE_V2_RENDERER.executable_aliases,
         ),
     )
 

@@ -4,7 +4,11 @@ from typing import Any
 
 from pydantic import Field
 
-from app.domain.planning import PlanArtifactInput
+from app.domain.planning import (
+    PlanArtifactInput,
+    TRANSFORMER_SEMANTIC_VERSION_LEGACY,
+    TransformerSemanticVersion,
+)
 from app.domain.contracts import ContractModel
 
 
@@ -33,6 +37,9 @@ class PlanCreateRequest(ContractModel):
     capability_facts: list[dict[str, str]] = Field(default_factory=list, max_length=256)
     capability_snapshot_id: str | None = Field(default=None, max_length=64)
     capability_snapshot_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    transformer_semantic_version: TransformerSemanticVersion = (
+        TRANSFORMER_SEMANTIC_VERSION_LEGACY
+    )
 
 
 class PlanResponse(ContractModel):

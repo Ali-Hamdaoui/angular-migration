@@ -373,6 +373,7 @@ def test_blocked_resolution_persists_status_only_evidence(tmp_path: Path):
     """A blocked stage binding persists per-kind rows with no descriptors (F02 evidence integrity)."""
     _seed_stage("stage-blocked")
     service = make_service(tmp_path)
+    available_authority = _SyntheticAuthority((("angular-stage-runtime", "22.23.1", "10.9.8"),))
 
     class BlockingAuthority:
         def resolve(self, requirements):
@@ -393,3 +394,10 @@ def test_blocked_resolution_persists_status_only_evidence(tmp_path: Path):
         assert row.sha256 is None
         assert row.resolved_path is None
         assert row.blocked_reason is not None
+
+    service._authority = available_authority
+    recovered = service.resolve_stage("stage-blocked", "angular-18.x", "angular-19.x")
+    assert recovered.status == "bound"
+    rows = service.record_binding("run-stage-blocked", recovered)
+    assert {row.status for row in rows} == {"bound"}
+    assert all(row.resolved_path and row.sha256 for row in rows)

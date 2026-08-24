@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.contracts import ArtifactType, RunStatus, WorkflowEventType
+from app.domain.planning import TRANSFORMER_SEMANTIC_VERSION_PROVEN
 from app.repositories.models import (
     ActivePlanVersionModel,
     ArtifactMetadataModel,
@@ -160,6 +161,11 @@ class TransformerSealingFlow:
                 context, approval_checksum
             )
         except (StageSealingError, OSError, ValueError) as error:
+            if (
+                getattr(error, "code", None) == "STAGE_TARGET_COHORT_MISMATCH"
+                and self._requeue_proven_migration(continuation_id, worker_id)
+            ):
+                return
             self._fail(continuation_id, worker_id, error)
             return
         try:
@@ -528,6 +534,51 @@ class TransformerSealingFlow:
                 getattr(error, "code", "STAGE_SEALING_FAILED"),
                 getattr(error, "message", str(error)),
             )
+
+    def _requeue_proven_migration(self, continuation_id: str, worker_id: str) -> bool:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+            if (
+                stage_plan is None
+                or (stage_plan.stage_plan or {}).get("transformer_semantic_version")
+                != TRANSFORMER_SEMANTIC_VERSION_PROVEN
+            ):
+                return False
+            approval = session.scalar(
+                select(StageGatePackageModel)
+                .where(
+                    StageGatePackageModel.stage_id == continuation.current_stage_id,
+                    StageGatePackageModel.gate_id == "G12",
+                    StageGatePackageModel.status == "approved",
+                )
+                .order_by(StageGatePackageModel.gate_version.desc())
+            )
+            if approval is not None:
+                approval.status = "stale"
+                approval.stale_at = datetime.now(UTC)
+            expected_state_version = continuation.state_version
+            continuation.status = "queued"
+            continuation.current_node = "select_run_mode"
+            continuation.worker_id = None
+            continuation.lease_expires_at = None
+            continuation.last_error_code = None
+            continuation.last_error_message = None
+            continuation.state_version += 1
+            continuation.updated_at = datetime.now(UTC)
+            append_continuation_event(
+                session,
+                continuation,
+                event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_WAITING,
+                key=f"{continuation.id}:requeue-proven-migration:{expected_state_version}",
+                reason="target cohort proof rejected source-version workspace; governed proven migration re-execution queued",
+                payload={
+                    "expected_state_version": expected_state_version,
+                    "retry_node": "select_run_mode",
+                    "reason_code": "STAGE_TARGET_COHORT_MISMATCH",
+                },
+            )
+            return True
 
     @staticmethod
     def _owned(session, continuation_id: str, worker_id: str):

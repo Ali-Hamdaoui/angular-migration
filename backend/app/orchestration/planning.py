@@ -25,6 +25,11 @@ from app.services.project_planning_resolver import ProjectPlanningResolutionErro
 from app.services.project_capability_service import ProjectCapabilityService
 from app.services.workspace_integrity_service import WorkspaceIntegrityError, WorkspaceIntegrityService
 from app.state.transition_service import StateTransitionService, TransitionRequest
+from app.domain.planning import (
+    TRANSFORMER_SEMANTIC_VERSION_LEGACY,
+    TRANSFORMER_SEMANTIC_VERSION_PROVEN,
+    proven_plan_writer_enabled,
+)
 
 
 def _mark_retry(job_id: str, *, disposition: PlanningFailureDisposition, stage: str, diagnostic=None, scope=session_scope) -> None:
@@ -173,6 +178,11 @@ def generate_plan_step(job_id: str, *, scope=session_scope) -> None:
         physical_fingerprint = integrity.actual_fingerprint
         capability_snapshot = ProjectCapabilityService().snapshot(run_id, Path(workspace))
         capability_facts = tuple(capability.model_dump(mode="json") for capability in capability_snapshot.capabilities)
+        semantic_version = (
+            TRANSFORMER_SEMANTIC_VERSION_PROVEN
+            if proven_plan_writer_enabled()
+            else TRANSFORMER_SEMANTIC_VERSION_LEGACY
+        )
         plan = PlanningEvidenceApplicationService(scope=scope).create(run_id, PlanCreateRequest(
             expected_state_version=expected_state_version,
             idempotency_key=f"plan:auto:{run_id}:{gate.package_checksum}",
@@ -192,9 +202,10 @@ def generate_plan_step(job_id: str, *, scope=session_scope) -> None:
             builder=builder,
             prerequisite_artifacts=list(prerequisites),
             correlation_id=f"planning:{run_id}",
-            capability_facts=list(capability_facts),
+capability_facts=list(capability_facts),
             capability_snapshot_id=ProjectCapabilityService.snapshot_id(run_id, capability_snapshot.checksum),
             capability_snapshot_checksum=capability_snapshot.checksum,
+            transformer_semantic_version=semantic_version,
         ), actor)
         with scope() as session:
             job = session.get(PlanningJobModel, job_id)

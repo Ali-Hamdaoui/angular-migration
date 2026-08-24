@@ -320,6 +320,15 @@ class StageRuntimeApplicationService:
             for item in binding.bindings:
                 existing = session.get(StageRuntimeBindingModel, _binding_id(binding.stage_id, item.requirement.kind.value))
                 if existing is not None:
+                    if existing.status == "blocked" and binding.status == "bound" and item.descriptor is not None:
+                        existing.runtime_id = item.descriptor.runtime_id
+                        existing.version_exact = item.descriptor.version_exact
+                        existing.sha256 = item.descriptor.sha256
+                        existing.resolved_path = item.descriptor.resolved_path
+                        existing.source = item.descriptor.source
+                        existing.status = "bound"
+                        existing.blocked_reason = None
+                        existing.created_at = now
                     rows.append(existing)
                     continue
                 row = StageRuntimeBindingModel(

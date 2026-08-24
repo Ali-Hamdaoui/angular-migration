@@ -101,6 +101,15 @@ class CausalExecutionError(ValueError):
         self.message = message
 
 
+def _failure_matches_current_route(last_error_code: str | None, failure_code: str | None) -> bool:
+    return (
+        not last_error_code
+        or failure_code == last_error_code
+        or last_error_code
+        in {"FAILURE_ROUTE_ENVIRONMENT_TRANSIENT", "CAUSAL_EXECUTION_AMBIGUOUS"}
+    )
+
+
 def resolve_causal_failed_execution(session, continuation):
     """Resolve the explicitly bound failed execution; fail closed on ambiguity."""
     from sqlalchemy import select
@@ -112,6 +121,7 @@ def resolve_causal_failed_execution(session, continuation):
             execution is not None
             and execution.run_id == continuation.run_id
             and execution.stage_id == continuation.current_stage_id
+            and execution.plan_id == continuation.plan_id
             and execution.status in _TERMINAL_FAILURE_STATUSES
             and (execution.exit_code not in (None, 0) or execution.failure_code)
             and execution.result_artifact_id
@@ -146,8 +156,9 @@ def resolve_causal_failed_execution(session, continuation):
         if step.execution_id
         and valid(execution := session.get(CommandExecutionModel, step.execution_id))
         and (
-            not continuation.last_error_code
-            or execution.failure_code == continuation.last_error_code
+            _failure_matches_current_route(
+                continuation.last_error_code, execution.failure_code
+            )
         )
     ]
     if len(step_candidates) == 1:
@@ -171,6 +182,7 @@ def resolve_causal_failed_execution(session, continuation):
             select(CommandExecutionModel.id).where(
                 CommandExecutionModel.run_id == continuation.run_id,
                 CommandExecutionModel.stage_id == continuation.current_stage_id,
+                CommandExecutionModel.plan_id == continuation.plan_id,
                 CommandExecutionModel.status == "succeeded",
                 CommandExecutionModel.exit_code == 0,
                 CommandExecutionModel.requested_at > failed[0].requested_at,
