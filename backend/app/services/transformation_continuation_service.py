@@ -414,7 +414,10 @@ class TransformationContinuationService:
             failure_class = RecoveryFailureClass.LOCK_RESOLUTION_FAILED
         elif (
             command is not None
-            and command.status == "interrupted"
+            and (
+                command.status == "interrupted"
+                or command.reconstruction_required
+            )
         ) or continuation.status == TransformationStatus.CANCELLED.value:
             failure_class = RecoveryFailureClass.COMMAND_INTERRUPTED
         elif route.value == "environment_transient":
@@ -461,6 +464,7 @@ class TransformationContinuationService:
             plan_authority_stale=plan_authority_stale,
             commands_executed=commands_executed,
             command_authority_mismatch=command_authority_mismatch,
+            reconstruction_required=bool(command and command.reconstruction_required),
         )
 
     def reexecute_blocked_stage_from_g07(

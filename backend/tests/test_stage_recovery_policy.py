@@ -37,6 +37,7 @@ def _context(**changes):
         "stage_output_invalid": False,
         "introduced_by_migration": False,
         "command_id": "npm-install",
+        "reconstruction_required": False,
     }
     values.update(changes)
     return StageRecoveryPolicyContext(**values)
@@ -229,6 +230,18 @@ def test_future_stage_id_has_no_recovery_special_case():
 
     assert decision.allowed is True
     assert decision.action is RecoveryAction.RETRY_COMMAND
+
+
+def test_reconstruction_required_command_reexecutes_from_g07():
+    decision = StageRecoveryPolicyService().decide(
+        _context(
+            failure_class=RecoveryFailureClass.COMMAND_INTERRUPTED,
+            reconstruction_required=True,
+        )
+    )
+
+    assert decision.allowed is True
+    assert decision.action is RecoveryAction.REEXECUTE_FROM_G07
 
 
 def test_continuation_dispatches_reexecution_to_stage_recovery_service(monkeypatch):
