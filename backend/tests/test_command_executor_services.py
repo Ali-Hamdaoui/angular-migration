@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
@@ -26,8 +27,11 @@ from app.domain.contracts import (
 )
 from app.repositories.models.base import Base
 from app.repositories.models.workflow import (
+    CommandAuthorizationAuditModel,
     CommandExecutionModel,
     CommandLogChunkModel,
+    MigrationRunModel,
+    MigrationStageModel,
     WorkerLeaseModel,
     WorkflowEventModel,
 )
@@ -426,6 +430,82 @@ class TestCommandExecutorQueueCommand:
     def test_stale_state_error_mapping(self, db_session: Session):
         """Verify queue_command stores execution correctly."""
         self.assert_legacy_execution_disabled(db_session, idempotency_key="qc-test-stale")
+
+    def test_stage_runtime_authority_does_not_require_legacy_profile(self, db_session: Session, tmp_path: Path):
+        now = datetime.now(UTC)
+        run_id = "run-stage-runtime"
+        stage_id = "stage-runtime-1"
+        db_session.add(MigrationRunModel(
+            id=run_id,
+            status="RUNNING",
+            run_phase="transforming",
+            state_version=7,
+            run_root=str(tmp_path),
+            artifact_root=str(tmp_path / "artifacts"),
+            workspace_aliases={"run_workspace": str(tmp_path)},
+            created_at=now,
+            updated_at=now,
+        ))
+        db_session.add(MigrationStageModel(
+            id=stage_id,
+            run_id=run_id,
+            stage_order=1,
+            status="prepared",
+            created_at=now,
+        ))
+        db_session.add(CommandAuthorizationAuditModel(
+            id="authz-stage-runtime",
+            run_id=run_id,
+            stage_id=stage_id,
+            command_id="python-version",
+            template_id="tpl-python-version",
+            template_version=1,
+            plan_id="plan-stage-runtime",
+            plan_version=1,
+            executable="python",
+            arguments=["--version"],
+            decision="accepted",
+            reasons=[],
+            policy_version="test",
+            idempotency_key="queue-stage-runtime",
+            request_payload_hash="sha256:" + "a" * 64,
+            expected_state_version=7,
+            execution_profile_id=f"stage-runtime:{stage_id}",
+            workspace_alias="run_workspace",
+            network_profile="none",
+            correlation_id="corr-stage-runtime",
+            actor="test",
+            artifact_ids=[],
+            state_version=7,
+            created_at=now,
+        ))
+        db_session.flush()
+
+        registry = MagicMock()
+        registry.find_registered_template.return_value = SimpleNamespace(
+            executable="python",
+            executable_aliases=[],
+            arguments=["--version"],
+        )
+        service = CommandExecutorService(registry_service=registry)
+        with patch(
+            "app.services.command_executor_service._stage_runtime_authority",
+            return_value={"profile_id": f"stage-runtime:{stage_id}"},
+        ):
+            result = service.queue_authorized_command(
+                db_session,
+                run_id=run_id,
+                authorization_decision_id="authz-stage-runtime",
+                expected_state_version=7,
+                idempotency_key="queue-stage-runtime",
+                requested_by="test",
+                timeout_seconds=30,
+            )
+
+        assert result.status == CommandStatus.QUEUED.value
+        execution = db_session.get(CommandExecutionModel, result.execution_id)
+        assert execution is not None
+        assert execution.runtime_profile_id == f"stage-runtime:{stage_id}"
 
 
 # ===========================================================================

@@ -123,6 +123,11 @@ _MUTATING_COMMAND_IDS = frozenset(
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 
+def _is_stage_runtime_profile_id(profile_id: str | None) -> bool:
+    """Return whether the id delegates runtime authority to the stage G07 binding."""
+    return isinstance(profile_id, str) and profile_id.startswith("stage-runtime:")
+
+
 def worker_workspace_aliases(aliases: Mapping[str, str | Path], authorized_alias: str | None) -> dict[str, Path]:
     """Expose exactly one approved mutable workspace to the worker."""
     if not authorized_alias:
@@ -714,12 +719,20 @@ class CommandExecutorService:
             raise CommandExecutorError("AUTHORIZATION_STALE", "Authorized arguments no longer match the template")
         if not authorization.execution_profile_id:
             raise CommandExecutorError("EXECUTION_PROFILE_NOT_FOUND", "Authorization has no execution profile")
-        profile = session.scalar(select(ExecutionProfileModel).where(
-            ExecutionProfileModel.run_id == run_id,
-            ExecutionProfileModel.selected_profile_id == authorization.execution_profile_id,
-        ).order_by(ExecutionProfileModel.created_at.desc()))
-        if profile is None or profile.status not in {"resolved", "selected"}:
-            raise CommandExecutorError("EXECUTION_PROFILE_NOT_APPROVED", "Execution profile is not approved for this run")
+        if _is_stage_runtime_profile_id(authorization.execution_profile_id):
+            stage_runtime_authority = _stage_runtime_authority(session, run, authorization.stage_id)
+            if (
+                stage_runtime_authority is None
+                or stage_runtime_authority["profile_id"] != authorization.execution_profile_id
+            ):
+                raise CommandExecutorError("EXECUTION_PROFILE_NOT_APPROVED", "Stage runtime profile is not approved for this command")
+        else:
+            profile = session.scalar(select(ExecutionProfileModel).where(
+                ExecutionProfileModel.run_id == run_id,
+                ExecutionProfileModel.selected_profile_id == authorization.execution_profile_id,
+            ).order_by(ExecutionProfileModel.created_at.desc()))
+            if profile is None or profile.status not in {"resolved", "selected"}:
+                raise CommandExecutorError("EXECUTION_PROFILE_NOT_APPROVED", "Execution profile is not approved for this run")
         if not run.run_root or not run.artifact_root or not run.workspace_aliases:
             raise CommandExecutorError("WORKSPACE_NOT_AVAILABLE", "Run-owned workspace configuration is unavailable")
         if authorization.stage_id and (authorization.workspace_alias or "").startswith("STAGE_WORKSPACE_"):
@@ -1344,20 +1357,29 @@ class CommandExecutorService:
                     name: (root / path if not Path(path).is_absolute() else Path(path))
                     for name, path in (run.workspace_aliases or {}).items()
                 }
-                profile = session.scalar(select(ExecutionProfileModel).where(
-                    ExecutionProfileModel.run_id == run.id,
-                    ExecutionProfileModel.selected_profile_id == authorization.execution_profile_id,
-                ).order_by(ExecutionProfileModel.created_at.desc()))
-                if profile is None or profile.status not in {"resolved", "selected"}:
-                    raise CommandExecutorError("EXECUTION_PROFILE_NOT_APPROVED", "Execution profile is not approved for this run")
-                selected_profile = next(
-                    (item for item in (profile.profiles or [])
-                     if item.get("profile_id") == authorization.execution_profile_id
-                     and item.get("checksum") == profile.selected_checksum),
-                    None,
-                )
-                if selected_profile is None:
-                    raise CommandExecutorError("EXECUTION_PROFILE_NOT_APPROVED", "Selected execution profile checksum is not current")
+                if _is_stage_runtime_profile_id(authorization.execution_profile_id):
+                    stage_runtime_authority = _stage_runtime_authority(session, run, stage_id)
+                    if (
+                        stage_runtime_authority is None
+                        or stage_runtime_authority["profile_id"] != execution_profile_id
+                    ):
+                        raise CommandExecutorError("EXECUTION_PROFILE_NOT_APPROVED", "Stage runtime profile is not approved for this command")
+                    selected_profile = {}
+                else:
+                    profile = session.scalar(select(ExecutionProfileModel).where(
+                        ExecutionProfileModel.run_id == run.id,
+                        ExecutionProfileModel.selected_profile_id == authorization.execution_profile_id,
+                    ).order_by(ExecutionProfileModel.created_at.desc()))
+                    if profile is None or profile.status not in {"resolved", "selected"}:
+                        raise CommandExecutorError("EXECUTION_PROFILE_NOT_APPROVED", "Execution profile is not approved for this run")
+                    selected_profile = next(
+                        (item for item in (profile.profiles or [])
+                         if item.get("profile_id") == authorization.execution_profile_id
+                         and item.get("checksum") == profile.selected_checksum),
+                        None,
+                    )
+                    if selected_profile is None:
+                        raise CommandExecutorError("EXECUTION_PROFILE_NOT_APPROVED", "Selected execution profile checksum is not current")
                 existing_lease = session.scalar(
                     select(WorkerLeaseModel).where(
                         WorkerLeaseModel.execution_id == execution_id,
