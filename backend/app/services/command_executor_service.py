@@ -29,6 +29,7 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import delete, or_, select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.artifact_store import ArtifactNotFoundError, ArtifactStoreError, LocalFilesystemArtifactStore
@@ -80,7 +81,7 @@ from app.services.command_registry_service import (
     CommandRegistryService,
 )
 from app.services.diagnostics_application_service import DiagnosticsApplicationService
-from app.services.job_supervisor_service import JobSupervisorService
+from app.services.job_supervisor_service import JobSupervisorError, JobSupervisorService
 from app.services.runtime_resolution_application_service import RuntimeResolutionApplicationService
 from app.services.stage_runtime_service import canonical_stage_runtime_identity
 from app.services.transformer_prompt_service import (
@@ -1329,6 +1330,7 @@ class CommandExecutorService:
         cancel_event = threading.Event()
         lease_id: str | None = None
         heartbeat_stop = threading.Event()
+        heartbeat_failure_code: list[str] = []
         self._job_supervisor.register_cancel_event(execution_id, cancel_event)
         try:
             # Read and validate all process inputs in a short transaction. The
@@ -1483,7 +1485,34 @@ class CommandExecutorService:
                                 )
                                 .values(claim_expires_at=renewed.expires_at)
                             )
+                    except OperationalError as error:
+                        # SQLite can briefly serialize writers while command
+                        # output, workflow events, and the heartbeat commit.
+                        # A transient lock must not cancel a healthy process;
+                        # retry before the current lease can expire.
+                        logger.warning(
+                            "Transient lease-heartbeat database error for %s: %s",
+                            execution_id,
+                            error,
+                        )
+                        if heartbeat_stop.wait(min(5, interval)):
+                            return
+                        continue
+                    except JobSupervisorError as error:
+                        heartbeat_failure_code.append("COMMAND_LEASE_LOST")
+                        logger.warning(
+                            "Command lease lost for %s: %s",
+                            execution_id,
+                            error.code,
+                        )
+                        cancel_event.set()
+                        return
                     except Exception:
+                        heartbeat_failure_code.append("COMMAND_LEASE_HEARTBEAT_FAILED")
+                        logger.exception(
+                            "Unexpected lease-heartbeat failure for %s",
+                            execution_id,
+                        )
                         cancel_event.set()
                         return
 
@@ -1550,6 +1579,7 @@ class CommandExecutorService:
                     authorization=authorization,
                     profile=selected_profile,
                     runtime_authority=stage_runtime_authority,
+                    cancellation_failure_code=heartbeat_failure_code[0] if heartbeat_failure_code else None,
                 )
         except Exception as exc:
             causal_traceback = traceback.format_exc()
@@ -1601,6 +1631,7 @@ class CommandExecutorService:
         authorization,
         profile,
         runtime_authority: dict[str, object] | None = None,
+        cancellation_failure_code: str | None = None,
     ) -> None:
         finished = datetime.now(UTC)
         final_status = (
@@ -1660,8 +1691,12 @@ class CommandExecutorService:
                 )
             model.blockers = [model.failure_code]
         if final_status == CommandStatus.CANCELLED.value:
-            model.failure_code = "COMMAND_CANCELLED"
-            model.failure_message = "Command cancelled; partial output was preserved."
+            model.failure_code = cancellation_failure_code or "COMMAND_CANCELLED"
+            model.failure_message = (
+                "Command cancelled after worker lease loss; partial output was preserved."
+                if cancellation_failure_code
+                else "Command cancelled; partial output was preserved."
+            )
         if final_status == CommandStatus.TIMED_OUT.value:
             model.failure_code = "COMMAND_TIMED_OUT"
             model.failure_message = "Command timed out; partial output was preserved."

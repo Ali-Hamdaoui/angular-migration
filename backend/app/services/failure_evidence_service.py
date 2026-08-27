@@ -252,6 +252,8 @@ class FailureTargetResolver:
 class FailureEvidenceService:
     transient_codes: ClassVar[set[str]] = {
         "COMMAND_WORKER_LOST_REQUEUED",
+        "COMMAND_LEASE_LOST",
+        "COMMAND_LEASE_HEARTBEAT_FAILED",
         # Historical drift: the executor emits COMMAND_TIMED_OUT; the legacy
         # COMMAND_TIMEOUT spelling is kept for already-persisted evidence.
         "COMMAND_TIMED_OUT",
@@ -272,6 +274,7 @@ class FailureEvidenceService:
         "STALE_GATE_BINDING",
     }
     non_repairable_codes: ClassVar[set[str]] = {"VALIDATION_EVIDENCE_MISSING", "VALIDATION_INCOMPLETE"}
+    source_codes: ClassVar[set[str]] = {"COMPILATION_FAILED"}
 
     @staticmethod
     def is_angular_update_dirty_workspace(evidence: dict[str, object]) -> bool:
@@ -480,6 +483,8 @@ class FailureEvidenceService:
             "exit_code": execution.exit_code,
             "failure_code": execution.failure_code,
             "failure_message": output,
+            "cancel_requested": execution.cancel_requested_at is not None,
+            "claim_expired": self.command_claim_expired(execution),
         }
         if normalized["command_id"] == "angular-update-exact" or str(
             normalized["command_id"] or ""
@@ -646,6 +651,7 @@ class FailureEvidenceService:
 
     def classify(self, evidence: dict[str, object]) -> FailureRoute:
         code = str((evidence["normalized_failure"] or {}).get("error_code") or "")
+        normalized = evidence.get("normalized_failure") or {}
         if evidence["failure_fingerprint"] in evidence["prior_fingerprints"]:
             return FailureRoute.NO_PROGRESS
         if self.is_angular_update_dirty_workspace(evidence):
@@ -661,6 +667,12 @@ class FailureEvidenceService:
             return intelligence_route
         if code in self.transient_codes:
             return FailureRoute.ENVIRONMENT_TRANSIENT
+        if (
+            code == "COMMAND_CANCELLED"
+            and normalized.get("cancel_requested") is False
+            and normalized.get("claim_expired") is True
+        ):
+            return FailureRoute.ENVIRONMENT_TRANSIENT
         if code in self.permanent_codes:
             return FailureRoute.ENVIRONMENT_PERMANENT
         if code in self.dependency_codes:
@@ -671,7 +683,21 @@ class FailureEvidenceService:
             return FailureRoute.POLICY_VIOLATION
         if code in self.non_repairable_codes:
             return FailureRoute.NON_REPAIRABLE_VALIDATION
-        return FailureRoute.REPAIRABLE_SOURCE
+        if code in self.source_codes:
+            return FailureRoute.REPAIRABLE_SOURCE
+        return FailureRoute.UNKNOWN_FAILURE
+
+    @staticmethod
+    def command_claim_expired(execution) -> bool:
+        claimed_until = getattr(execution, "claim_expires_at", None)
+        finished_at = getattr(execution, "finished_at", None)
+        if claimed_until is None or finished_at is None:
+            return False
+        if claimed_until.tzinfo is None:
+            claimed_until = claimed_until.replace(tzinfo=UTC)
+        if finished_at.tzinfo is None:
+            finished_at = finished_at.replace(tzinfo=UTC)
+        return finished_at >= claimed_until
 
     def committed_evidence(
         self,

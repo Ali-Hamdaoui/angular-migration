@@ -397,6 +397,8 @@ class TransformationContinuationService:
                     "error_code": failure_code,
                     "failure_message": failure_message,
                     "command_id": command.command_id if command else None,
+                    "cancel_requested": command.cancel_requested_at is not None if command else None,
+                    "claim_expired": FailureEvidenceService.command_claim_expired(command) if command else False,
                 },
                 "failure_fingerprint": "recovery-context",
                 "prior_fingerprints": [],

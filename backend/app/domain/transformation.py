@@ -178,6 +178,7 @@ class FailureRoute(str, Enum):
     ANGULAR_UPDATE_PEER_CONFLICT = "angular_update_peer_conflict"
     REPAIRABLE_SOURCE = "repairable_source"
     NON_REPAIRABLE_VALIDATION = "non_repairable_validation"
+    UNKNOWN_FAILURE = "unknown_failure"
     NO_PROGRESS = "no_progress"
 
 

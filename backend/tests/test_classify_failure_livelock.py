@@ -35,7 +35,7 @@ NOW = datetime(2026, 7, 31, tzinfo=UTC)
 
 
 def test_stale_source_route_is_eligible_for_environment_retry():
-    continuation = SimpleNamespace(last_error_code="REPAIR_CAUSAL_KIND_MISMATCH")
+    continuation = SimpleNamespace(last_error_code="COMMAND_CANCELLED")
     attempt = SimpleNamespace(
         status="evidence_frozen",
         proposal_artifact_id=None,
@@ -44,7 +44,7 @@ def test_stale_source_route_is_eligible_for_environment_retry():
         reviewer_invocation_id=None,
     )
     evidence = {
-        "causal_repair": {"causal_kind": "test"},
+        "causal_repair": {"causal_kind": "build"},
     }
 
     assert TransformerOrchestrator._eligible_stale_environment_retry(
@@ -53,6 +53,15 @@ def test_stale_source_route_is_eligible_for_environment_retry():
         evidence,
         persisted_route="repairable_source",
         recomputed_route="environment_transient",
+    )
+
+
+def test_environment_retry_selects_the_failed_build_step_without_incident_identifiers():
+    assert (
+        TransformerOrchestrator._environment_retry_node_for_step(
+            "transformer-plan-v2.2-proven-1", "builds-0"
+        )
+        == "validation_build"
     )
 
 

@@ -899,6 +899,9 @@ class StageRecoveryService:
         continuation.plan_checksum = rebuilt_plan.checksum
         continuation.stage_plan_id = replacement_stage_id
         continuation.stage_plan_checksum = rebuilt.checksum
+        # A replacement stage is a new bounded execution attempt.  Do not
+        # carry the failed continuation's retry budget into the new boundary.
+        continuation.attempt = 0
         continuation.status = "queued"
         continuation.current_node = "create_g07"
         continuation.last_error_code = None

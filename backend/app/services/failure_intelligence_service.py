@@ -330,7 +330,7 @@ def classify_failure_route(evidence: Any) -> FailureRoute:
         return FailureRoute.ENVIRONMENT_PERMANENT
     if code_upper in {"DEPENDENCY_PREFLIGHT_BLOCKED", "VERSION_VERIFICATION_FAILED", "VALIDATION_TARGET_MISSING"}:
         return FailureRoute.DEPENDENCY_INCOMPATIBLE
-    return FailureRoute.REPAIRABLE_SOURCE
+    return FailureRoute.UNKNOWN_FAILURE
 
 
 def _signature(message: str) -> str:

@@ -2951,8 +2951,7 @@ class TransformerOrchestrator:
         recomputed_route: str,
     ) -> bool:
         return (
-            continuation.last_error_code == "REPAIR_CAUSAL_KIND_MISMATCH"
-            and attempt is not None
+            attempt is not None
             and attempt.status == "evidence_frozen"
             and not any(
                 getattr(attempt, field, None)
@@ -2963,13 +2962,22 @@ class TransformerOrchestrator:
                     "reviewer_invocation_id",
                 )
             )
-            and (evidence.get("causal_repair") or {}).get("causal_kind") == "test"
             and persisted_route == "repairable_source"
             and recomputed_route == "environment_transient"
         )
 
     @staticmethod
     def _environment_retry_node(semantic_version: str | None) -> str:
+        return TransformerOrchestrator._environment_retry_node_for_step(
+            semantic_version, None
+        )
+
+    @staticmethod
+    def _environment_retry_node_for_step(
+        semantic_version: str | None, step_name: str | None
+    ) -> str:
+        if str(step_name or "").startswith("builds-"):
+            return "validation_build"
         return (
             "validation_install"
             if semantic_version == TRANSFORMER_SEMANTIC_VERSION_PROVEN
@@ -2997,22 +3005,25 @@ class TransformerOrchestrator:
 
     @staticmethod
     def _reset_environment_retry_target(session, continuation, step_name: str | None = None) -> str | None:
-        if step_name is not None and not step_name.startswith("tests-"):
-            return None
         query = select(StageStepModel).where(
             StageStepModel.stage_id == continuation.current_stage_id,
-            StageStepModel.name.like("tests-%"),
             StageStepModel.status != "PASSED",
         )
         if step_name:
             query = query.where(StageStepModel.name == step_name)
+        else:
+            query = query.where(StageStepModel.name.like("tests-%"))
         step = session.scalar(query.order_by(StageStepModel.name).limit(1))
         if step is None:
             return None
         step.status = "PENDING"
+        step.attempt_id = None
         step.execution_id = None
         step.started_at = None
         step.completed_at = None
+        step.output_checksum = None
+        step.workspace_fingerprint = None
+        step.artifact_ids = []
         step.updated_at = datetime.now(UTC)
         continuation.last_error_code = "FAILURE_ROUTE_ENVIRONMENT_TRANSIENT"
         continuation.last_error_message = "Targeted test queued for governed environment retry"
@@ -3057,6 +3068,18 @@ class TransformerOrchestrator:
             persisted_route = str(json.loads(route.content).get("route") or "")
         except (ArtifactNotFoundError, ArtifactStoreError, OSError, TypeError, ValueError, json.JSONDecodeError):
             return False
+        bound_execution = session.get(
+            CommandExecutionModel, str(evidence.get("execution_id") or "")
+        )
+        if bound_execution is not None:
+            normalized = dict(evidence.get("normalized_failure") or {})
+            normalized.setdefault(
+                "cancel_requested", bound_execution.cancel_requested_at is not None
+            )
+            normalized.setdefault(
+                "claim_expired", FailureEvidenceService.command_claim_expired(bound_execution)
+            )
+            evidence = {**evidence, "normalized_failure": normalized}
         recomputed_route = FailureEvidenceService().classify(evidence).value
         if not self._eligible_stale_environment_retry(
             continuation,
@@ -3097,8 +3120,8 @@ class TransformerOrchestrator:
                 "Immutable test failure does not bind to a pending targeted test step",
             )
             return True
-        retry_node = self._environment_retry_node(
-            self._stage_semantic_version(session, continuation)
+        retry_node = self._environment_retry_node_for_step(
+            self._stage_semantic_version(session, continuation), target_step
         )
         RepairLifecycleService.transition_in_session(
             session,

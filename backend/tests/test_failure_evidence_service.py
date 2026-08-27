@@ -58,6 +58,30 @@ def test_chrome_binary_failure_is_environment_transient():
     assert FailureEvidenceService().classify(evidence) == FailureRoute.ENVIRONMENT_TRANSIENT
 
 
+def test_unrequested_expired_command_cancellation_is_environment_transient():
+    evidence = {
+        "normalized_failure": {
+            "error_code": "COMMAND_CANCELLED",
+            "cancel_requested": False,
+            "claim_expired": True,
+        },
+        "failure_fingerprint": "sha256:lease-loss",
+        "prior_fingerprints": [],
+    }
+
+    assert FailureEvidenceService().classify(evidence) == FailureRoute.ENVIRONMENT_TRANSIENT
+
+
+def test_unknown_failure_does_not_route_to_source_repair():
+    evidence = {
+        "normalized_failure": {"error_code": "UNCLASSIFIED_FAILURE"},
+        "failure_fingerprint": "sha256:unknown",
+        "prior_fingerprints": [],
+    }
+
+    assert FailureEvidenceService().classify(evidence) == FailureRoute.UNKNOWN_FAILURE
+
+
 def test_environment_route_preserves_command_failure_binding():
     assert _failure_matches_current_route(
         "FAILURE_ROUTE_ENVIRONMENT_TRANSIENT", "COMMAND_EXIT_NONZERO"
