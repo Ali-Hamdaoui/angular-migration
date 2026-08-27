@@ -389,8 +389,11 @@ class TransformationContinuationService:
                 or planned_aliases != {binding.alias}
             )
         )
-        failure_code = continuation.last_error_code or (command.failure_code if command else None)
-        failure_message = continuation.last_error_message or (command.failure_message if command else None)
+        # The continuation error may be a controller-level route such as a
+        # retry-budget boundary.  The terminal command is the authoritative
+        # failure evidence used for recovery classification.
+        failure_code = (command.failure_code if command else None) or continuation.last_error_code
+        failure_message = (command.failure_message if command else None) or continuation.last_error_message
         route = FailureEvidenceService().classify(
             {
                 "normalized_failure": {
