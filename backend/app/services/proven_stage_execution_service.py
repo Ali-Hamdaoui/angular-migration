@@ -526,12 +526,15 @@ class ProvenStageExecutionService:
 
     @staticmethod
     def _scoped_attempt_key(continuation, attempt_key: str) -> str:
-        """Keep reexecutions from replaying command-authority idempotency keys."""
-        stage_plan_id = continuation.stage_plan_id or ""
-        if "-reexec-" not in stage_plan_id:
+        """Bind generated command identities to their active authority."""
+        plan_id = getattr(continuation, "plan_id", None) or ""
+        stage_plan_id = getattr(continuation, "stage_plan_id", None) or ""
+        if not plan_id and not stage_plan_id:
             return attempt_key
-        digest = hashlib.sha256(f"{stage_plan_id}:{attempt_key}".encode()).hexdigest()[:12]
-        return f"reexec-{digest}"
+        digest = hashlib.sha256(
+            f"{plan_id}:{stage_plan_id}:{attempt_key}".encode("utf-8")
+        ).hexdigest()[:32]
+        return f"plan-{digest}"
 
     # -- Phase 1: source baseline -------------------------------------------
 
@@ -734,16 +737,14 @@ class ProvenStageExecutionService:
     @staticmethod
     def _validation_attempt_key(continuation, node: str) -> str:
         if continuation.last_error_code == "FAILURE_ROUTE_ENVIRONMENT_TRANSIENT":
-            return f"environment-retry:{continuation.attempt}:{node}"
-        if continuation.last_error_code == "VALIDATION_COMMAND_AUTH_RETRY_QUEUED":
-            return f"workspace-binding-retry:{continuation.state_version}:{node}"
-        if continuation.last_error_code == "VALIDATION_COMMAND_IDEMPOTENCY_RETRY_QUEUED":
-            return f"stage-validation-retry:{continuation.state_version}:{node}"
-        attempt_key = f"proven:{node}"
-        if "-reexec-" in (continuation.stage_plan_id or ""):
-            digest = hashlib.sha256(f"{continuation.stage_plan_id}:{attempt_key}".encode()).hexdigest()[:12]
-            return f"reexec-{digest}"
-        return attempt_key
+            attempt_key = f"environment-retry:{continuation.attempt}:{node}"
+        elif continuation.last_error_code == "VALIDATION_COMMAND_AUTH_RETRY_QUEUED":
+            attempt_key = f"workspace-binding-retry:{continuation.state_version}:{node}"
+        elif continuation.last_error_code == "VALIDATION_COMMAND_IDEMPOTENCY_RETRY_QUEUED":
+            attempt_key = f"stage-validation-retry:{continuation.state_version}:{node}"
+        else:
+            attempt_key = f"proven:{node}"
+        return ProvenStageExecutionService._scoped_attempt_key(continuation, attempt_key)
 
     def _validate_group(self, continuation_id, worker_id, *, group, node, next_node, step_group) -> None:
         with self._scope() as session:

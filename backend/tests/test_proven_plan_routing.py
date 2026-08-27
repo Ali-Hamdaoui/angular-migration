@@ -83,3 +83,19 @@ def test_proven_validation_retry_uses_a_new_execution_key():
         ProvenStageExecutionService._validation_attempt_key(continuation, "validation_test")
         == "environment-retry:2:validation_test"
     )
+
+
+def test_proven_command_identity_is_scoped_by_authority_not_generated_name():
+    from app.services.proven_stage_execution_service import ProvenStageExecutionService
+
+    first = SimpleNamespace(plan_id="plan-a", stage_plan_id="replacement-a")
+    second = SimpleNamespace(plan_id="plan-b", stage_plan_id="replacement-b")
+
+    first_key = ProvenStageExecutionService._scoped_attempt_key(first, "bootstrap")
+    replay_key = ProvenStageExecutionService._scoped_attempt_key(first, "bootstrap")
+    replacement_key = ProvenStageExecutionService._scoped_attempt_key(second, "bootstrap")
+
+    assert first_key == replay_key
+    assert first_key != replacement_key
+    assert "reexec" not in first_key
+    assert "recovery" not in first_key
