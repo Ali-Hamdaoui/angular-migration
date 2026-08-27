@@ -66,7 +66,10 @@ class TransformerWorker:
                 session,
                 self.worker_id,
                 now,
-                lease_seconds=get_settings().worker_lease_seconds,
+                lease_seconds=max(
+                    get_settings().worker_lease_seconds,
+                    get_settings().command_timeout_seconds + 60,
+                ),
             )
         if execution_id is not None:
             with self._scope() as session:

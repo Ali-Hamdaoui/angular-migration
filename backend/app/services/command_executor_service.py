@@ -416,7 +416,11 @@ class CommandExecutorService:
         self._registry_service = registry_service or CommandRegistryService()
         self._supervisor = supervisor or WorkerSupervisor()
         self._default_timeout_seconds = default_timeout_seconds
-        self._job_supervisor = JobSupervisorService()
+        # A command must remain claimable for at least its full execution
+        # window.  The configured worker lease is still the lower bound, but a
+        # long-running command gets a bounded grace period for heartbeat delay.
+        lease_seconds = max(get_settings().worker_lease_seconds, default_timeout_seconds + 60)
+        self._job_supervisor = JobSupervisorService(lease_seconds=lease_seconds)
         self._runtime_resolution = runtime_resolution_service
         # Retained for the disabled legacy path; authoritative execution uses
         # JobSupervisorService's process-owned registry above.
@@ -1468,7 +1472,7 @@ class CommandExecutorService:
 
             def renew_lease() -> None:
                 from app.repositories.session import session_scope
-                interval = max(1, self._job_supervisor._lease_seconds // 3)
+                interval = max(1, min(30, self._job_supervisor._lease_seconds // 3))
                 while not heartbeat_stop.wait(interval):
                     try:
                         with session_scope() as lease_session:
