@@ -58,6 +58,7 @@ class StageRecoveryPolicyContext:
     commands_executed: bool = False
     command_authority_mismatch: bool = False
     reconstruction_required: bool = False
+    retry_budget_exhausted: bool = False
 
 
 @dataclass(frozen=True)
@@ -142,7 +143,11 @@ class StageRecoveryPolicyService:
         }:
             action = (
                 RecoveryAction.REEXECUTE_FROM_G07
-                if context.stage_status == "cancelled" or context.reconstruction_required
+                if (
+                    context.stage_status == "cancelled"
+                    or context.reconstruction_required
+                    or context.retry_budget_exhausted
+                )
                 else RecoveryAction.RETRY_COMMAND
                 if context.command_id
                 else RecoveryAction.RECOVER_STAGE

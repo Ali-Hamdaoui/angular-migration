@@ -38,6 +38,7 @@ def _context(**changes):
         "introduced_by_migration": False,
         "command_id": "npm-install",
         "reconstruction_required": False,
+        "retry_budget_exhausted": False,
     }
     values.update(changes)
     return StageRecoveryPolicyContext(**values)
@@ -182,6 +183,18 @@ def test_transient_environment_failure_retries_command():
 
     assert decision.allowed is True
     assert decision.action is RecoveryAction.RETRY_COMMAND
+
+
+def test_exhausted_transient_retry_budget_reexecutes_from_g07():
+    decision = StageRecoveryPolicyService().decide(
+        _context(
+            failure_class=RecoveryFailureClass.ENVIRONMENT_TRANSIENT,
+            retry_budget_exhausted=True,
+        )
+    )
+
+    assert decision.allowed is True
+    assert decision.action is RecoveryAction.REEXECUTE_FROM_G07
 
 
 def test_stale_gate_is_recreated_without_stage_reexecution():

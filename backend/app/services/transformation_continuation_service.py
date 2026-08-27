@@ -467,6 +467,7 @@ class TransformationContinuationService:
             commands_executed=commands_executed,
             command_authority_mismatch=command_authority_mismatch,
             reconstruction_required=bool(command and command.reconstruction_required),
+            retry_budget_exhausted=continuation.attempt >= continuation.max_attempts,
         )
 
     def reexecute_blocked_stage_from_g07(
