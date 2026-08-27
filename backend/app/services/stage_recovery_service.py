@@ -813,7 +813,7 @@ class StageRecoveryService:
                 select(StageGatePackageModel).where(
                     StageGatePackageModel.run_id == run.id,
                     StageGatePackageModel.stage_id == continuation.current_stage_id,
-                    StageGatePackageModel.status == "pending",
+                    StageGatePackageModel.status.in_(("pending", "approved")),
                 )
             ).all():
                 package.status = "stale"
