@@ -954,10 +954,13 @@ class StageRecoveryService:
         validation = current_values.get("validation_policy") or {}
         recovery = current_values.get("recovery_policy") or {}
         repair = current_values.get("repair_policy") or {}
+        planner_idempotency_key = "stage-authority-refresh-" + hashlib.sha256(
+            replacement_stage_id.encode("utf-8")
+        ).hexdigest()[:32]
         request = PlanGenerationRequest(
             run_id=run.id,
             expected_state_version=1,
-            idempotency_key=f"stage-authority-refresh:{replacement_stage_id}",
+            idempotency_key=planner_idempotency_key,
             actor="stage-recovery-service",
             source_exact=current_values["source_exact"],
             source_family=authority.source_family,
