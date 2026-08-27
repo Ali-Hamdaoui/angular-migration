@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from app.domain.proven_failure import (
+    FailureCategory,
     FailureBundle,
     FailureOwner,
     MigrationFailureEnvelope,
@@ -119,8 +120,9 @@ class FailureClassifier:
                 return ClassificationResult(
                     RepairDecision.CATALOGUE, 3, "compatibility catalogue repair", catalogue_repair
                 )
-        # Rung 4: LLM proposer over the bounded FailureBundle.
-        if self._llm_proposer is not None and bundle is not None:
+        # Rung 4: LLM proposer over bounded evidence. Environment, dependency,
+        # and lock failures stay on deterministic/governed recovery paths.
+        if self._llm_proposal_allowed(envelope) and self._llm_proposer is not None and bundle is not None:
             proposal = self._llm_proposer(bundle)
             if proposal is not None:
                 return ClassificationResult(
@@ -147,6 +149,14 @@ class FailureClassifier:
             6,
             "failure is not repairable under the current ladder",
             bundle=bundle,
+        )
+
+    @staticmethod
+    def _llm_proposal_allowed(envelope: MigrationFailureEnvelope) -> bool:
+        """Allow LLM analysis only for unknown or explicit source failures."""
+        return envelope.category is FailureCategory.UNKNOWN or (
+            envelope.repair_allowed
+            and envelope.owner is FailureOwner.SOURCE_TRANSFORMATION
         )
 
     # -- rung implementations ------------------------------------------------

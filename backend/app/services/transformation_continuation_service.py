@@ -15,9 +15,7 @@ from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.contracts import ArtifactType, WorkflowEventType
 from app.domain.transformation import TransformationNode, TransformationStatus
 from app.repositories.models import (
-    ActivePlanVersionModel,
     ArtifactMetadataModel,
-    BuildSystemDecisionModel,
     CommandExecutionModel,
     G06ApprovalModel,
     MigrationPlanModel,
@@ -27,13 +25,10 @@ from app.repositories.models import (
     StageCheckpointModel,
     StageExecutionPlanModel,
     StageGatePackageModel,
-    StageStepModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
     WorkflowEventModel,
 )
-from app.domain.planning import BuildSystemDecision, MigrationPlan, StageExecutionPlan, checksum_model
-from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.state import StateTransitionService
 
@@ -257,6 +252,169 @@ class TransformationContinuationService:
         )
         return candidate
 
+    def _recovery_policy_context(self, session, continuation):
+        """Load immutable failure and safety facts for the pure recovery policy."""
+        from app.services.failure_evidence_service import FailureEvidenceService
+        from app.services.stage_recovery_policy_service import (
+            RecoveryFailureClass,
+            StageRecoveryPolicyContext,
+        )
+
+        binding = session.scalar(
+            select(StageWorkspaceBindingModel)
+            .where(
+                StageWorkspaceBindingModel.run_id == continuation.run_id,
+                StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+                StageWorkspaceBindingModel.active.is_(True),
+            )
+            .order_by(
+                StageWorkspaceBindingModel.created_at.desc(),
+                StageWorkspaceBindingModel.id.desc(),
+            )
+            .limit(1)
+        )
+        plan = session.get(MigrationPlanModel, continuation.plan_id)
+        stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+        active_command = session.scalar(
+            select(CommandExecutionModel.id).where(
+                CommandExecutionModel.run_id == continuation.run_id,
+                CommandExecutionModel.stage_id == continuation.current_stage_id,
+                CommandExecutionModel.status.in_(("queued", "pending", "running")),
+            )
+        )
+        command = session.get(CommandExecutionModel, continuation.waiting_execution_id) if continuation.waiting_execution_id else None
+        if command is None:
+            command = session.scalar(
+                select(CommandExecutionModel)
+                .where(
+                    CommandExecutionModel.run_id == continuation.run_id,
+                    CommandExecutionModel.stage_id == continuation.current_stage_id,
+                    CommandExecutionModel.status.in_(("failed", "cancelled", "interrupted")),
+                )
+                .order_by(
+                    CommandExecutionModel.finished_at.desc(),
+                    CommandExecutionModel.id.desc(),
+                )
+                .limit(1)
+            )
+        pending_gate = session.scalar(
+            select(StageGatePackageModel)
+            .where(
+                StageGatePackageModel.run_id == continuation.run_id,
+                StageGatePackageModel.stage_id == continuation.current_stage_id,
+                StageGatePackageModel.status == "pending",
+            )
+            .order_by(
+                StageGatePackageModel.gate_version.desc(),
+                StageGatePackageModel.id.desc(),
+            )
+            .limit(1)
+        )
+        checkpoint = session.scalar(
+            select(StageCheckpointModel)
+            .where(
+                StageCheckpointModel.run_id == continuation.run_id,
+                StageCheckpointModel.stage_id == continuation.current_stage_id,
+                StageCheckpointModel.safe_for_resume.is_(True),
+            )
+            .order_by(StageCheckpointModel.sequence.desc(), StageCheckpointModel.id.desc())
+            .limit(1)
+        )
+        if checkpoint is None:
+            checkpoint = session.scalar(
+                select(StageCheckpointModel)
+                .where(
+                    StageCheckpointModel.run_id == continuation.run_id,
+                    StageCheckpointModel.safe_for_resume.is_(True),
+                    StageCheckpointModel.sealed.is_(True),
+                )
+                .order_by(StageCheckpointModel.created_at.desc(), StageCheckpointModel.id.desc())
+                .limit(1)
+            )
+        workspace_authority_valid = bool(
+            binding is not None
+            and plan is not None
+            and stage_plan is not None
+            and plan.run_id == continuation.run_id
+            and stage_plan.run_id == continuation.run_id
+            and stage_plan.stage_id == continuation.current_stage_id
+            and plan.checksum == continuation.plan_checksum
+            and stage_plan.checksum == continuation.stage_plan_checksum
+            and Path(binding.workspace_path).is_dir()
+        )
+        gate_binding_stale = False
+        if pending_gate is not None and binding is not None and Path(binding.workspace_path).is_dir():
+            try:
+                gate_binding_stale = pending_gate.workspace_fingerprint != StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+            except (OSError, ValueError):
+                gate_binding_stale = True
+        failure_code = continuation.last_error_code or (command.failure_code if command else None)
+        failure_message = continuation.last_error_message or (command.failure_message if command else None)
+        route = FailureEvidenceService().classify(
+            {
+                "normalized_failure": {
+                    "error_code": failure_code,
+                    "failure_message": failure_message,
+                    "command_id": command.command_id if command else None,
+                },
+                "failure_fingerprint": "recovery-context",
+                "prior_fingerprints": [],
+            }
+        )
+        if pending_gate is not None and gate_binding_stale:
+            failure_class = RecoveryFailureClass.STALE_GATE_BINDING
+        elif failure_code == "PROVEN_TARGET_COHORT_INCOMPLETE":
+            failure_class = RecoveryFailureClass.TARGET_COHORT_INCOMPLETE
+        elif failure_code in {"PROVEN_LOCK_RESOLUTION_FAILED", "LOCKFILE_GENERATION_ERESOLVE"}:
+            failure_class = RecoveryFailureClass.LOCK_RESOLUTION_FAILED
+        elif (
+            command is not None
+            and command.status == "interrupted"
+        ) or continuation.status == TransformationStatus.CANCELLED.value:
+            failure_class = RecoveryFailureClass.COMMAND_INTERRUPTED
+        elif route.value == "environment_transient":
+            failure_class = RecoveryFailureClass.ENVIRONMENT_TRANSIENT
+        elif route.value == "environment_permanent":
+            failure_class = RecoveryFailureClass.ENVIRONMENT_PERMANENT
+        elif route.value == "dependency_incompatible":
+            failure_class = RecoveryFailureClass.DEPENDENCY_INCOMPATIBLE
+        else:
+            failure_class = RecoveryFailureClass.UNKNOWN_FAILURE
+        output_nodes = {
+            "target_tree",
+            "target_version_proof",
+            "execute_migration_owner",
+            "validation_build",
+            "validation_test",
+        }
+        stage_output_invalid = continuation.current_node in output_nodes
+        return StageRecoveryPolicyContext(
+            run_id=continuation.run_id,
+            stage_id=continuation.current_stage_id,
+            stage_status=continuation.status,
+            failure_code=failure_code,
+            failure_message=failure_message,
+            failure_class=failure_class,
+            evidence_refs=tuple(
+                ref
+                for ref in (
+                    command.id if command else None,
+                    pending_gate.id if pending_gate else None,
+                    checkpoint.id if checkpoint else None,
+                )
+                if ref
+            ),
+            checkpoint_present=checkpoint is not None,
+            checkpoint_safe=bool(checkpoint and checkpoint.safe_for_resume),
+            workspace_authority_valid=workspace_authority_valid,
+            active_command=active_command is not None,
+            active_gate=pending_gate.gate_id if pending_gate else None,
+            gate_binding_stale=gate_binding_stale,
+            stage_output_invalid=stage_output_invalid,
+            introduced_by_migration=continuation.current_node in output_nodes,
+            command_id=command.command_id if command else None,
+        )
+
     def reexecute_blocked_stage_from_g07(
         self,
         session: Session,
@@ -265,435 +423,42 @@ class TransformationContinuationService:
         expected_state_version: int,
         idempotency_key: str,
         now: datetime | None = None,
-    ) -> StageExecutionPlan:
-        """Rebuild only a blocked stage's derived cohort through the Factory boundary."""
-        if continuation.state_version != expected_state_version:
-            raise TransformationContinuationError("TRANSFORMATION_STATE_CONFLICT", "Transformer state changed; refresh authoritative state")
-        cancelled_materialization = session.scalar(
-            select(CommandExecutionModel)
-            .where(
-                CommandExecutionModel.run_id == continuation.run_id,
-                CommandExecutionModel.stage_id == continuation.current_stage_id,
-                CommandExecutionModel.command_id == "npm-lockfile-generate",
-                CommandExecutionModel.status == "cancelled",
-            )
-            .order_by(CommandExecutionModel.finished_at.desc())
-            .limit(1)
-        )
-        failed_materialization = session.scalar(
-            select(CommandExecutionModel)
-            .where(
-                CommandExecutionModel.run_id == continuation.run_id,
-                CommandExecutionModel.stage_id == continuation.current_stage_id,
-                CommandExecutionModel.command_id == "npm-lockfile-generate",
-                CommandExecutionModel.status == "failed",
-            )
-            .order_by(CommandExecutionModel.finished_at.desc())
-            .limit(1)
-        )
-        pending_g12 = session.scalar(
-            select(StageGatePackageModel)
-            .where(
-                StageGatePackageModel.run_id == continuation.run_id,
-                StageGatePackageModel.stage_id == continuation.current_stage_id,
-                StageGatePackageModel.gate_id == "G12",
-                StageGatePackageModel.status == "pending",
-            )
-            .order_by(StageGatePackageModel.gate_version.desc())
-            .limit(1)
-        )
-        approved_cancelled_materialization = (
-            continuation.status == TransformationStatus.CANCELLED.value
-            and continuation.current_stage_id == "angular-15-to-16--181a457f1430ae3b"
-            and continuation.current_node == "terminal"
-            and continuation.cancel_requested_at is not None
-            and cancelled_materialization is not None
-        )
-        approved_lock_materialization_failure = (
-            continuation.current_stage_id == "angular-15-to-16--181a457f1430ae3b"
-            and continuation.current_node == "create_materialization"
-            and continuation.last_error_code == "PROVEN_LOCK_RESOLUTION_FAILED"
-            and (
-                cancelled_materialization is not None
-                or (
-                    failed_materialization is not None
-                    and failed_materialization.failure_code == "COMMAND_EXIT_NONZERO"
-                    and "ERESOLVE" in (failed_materialization.failure_message or "")
-                    and "karma@5.1.1" in (failed_materialization.failure_message or "")
-                    and "@angular-devkit/build-angular@16.2.16" in (failed_materialization.failure_message or "")
-                )
-            )
-        )
-        latest_binding_path = session.scalar(
-            select(StageWorkspaceBindingModel.workspace_path)
-            .where(
-                StageWorkspaceBindingModel.run_id == continuation.run_id,
-                StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
-                StageWorkspaceBindingModel.active.is_(True),
-            )
-            .order_by(StageWorkspaceBindingModel.created_at.desc())
-            .limit(1)
-        )
-        approved_stale_g12_binding = (
-            continuation.status == TransformationStatus.WAITING_GATE.value
-            and continuation.current_stage_id == "angular-15-to-16--181a457f1430ae3b"
-            and continuation.current_node == "wait_g12"
-            and pending_g12 is not None
-            and latest_binding_path is not None
-            and pending_g12.workspace_fingerprint != StageSandboxCopier.fingerprint(
-                Path(latest_binding_path)
-            )
-        )
-        if continuation.status != TransformationStatus.BLOCKED.value and not (
-            approved_cancelled_materialization or approved_stale_g12_binding
-        ):
-            raise TransformationContinuationError("STAGE_REEXECUTION_NOT_ALLOWED", "Only an approved blocked or cancelled stage may be re-executed")
-        approved_authority_failure = (
-            continuation.current_node == "prove_discovery_cli_authority"
-            and continuation.last_error_code in {"TRANSFORMER_WORKFLOW_UNHANDLED_ERROR", "FIRST_COMMAND_NOT_AUTHORIZED"}
-        )
-        approved_discovery_failure = (
-            continuation.current_node == "assess_discovery"
-            and continuation.last_error_code == "COMMAND_EXIT_NONZERO"
-            and "single package must be specified" in (continuation.last_error_message or "").lower()
-        )
-        approved_catalogue_failure = (
-            continuation.current_stage_id == "angular-15-to-16--181a457f1430ae3b"
-            and continuation.current_node == "run_discovery"
-            and continuation.last_error_code == "TRANSFORMER_WORKFLOW_UNHANDLED_ERROR"
-            and (continuation.last_error_message or "").strip()
-            == "Unhandled Transformer workflow exception: 'typescript'"
-        )
-        run_for_failure = session.get(MigrationRunModel, continuation.run_id)
-        latest_test_failure = session.scalar(
-            select(CommandExecutionModel)
-            .where(
-                CommandExecutionModel.run_id == continuation.run_id,
-                CommandExecutionModel.stage_id == continuation.current_stage_id,
-                CommandExecutionModel.command_id == "npm-script-test-ci",
-                CommandExecutionModel.status == "failed",
-            )
-            .order_by(CommandExecutionModel.requested_at.desc())
-        )
-        test_failure_output = latest_test_failure.failure_message if latest_test_failure is not None else ""
-        if latest_test_failure is not None and latest_test_failure.stdout_artifact_id and run_for_failure is not None:
-            try:
-                store = LocalFilesystemArtifactStore(
-                    Path(run_for_failure.artifact_root),
-                    fixed_run_root=Path(run_for_failure.artifact_root),
-                )
-                test_failure_output += "\n" + store.read_artifact_by_id(latest_test_failure.stdout_artifact_id).content
-            except Exception:
-                pass
-        approved_missing_cli_owner = (
-            continuation.current_node == "classify_failure"
-            and continuation.last_error_code == "DEPENDENCY_BUNDLE_MISSING_FOR_CONTEXT"
-            and latest_test_failure is not None
-            and "__webpack_require__(...).context is not a function" in test_failure_output
-        )
-        approved_reexecution_retry = (
-            "-reexec-" in (continuation.stage_plan_id or "")
-            and (
-                (
-                    continuation.current_node == "source_install_same_authority"
-                    and continuation.last_error_code == "IDEMPOTENCY_KEY_REUSED"
-                )
-                or (
-                    continuation.current_node == "classify_failure"
-                    and continuation.last_error_code == "CAUSAL_EXECUTION_AMBIGUOUS"
-                )
-                or (
-                    continuation.current_node == "execute_migration_owner"
-                    and continuation.last_error_code == "TRANSFORMER_WORKFLOW_UNHANDLED_ERROR"
-                )
-                or (
-                    continuation.current_node == "target_tree"
-                    and continuation.last_error_code == "PROVEN_TARGET_INSTALL_NOT_VERIFIED"
-                )
-                or (
-                    continuation.current_node == "target_install_same_authority"
-                    and continuation.last_error_code == "FIRST_COMMAND_NOT_AUTHORIZED"
-                )
-                or (
-                    continuation.current_node == "source_install_same_authority"
-                    and continuation.last_error_code == "TRANSFORMER_WORKFLOW_UNHANDLED_ERROR"
-                )
-                or (
-                    continuation.current_node == "propose_repair"
-                    and continuation.last_error_code == "REPAIR_CAUSAL_KIND_MISMATCH"
-                    and "cannot find module 'source-map'" in test_failure_output.lower()
-                )
-            )
-        )
-        if not (
-            approved_authority_failure
-            or approved_discovery_failure
-            or approved_missing_cli_owner
-            or approved_catalogue_failure
-            or approved_cancelled_materialization
-            or approved_lock_materialization_failure
-            or approved_stale_g12_binding
-            or approved_reexecution_retry
-        ):
-            raise TransformationContinuationError("STAGE_REEXECUTION_NOT_ALLOWED", "The blocked evidence is not the approved target-cohort authority failure")
-        replay = session.scalar(
-            select(WorkflowEventModel).where(
-                WorkflowEventModel.run_id == continuation.run_id,
-                WorkflowEventModel.idempotency_key == f"{continuation.id}:reexecute:{idempotency_key}",
-            )
-        )
-        if replay is not None:
-            stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
-            if stage_plan is None:
-                raise TransformationContinuationError("STAGE_PLAN_STALE", "Re-executed stage plan is missing")
-            return StageExecutionPlan.model_validate(stage_plan.stage_plan)
-        plan = session.get(MigrationPlanModel, continuation.plan_id)
-        current = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
-        run = session.get(MigrationRunModel, continuation.run_id)
-        binding = session.scalar(
-            select(StageWorkspaceBindingModel).where(
-                StageWorkspaceBindingModel.run_id == continuation.run_id,
-                StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
-                StageWorkspaceBindingModel.active.is_(True),
-            )
-        )
-        if plan is None or current is None or run is None or binding is None:
-            raise TransformationContinuationError("STAGE_REEXECUTION_CONTEXT_MISSING", "Stage re-execution evidence is incomplete")
-        created_at = now or datetime.now(UTC)
-        # Reexecution restarts the whole governed stage. Old step execution
-        # pointers are audit history, not reusable work for the replacement.
-        for step in session.scalars(
-            select(StageStepModel).where(
-                StageStepModel.run_id == run.id,
-                StageStepModel.stage_id == continuation.current_stage_id,
-            )
-        ).all():
-            step.status = "PENDING"
-            step.attempt_id = None
-            step.idempotency_key = None
-            step.started_at = None
-            step.completed_at = None
-            step.execution_id = None
-            step.output_checksum = None
-            step.workspace_fingerprint = None
-            step.artifact_ids = []
-            step.updated_at = created_at
-        workspace_drifted = StageSandboxCopier.fingerprint(Path(binding.workspace_path)) != binding.workspace_fingerprint
-        if workspace_drifted and not (
-            approved_discovery_failure
-            or approved_missing_cli_owner
-            or approved_catalogue_failure
-            or approved_cancelled_materialization
-            or approved_lock_materialization_failure
-            or approved_stale_g12_binding
-            or approved_reexecution_retry
-        ):
-            raise TransformationContinuationError("STALE_WORKSPACE", "The isolated stage workspace changed after the block")
-        restored_fingerprint = None
-        if (
-            approved_discovery_failure
-            or approved_missing_cli_owner
-            or approved_catalogue_failure
-            or approved_cancelled_materialization
-            or approved_lock_materialization_failure
-            or approved_stale_g12_binding
-            or approved_reexecution_retry
-        ):
-            aliases = dict(run.workspace_aliases or {})
-            baseline = aliases.get("BASELINE_SANDBOX")
-            stage_root = aliases.get("STAGE_SANDBOX")
-            expected = aliases.get("BASELINE_SANDBOX_FINGERPRINT") or binding.workspace_fingerprint
-            if not baseline or not stage_root:
-                raise TransformationContinuationError("STAGE_REEXECUTION_CONTEXT_MISSING", "The sealed predecessor is unavailable for discovery re-execution")
-            try:
-                from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
+    ) -> object | None:
+        """Orchestrate a policy decision and dispatch it to the recovery owner."""
+        from app.services.stage_recovery_policy_service import RecoveryAction, StageRecoveryPolicyService
+        from app.services.stage_recovery_service import StageRecoveryError, StageRecoveryService
 
-                restored_fingerprint = TransformerStageService.reconstruct_workspace(
-                    baseline,
-                    binding.workspace_path,
-                    stage_root,
-                    expected,
-                )
-            except TransformerStageError as error:
-                raise TransformationContinuationError(error.code, error.message) from error
-            binding.workspace_fingerprint = restored_fingerprint
-            binding.last_verified_fingerprint = restored_fingerprint
-            binding.last_verified_at = now or datetime.now(UTC)
-        current_values = dict(current.stage_plan or {})
-        catalogue = CompatibilityCatalogueProvider().load((plan.plan or {}).get("catalogue_version", "catalog-v4"))
-        entry = catalogue.entry_for(current_values["source_family"], current_values["target_family"])
-        current_values.update(
-            target_exact=entry.target_angular_exact,
-            target_cli_exact=entry.target_cli_exact,
-            target_cohort=entry.target_cohort(),
-        )
-        commands = dict(current_values.get("commands") or {})
-        final_install = [dict(item) for item in commands.get("final_install", [])]
-        if final_install:
-            final_install[0].update(
-                template_id="tpl-npm-ci-final-v3",
-                template_version=3,
-                arguments=["ci", "--include=optional"],
+        policy_context = self._recovery_policy_context(session, continuation)
+        decision = StageRecoveryPolicyService().decide(policy_context)
+        if not decision.allowed:
+            raise TransformationContinuationError(
+                decision.reason_code,
+                "Recovery policy denied automatic stage transition",
             )
-            commands["final_install"] = final_install
-            current_values["commands"] = commands
-        replacement_version = current.version + 1
-        reexecution_suffix = f"reexec-{hashlib.sha256(idempotency_key.encode()).hexdigest()[:12]}"
-        plan_id = f"{plan.id[:128 - len(reexecution_suffix) - 1]}-{reexecution_suffix}"
-        plan_values = dict(plan.plan or {})
-        plan_values.update(plan_id=plan_id, version=replacement_version, checksum="sha256:" + "0" * 64)
-        rebuilt_plan = MigrationPlan.model_validate(plan_values)
-        rebuilt_plan = rebuilt_plan.model_copy(update={"checksum": checksum_model(rebuilt_plan)})
-        stage_id = f"{current.id[:128 - len(reexecution_suffix) - 1]}-{reexecution_suffix}"
-        rebuilt = StageExecutionPlan.model_validate(
-            {
-                **current_values,
-                "stage_plan_id": stage_id,
-                "plan_version": replacement_version,
-                "checksum": "sha256:" + "0" * 64,
-            }
-        )
-        rebuilt = rebuilt.model_copy(update={
-            "build_system_decision": BuildSystemDecision.create(
-                decision_id=f"builder-{run.id}-{continuation.current_stage_id}-reexec-{replacement_version}",
-                builder=rebuilt.build_system_decision.builder,
-                action=rebuilt.build_system_decision.action,
-                rationale=rebuilt.build_system_decision.rationale,
-            ),
-            "checksum": "sha256:" + "0" * 64,
-        })
-        rebuilt = rebuilt.model_copy(update={"checksum": checksum_model(rebuilt)})
-        store = LocalFilesystemArtifactStore(Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root))
-        stored = store.write_text_artifact(
-            run.id,
-            f"04_workflow_state/stages/{continuation.current_stage_id}/reexecution/{stage_id}.json",
-            json.dumps({
-                "reason": "refresh exact target cohort from current compatibility catalogue",
-                "old_stage_plan_checksum": current.checksum,
-                "new_stage_plan_checksum": rebuilt.checksum,
-                "target_cohort": rebuilt.target_cohort,
-                "workspace_fingerprint": binding.workspace_fingerprint,
-                "restored_from_sealed_predecessor": restored_fingerprint is not None,
-            }, sort_keys=True, indent=2),
-            ArtifactType.JSON,
-            stage_id=continuation.current_stage_id,
-            created_by="transformation-reexecution",
-            created_at=created_at,
-            input_hashes={"stage_plan": current.checksum, "workspace": binding.workspace_fingerprint},
-            policy_version="proven-stage-reexecution-v1",
-        )
-        session.add(ArtifactMetadataModel(
-            id="metadata-" + stored.ref.artifact_id,
-            run_id=run.id,
-            stage_id=continuation.current_stage_id,
-            artifact_type=stored.ref.artifact_type.value,
-            relative_path=stored.ref.relative_path,
-            checksum=stored.ref.checksum,
-            created_at=created_at,
-        ))
-        current.status = "stale"
-        plan.status = "stale"
-        plan_artifact_ids = list(plan.artifact_ids or []) + [stored.ref.artifact_id]
-        plan_artifact_checksums = dict(plan.artifact_checksums or {})
-        plan_artifact_checksums[stored.ref.artifact_id] = stored.ref.checksum
-        session.add(MigrationPlanModel(
-            id=plan_id,
-            run_id=run.id,
-            idempotency_key=idempotency_key,
-            request_checksum=stored.ref.checksum,
-            actor="transformation-reexecution",
-            correlation_id=idempotency_key,
-            status="approved_for_execution",
-            version=replacement_version,
-            plan=rebuilt_plan.model_dump(mode="json"),
-            checksum=rebuilt_plan.checksum,
-            artifact_ids=plan_artifact_ids,
-            artifact_checksums=plan_artifact_checksums,
-            state_version=continuation.state_version + 1,
-            event_sequence=0,
-            created_at=created_at,
-            updated_at=created_at,
-        ))
-        replacement = StageExecutionPlanModel(
-            id=stage_id,
-            run_id=run.id,
-            migration_plan_id=plan_id,
-            stage_id=continuation.current_stage_id,
-            idempotency_key=idempotency_key,
-            request_checksum=stored.ref.checksum,
-            actor="transformation-reexecution",
-            correlation_id=idempotency_key,
-            status="approved_for_execution",
-            version=replacement_version,
-            stage_plan=rebuilt.model_dump(mode="json"),
-            checksum=rebuilt.checksum,
-            artifact_ids=[stored.ref.artifact_id],
-            artifact_checksums={stored.ref.artifact_id: stored.ref.checksum},
-            state_version=continuation.state_version + 1,
-            event_sequence=0,
-            created_at=created_at,
-            updated_at=created_at,
-        )
-        session.add(replacement)
-        session.add(BuildSystemDecisionModel(
-            id="decision-" + hashlib.sha256(stage_id.encode()).hexdigest()[:12],
-            run_id=run.id,
-            stage_plan_id=stage_id,
-            decision_id=rebuilt.build_system_decision.decision_id,
-            decision=rebuilt.build_system_decision.model_dump(mode="json"),
-            checksum=rebuilt.build_system_decision.checksum,
-            created_at=created_at,
-        ))
-        pointer = session.scalar(select(ActivePlanVersionModel).where(
-            ActivePlanVersionModel.run_id == run.id,
-            ActivePlanVersionModel.scope == continuation.current_stage_id,
-        ))
-        if pointer is None:
-            raise TransformationContinuationError("STAGE_REEXECUTION_CONTEXT_MISSING", "Active stage plan pointer is missing")
-        migration_pointer = session.scalar(select(ActivePlanVersionModel).where(
-            ActivePlanVersionModel.run_id == run.id,
-            ActivePlanVersionModel.scope == "migration",
-        ))
-        if migration_pointer is None:
-            raise TransformationContinuationError("STAGE_REEXECUTION_CONTEXT_MISSING", "Active migration plan pointer is missing")
-        migration_pointer.migration_plan_id = plan_id
-        migration_pointer.stage_plan_id = stage_id
-        migration_pointer.version = replacement_version
-        migration_pointer.state_version = continuation.state_version + 1
-        migration_pointer.updated_at = created_at
-        pointer.migration_plan_id = plan_id
-        pointer.stage_plan_id = stage_id
-        pointer.version = replacement_version
-        pointer.state_version = continuation.state_version + 1
-        pointer.updated_at = created_at
-        continuation.plan_id = plan_id
-        continuation.plan_checksum = rebuilt_plan.checksum
-        continuation.stage_plan_id = stage_id
-        continuation.stage_plan_checksum = rebuilt.checksum
-        continuation.status = TransformationStatus.QUEUED.value
-        continuation.current_node = "create_g07"
-        continuation.last_error_code = None
-        continuation.last_error_message = None
-        continuation.cancel_requested_at = None
-        continuation.cancel_requested_by = None
-        continuation.cancel_idempotency_key = None
-        continuation.cancel_request_checksum = None
-        continuation.worker_id = None
-        continuation.lease_expires_at = None
-        continuation.wake_sequence += 1
-        continuation.state_version += 1
-        continuation.updated_at = created_at
-        append_continuation_event(
-            session,
-            continuation,
-            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED,
-            key=f"reexecute:{idempotency_key}",
-            reason="blocked stage re-execution rebuilt its exact target cohort and returned to G07",
-            payload={"stage_plan_id": stage_id, "artifact_id": stored.ref.artifact_id},
-            occurred_at=created_at,
-            actor="control-tower",
-        )
-        return rebuilt
+        recovery = StageRecoveryService()
+        try:
+            if decision.action is RecoveryAction.RECREATE_GATE:
+                recovery.recreate_gate_in_session(
+                    session,
+                    continuation,
+                    gate_id=str(policy_context.active_gate),
+                    expected_state_version=expected_state_version,
+                    idempotency_key=idempotency_key,
+                )
+                return None
+            if decision.action is not RecoveryAction.REEXECUTE_FROM_G07:
+                raise StageRecoveryError(
+                    "RECOVERY_ACTION_NOT_STAGE_REEXECUTION",
+                    f"Recovery policy selected {decision.action.value}; use its governed flow",
+                )
+            return recovery.reexecute_from_g07_in_session(
+                session,
+                continuation,
+                expected_state_version=expected_state_version,
+                idempotency_key=idempotency_key,
+            )
+        except StageRecoveryError as error:
+            raise TransformationContinuationError(error.code, error.message) from error
 
     def record_unhandled_workflow_fault(
         self,
@@ -743,7 +508,10 @@ class TransformationContinuationService:
                 StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
                 StageWorkspaceBindingModel.active.is_(True),
             )
-            .order_by(StageWorkspaceBindingModel.created_at.desc())
+            .order_by(
+                StageWorkspaceBindingModel.created_at.desc(),
+                StageWorkspaceBindingModel.id.desc(),
+            )
         )
         persisted_fingerprint = binding.workspace_fingerprint if binding else None
         live_fingerprint = self._safe_workspace_fingerprint(binding.workspace_path if binding else None)

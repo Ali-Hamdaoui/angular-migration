@@ -396,6 +396,8 @@ def test_angular_16_target_cohort_normalizes_karma_for_build_angular(tmp_path):
     _apply_target_cohort(
         tmp_path,
         {"@angular/core": "16.2.12", "@angular-devkit/build-angular": "16.2.16"},
+        source_family="angular-15.x",
+        target_family="angular-16.x",
     )
 
     manifest = __import__("json").loads(package_json.read_text(encoding="utf-8"))

@@ -465,7 +465,10 @@ class ValidationRunner:
                 StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
                 StageWorkspaceBindingModel.active.is_(True),
             )
-            .order_by(StageWorkspaceBindingModel.created_at)
+            .order_by(
+                StageWorkspaceBindingModel.created_at.desc(),
+                StageWorkspaceBindingModel.id.desc(),
+            )
         ).all()
         stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
         planned_aliases = {

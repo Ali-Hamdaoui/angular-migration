@@ -172,6 +172,7 @@ class TransformerStageService:
                     StageWorkspaceBindingModel.stage_id == stage_id,
                     StageWorkspaceBindingModel.active.is_(True),
                 )
+                .order_by(StageWorkspaceBindingModel.created_at.desc(), StageWorkspaceBindingModel.id.desc())
             )
             bootstrap = session.scalar(
                 select(CommandExecutionModel)
@@ -351,6 +352,7 @@ class TransformerStageService:
                     StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
                     StageWorkspaceBindingModel.active.is_(True),
                 )
+                .order_by(StageWorkspaceBindingModel.created_at.desc(), StageWorkspaceBindingModel.id.desc())
             )
             expected_fingerprint = durable.workspace_fingerprint if durable is not None else None
         try:
@@ -1376,6 +1378,7 @@ class TransformerStageService:
                 StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
                 StageWorkspaceBindingModel.active.is_(True),
             )
+            .order_by(StageWorkspaceBindingModel.created_at.desc(), StageWorkspaceBindingModel.id.desc())
         )
         live_workspace_fingerprint = None
         authoritative = None
@@ -1735,6 +1738,7 @@ class TransformerStageService:
                 StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
                 StageWorkspaceBindingModel.active.is_(True),
             )
+            .order_by(StageWorkspaceBindingModel.created_at.desc(), StageWorkspaceBindingModel.id.desc())
         )
         request = self._reconstruction_request(
             continuation,
@@ -2263,7 +2267,10 @@ class TransformerStageService:
                 StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
                 StageWorkspaceBindingModel.active.is_(True),
             )
-            .order_by(StageWorkspaceBindingModel.created_at)
+            .order_by(
+                StageWorkspaceBindingModel.created_at.desc(),
+                StageWorkspaceBindingModel.id.desc(),
+            )
         ).all()
         stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
         planned_aliases = {

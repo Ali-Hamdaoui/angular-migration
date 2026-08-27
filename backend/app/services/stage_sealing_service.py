@@ -109,7 +109,10 @@ class StageSealingService:
                 StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
                 StageWorkspaceBindingModel.active.is_(True),
             )
-            .order_by(StageWorkspaceBindingModel.created_at.desc())
+            .order_by(
+                StageWorkspaceBindingModel.created_at.desc(),
+                StageWorkspaceBindingModel.id.desc(),
+            )
         ).all()
         binding = next(
             (

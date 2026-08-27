@@ -43,6 +43,7 @@ from app.repositories.session import session_scope
 from app.services.proven_activation_gate import ProvenActivationGate
 from app.services.command_registry_service import CommandRegistryService
 from app.services.package_migration_service import PackageMigrationError, PackageMigrationService
+from app.services.proven_stage_tooling_policy import ProvenStageToolingPolicy
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformer_stage_service import (
     TransformerStageError,
@@ -54,10 +55,11 @@ from app.services.transformation_continuation_service import (
 
 
 class ProvenStageExecutionError(ValueError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, details: dict[str, object] | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.details = details or {}
 
 
 #: Node -> successor after a successful deterministic handler.  Handlers that
@@ -194,7 +196,13 @@ class ProvenStageExecutionService:
         continuation.updated_at = datetime.now(UTC)
 
     @staticmethod
-    def _block(session, continuation: TransformationContinuationModel, code: str, message: str) -> None:
+    def _block(
+        session,
+        continuation: TransformationContinuationModel,
+        code: str,
+        message: str,
+        details: dict[str, object] | None = None,
+    ) -> None:
         expected_state_version = continuation.state_version
         continuation.status = "blocked"
         continuation.last_error_code = code
@@ -210,7 +218,11 @@ class ProvenStageExecutionService:
             event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_BLOCKED,
             key=f"block:{expected_state_version}:{code}",
             reason=message,
-            payload={"last_error_code": code, "expected_state_version": expected_state_version},
+            payload={
+                "last_error_code": code,
+                "expected_state_version": expected_state_version,
+                "details": details or {},
+            },
         )
 
     def _binding(self, session, continuation) -> StageWorkspaceBindingModel:
@@ -221,7 +233,10 @@ class ProvenStageExecutionService:
                 StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
                 StageWorkspaceBindingModel.active.is_(True),
             )
-            .order_by(StageWorkspaceBindingModel.created_at)
+            .order_by(
+                StageWorkspaceBindingModel.created_at.desc(),
+                StageWorkspaceBindingModel.id.desc(),
+            )
         ).all()
         stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
         planned_aliases = {
@@ -385,7 +400,12 @@ class ProvenStageExecutionService:
             "target_cli_entrypoint_absolute": authority.cli_entrypoint_absolute,
         }
         if command_id == "angular-update-discovery":
-            cohort = stage_plan["target_cohort"]
+            cohort = stage_plan.get("target_cohort") or {}
+            _require_target_cohort(
+                cohort,
+                source_family=str(stage_plan.get("source_family") or ""),
+                target_family=str(stage_plan.get("target_family") or ""),
+            )
             bindings["package"] = "@angular/core"
             for package, binding_name in (
                 ("@angular/cli", "cli_package_spec"),
@@ -465,7 +485,13 @@ class ProvenStageExecutionService:
         try:
             self._queue_authority_command(session, continuation, **kwargs)
         except (TransformerStageError, ProvenStageExecutionError) as error:
-            self._block(session, continuation, getattr(error, "code", "ANGULAR_CLI_AUTHORITY_FAILED"), str(error))
+            self._block(
+                session,
+                continuation,
+                getattr(error, "code", "ANGULAR_CLI_AUTHORITY_FAILED"),
+                str(error),
+                getattr(error, "details", None),
+            )
 
     def _artifact_checksums(self, session, execution) -> dict[str, str]:
         """Resolve committed artifact checksums for one execution row."""
@@ -978,9 +1004,14 @@ class ProvenStageExecutionService:
                 return
             cohort = stage_plan.get("target_cohort") or {}
             try:
-                _apply_target_cohort(workspace, cohort)
+                _apply_target_cohort(
+                    workspace,
+                    cohort,
+                    source_family=stage_plan.get("source_family"),
+                    target_family=stage_plan.get("target_family"),
+                )
             except ProvenStageExecutionError as error:
-                self._block(session, continuation, error.code, error.message)
+                self._block(session, continuation, error.code, error.message, error.details)
                 return
             self._advance_after(session, continuation, ProvenTransformationNode.APPLY_TARGET_INTENT.value)
 
@@ -999,6 +1030,8 @@ class ProvenStageExecutionService:
                     self._binding(session, continuation),
                     run.source_path if run is not None else None,
                     self._stage_plan(session, continuation).get("target_cohort") or {},
+                    source_family=self._stage_plan(session, continuation).get("source_family"),
+                    target_family=self._stage_plan(session, continuation).get("target_family"),
                 )
                 lock_reference = dict(
                     (self._stage_plan(session, continuation).get("commands") or {})
@@ -1509,6 +1542,9 @@ def _clear_target_node_modules(
     binding: StageWorkspaceBindingModel,
     source_path: str | None,
     target_cohort: dict[str, str],
+    *,
+    source_family: str | None = None,
+    target_family: str | None = None,
 ) -> None:
     """Rebuild target dependency inputs from source evidence before resolution."""
     import shutil
@@ -1546,8 +1582,11 @@ def _clear_target_node_modules(
             for package, exact in target_cohort.items():
                 if package in values:
                     values[package] = exact
-            if target_cohort.get("@angular/core") in {"12.2.17", "13.3.12", "14.3.0", "15.2.10", "16.2.12"} and "karma" in values:
-                values["karma"] = "~6.4.4"
+        ProvenStageToolingPolicy().apply(
+            manifest,
+            str(source_family or ""),
+            str(target_family or ""),
+        )
         target_manifest.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     # The target lock is generated from the approved target manifest.  Copying
     # the source lock here preserves unrelated source resolutions; stale
@@ -1612,7 +1651,13 @@ def _select_lock_authority(workspace: Path) -> tuple[str, str, str] | None:
     return None
 
 
-def _apply_target_cohort(workspace: Path, cohort: dict[str, str]) -> None:
+def _apply_target_cohort(
+    workspace: Path,
+    cohort: dict[str, str],
+    *,
+    source_family: str | None = None,
+    target_family: str | None = None,
+) -> None:
     import json as _json
 
     package_json = workspace / "package.json"
@@ -1628,13 +1673,45 @@ def _apply_target_cohort(workspace: Path, cohort: dict[str, str]) -> None:
             if package in current and current[package] != exact:
                 current[package] = exact
                 changed = True
-    if cohort.get("@angular/core") in {"12.2.17", "13.3.12", "14.3.0", "15.2.10", "16.2.12"}:
-        dev_dependencies = manifest.get("devDependencies")
-        if isinstance(dev_dependencies, dict) and "karma" in dev_dependencies and dev_dependencies["karma"] != "~6.4.4":
-            dev_dependencies["karma"] = "~6.4.4"
-            changed = True
+    changed = ProvenStageToolingPolicy().apply(
+        manifest,
+        str(source_family or ""),
+        str(target_family or ""),
+    ) or changed
     if changed:
         package_json.write_text(_json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _require_target_cohort(
+    cohort: dict[str, str], *, source_family: str, target_family: str
+) -> None:
+    required = (
+        "@angular/cli",
+        "@angular/core",
+        "@angular/animations",
+        "@angular/common",
+        "@angular/compiler",
+        "@angular/compiler-cli",
+        "@angular/forms",
+        "@angular/platform-browser",
+        "@angular/platform-browser-dynamic",
+        "@angular/router",
+        "@angular-devkit/build-angular",
+        "typescript",
+        "rxjs",
+        "zone.js",
+    )
+    missing = [package for package in required if not cohort.get(package)]
+    if missing:
+        raise ProvenStageExecutionError(
+            "PROVEN_TARGET_COHORT_INCOMPLETE",
+            "approved target cohort is missing required package bindings",
+            {
+                "missing_packages": missing,
+                "source_family": source_family,
+                "target_family": target_family,
+            },
+        )
 
 
 def _discover_migration_owners(workspace: Path) -> list[dict[str, str]]:
@@ -1697,7 +1774,10 @@ def _binding_row(session, continuation) -> StageWorkspaceBindingModel | None:
             StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
             StageWorkspaceBindingModel.active.is_(True),
         )
-        .order_by(StageWorkspaceBindingModel.created_at)
+        .order_by(
+            StageWorkspaceBindingModel.created_at.desc(),
+            StageWorkspaceBindingModel.id.desc(),
+        )
     ).all()
     stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
     planned_aliases = {

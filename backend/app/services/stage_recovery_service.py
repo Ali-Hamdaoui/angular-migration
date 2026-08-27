@@ -10,15 +10,20 @@ from pathlib import Path
 from sqlalchemy import select, update
 
 from app.artifact_store import ArtifactNotFoundError, ArtifactStoreError, LocalFilesystemArtifactStore
-from app.domain.contracts import WorkflowEventType
+from app.domain.contracts import ArtifactType, WorkflowEventType
+from app.domain.planning import BuildSystemDecision, MigrationPlan, StageExecutionPlan, checksum_model
 from app.repositories.models import (
+    ActivePlanVersionModel,
     ArtifactMetadataModel,
+    BuildSystemDecisionModel,
     CommandAuthorizationAuditModel,
     CommandExecutionModel,
     MigrationRunModel,
+    MigrationPlanModel,
     MigrationStageModel,
     RepairAttemptModel,
     StageCheckpointModel,
+    StageExecutionPlanModel,
     StageGateDecisionModel,
     StageGatePackageModel,
     StageRecoveryOperationModel,
@@ -530,6 +535,369 @@ class StageRecoveryService:
             )
             return self._result(operation, continuation, False)
 
+    def recreate_gate_in_session(
+        self,
+        session,
+        continuation: TransformationContinuationModel,
+        *,
+        gate_id: str,
+        expected_state_version: int,
+        idempotency_key: str,
+    ) -> None:
+        """Renew a stale gate package from the current valid workspace binding."""
+        if continuation.state_version != expected_state_version:
+            raise StageRecoveryError(
+                "TRANSFORMATION_STATE_CONFLICT",
+                "Transformer state changed; refresh authoritative state",
+            )
+        replay = session.scalar(
+            select(WorkflowEventModel).where(
+                WorkflowEventModel.run_id == continuation.run_id,
+                WorkflowEventModel.idempotency_key
+                == f"{continuation.id}:recreate-gate:{idempotency_key}",
+            )
+        )
+        if replay is not None:
+            return
+        package = session.scalar(
+            select(StageGatePackageModel)
+            .where(
+                StageGatePackageModel.run_id == continuation.run_id,
+                StageGatePackageModel.stage_id == continuation.current_stage_id,
+                StageGatePackageModel.gate_id == gate_id,
+                StageGatePackageModel.status == "pending",
+            )
+            .order_by(
+                StageGatePackageModel.gate_version.desc(),
+                StageGatePackageModel.id.desc(),
+            )
+        )
+        if package is None or continuation.status != "waiting_gate":
+            raise StageRecoveryError(
+                "STALE_GATE_RECOVERY_NOT_ALLOWED",
+                "A pending gate package and waiting-gate continuation are required",
+            )
+        binding = self._latest_binding(session, continuation.run_id, continuation.current_stage_id)
+        if binding is None or not Path(binding.workspace_path).is_dir():
+            raise StageRecoveryError(
+                "RECOVERY_WORKSPACE_AUTHORITY_MISSING",
+                "An active workspace binding is required to renew the gate",
+            )
+        plan = session.get(MigrationPlanModel, continuation.plan_id)
+        stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+        if (
+            plan is None
+            or stage_plan is None
+            or plan.run_id != continuation.run_id
+            or plan.checksum != continuation.plan_checksum
+            or stage_plan.run_id != continuation.run_id
+            or stage_plan.stage_id != continuation.current_stage_id
+            or stage_plan.checksum != continuation.stage_plan_checksum
+            or package.plan_id != continuation.plan_id
+            or package.stage_plan_id != continuation.stage_plan_id
+            or package.stage_plan_checksum != continuation.stage_plan_checksum
+        ):
+            raise StageRecoveryError(
+                "STALE_GATE_AUTHORITY",
+                "Gate package is not bound to the active plan and stage plan",
+            )
+        now = self._now()
+        package.status = "stale"
+        package.stale_at = now
+        continuation.status = "queued"
+        continuation.current_node = f"create_{gate_id.lower()}"
+        continuation.waiting_execution_id = None
+        continuation.worker_id = None
+        continuation.lease_expires_at = None
+        continuation.last_error_code = None
+        continuation.last_error_message = None
+        continuation.wake_sequence += 1
+        continuation.state_version += 1
+        continuation.updated_at = now
+        append_continuation_event(
+            session,
+            continuation,
+            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED,
+            key=f"recreate-gate:{idempotency_key}",
+            reason="stale gate package renewed from the active workspace binding",
+            payload={
+                "gate_id": gate_id,
+                "stale_package_id": package.id,
+                "workspace_binding_id": binding.id,
+                "stage_plan_checksum": stage_plan.checksum,
+            },
+            occurred_at=now,
+            actor="control-tower",
+        )
+
+    def reexecute_from_g07_in_session(
+        self,
+        session,
+        continuation: TransformationContinuationModel,
+        *,
+        expected_state_version: int,
+        idempotency_key: str,
+    ) -> StageExecutionPlan:
+        """Rebuild one blocked stage from its governed predecessor boundary."""
+        if continuation.state_version != expected_state_version:
+            raise StageRecoveryError(
+                "TRANSFORMATION_STATE_CONFLICT",
+                "Transformer state changed; refresh authoritative state",
+            )
+        replay = session.scalar(
+            select(WorkflowEventModel).where(
+                WorkflowEventModel.run_id == continuation.run_id,
+                WorkflowEventModel.idempotency_key
+                == f"{continuation.id}:reexecute:{idempotency_key}",
+            )
+        )
+        if replay is not None:
+            stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+            if stage_plan is None:
+                raise StageRecoveryError("STAGE_PLAN_STALE", "Re-executed stage plan is missing")
+            return StageExecutionPlan.model_validate(stage_plan.stage_plan)
+        if continuation.status not in {"blocked", "cancelled"}:
+            raise StageRecoveryError(
+                "STAGE_REEXECUTION_NOT_ALLOWED",
+                "Only a blocked or cancelled stage may be re-executed",
+            )
+        plan = session.get(MigrationPlanModel, continuation.plan_id)
+        current = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+        run = session.get(MigrationRunModel, continuation.run_id)
+        binding = self._latest_binding(session, continuation.run_id, continuation.current_stage_id)
+        if plan is None or current is None or run is None or binding is None:
+            raise StageRecoveryError(
+                "STAGE_REEXECUTION_CONTEXT_MISSING",
+                "Run, plan, stage plan, and workspace binding are required",
+            )
+        aliases = dict(run.workspace_aliases or {})
+        baseline = aliases.get("BASELINE_SANDBOX")
+        stage_root = aliases.get("STAGE_SANDBOX")
+        expected = aliases.get("BASELINE_SANDBOX_FINGERPRINT") or binding.workspace_fingerprint
+        if not baseline or not stage_root:
+            raise StageRecoveryError(
+                "STAGE_REEXECUTION_CONTEXT_MISSING",
+                "The sealed predecessor is unavailable for stage re-execution",
+            )
+        try:
+            restored_fingerprint = TransformerStageService.reconstruct_workspace(
+                baseline,
+                binding.workspace_path,
+                stage_root,
+                expected,
+            )
+        except TransformerStageError as error:
+            raise StageRecoveryError(error.code, error.message) from error
+        now = self._now()
+        binding.workspace_fingerprint = restored_fingerprint
+        binding.last_verified_fingerprint = restored_fingerprint
+        binding.last_verified_at = now
+        for step in session.scalars(
+            select(StageStepModel).where(
+                StageStepModel.run_id == run.id,
+                StageStepModel.stage_id == continuation.current_stage_id,
+            )
+        ).all():
+            step.status = "PENDING"
+            step.attempt_id = None
+            step.idempotency_key = None
+            step.started_at = None
+            step.completed_at = None
+            step.execution_id = None
+            step.output_checksum = None
+            step.workspace_fingerprint = None
+            step.artifact_ids = []
+            step.updated_at = now
+        current_values = dict(current.stage_plan or {})
+        replacement_suffix = f"recovery-{hashlib.sha256(idempotency_key.encode()).hexdigest()[:12]}"
+        replacement_plan_id = f"{plan.id[:128 - len(replacement_suffix) - 1]}-{replacement_suffix}"
+        plan_values = dict(plan.plan or {})
+        plan_values.update(
+            plan_id=replacement_plan_id,
+            version=current.version + 1,
+            checksum="sha256:" + "0" * 64,
+        )
+        rebuilt_plan = MigrationPlan.model_validate(plan_values)
+        rebuilt_plan = rebuilt_plan.model_copy(update={"checksum": checksum_model(rebuilt_plan)})
+        replacement_stage_id = f"{current.id[:128 - len(replacement_suffix) - 1]}-{replacement_suffix}"
+        rebuilt = StageExecutionPlan.model_validate(
+            {
+                **current_values,
+                "stage_plan_id": replacement_stage_id,
+                "plan_version": current.version + 1,
+                "checksum": "sha256:" + "0" * 64,
+            }
+        )
+        rebuilt = rebuilt.model_copy(
+            update={
+                "build_system_decision": BuildSystemDecision.create(
+                    decision_id=f"builder-{run.id}-{replacement_stage_id}",
+                    builder=rebuilt.build_system_decision.builder,
+                    action=rebuilt.build_system_decision.action,
+                    rationale=rebuilt.build_system_decision.rationale,
+                ),
+                "checksum": "sha256:" + "0" * 64,
+            }
+        )
+        rebuilt = rebuilt.model_copy(update={"checksum": checksum_model(rebuilt)})
+        store = LocalFilesystemArtifactStore(
+            Path(run.artifact_root).parent,
+            fixed_run_root=Path(run.artifact_root),
+        )
+        stored = store.write_text_artifact(
+            run.id,
+            f"04_workflow_state/stages/{continuation.current_stage_id}/recovery/{replacement_stage_id}.json",
+            json.dumps(
+                {
+                    "reason": "recovery policy approved stage re-execution",
+                    "old_stage_plan_checksum": current.checksum,
+                    "new_stage_plan_checksum": rebuilt.checksum,
+                    "workspace_fingerprint": binding.workspace_fingerprint,
+                    "restored_from_sealed_predecessor": True,
+                },
+                sort_keys=True,
+                indent=2,
+            ),
+            ArtifactType.JSON,
+            stage_id=continuation.current_stage_id,
+            created_by="stage-recovery-service",
+            created_at=now,
+            input_hashes={"stage_plan": current.checksum, "workspace": binding.workspace_fingerprint},
+            policy_version="stage-recovery-v2",
+        )
+        session.add(
+            ArtifactMetadataModel(
+                id="metadata-" + stored.ref.artifact_id,
+                run_id=run.id,
+                stage_id=continuation.current_stage_id,
+                artifact_type=stored.ref.artifact_type.value,
+                relative_path=stored.ref.relative_path,
+                checksum=stored.ref.checksum,
+                created_at=now,
+            )
+        )
+        current.status = "stale"
+        plan.status = "stale"
+        plan_artifact_ids = list(plan.artifact_ids or []) + [stored.ref.artifact_id]
+        plan_artifact_checksums = dict(plan.artifact_checksums or {})
+        plan_artifact_checksums[stored.ref.artifact_id] = stored.ref.checksum
+        session.add(
+            MigrationPlanModel(
+                id=replacement_plan_id,
+                run_id=run.id,
+                idempotency_key=idempotency_key,
+                request_checksum=stored.ref.checksum,
+                actor="stage-recovery-service",
+                correlation_id=idempotency_key,
+                status="approved_for_execution",
+                version=current.version + 1,
+                plan=rebuilt_plan.model_dump(mode="json"),
+                checksum=rebuilt_plan.checksum,
+                artifact_ids=plan_artifact_ids,
+                artifact_checksums=plan_artifact_checksums,
+                state_version=continuation.state_version + 1,
+                event_sequence=0,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.add(
+            StageExecutionPlanModel(
+                id=replacement_stage_id,
+                run_id=run.id,
+                migration_plan_id=replacement_plan_id,
+                stage_id=continuation.current_stage_id,
+                idempotency_key=idempotency_key,
+                request_checksum=stored.ref.checksum,
+                actor="stage-recovery-service",
+                correlation_id=idempotency_key,
+                status="approved_for_execution",
+                version=current.version + 1,
+                stage_plan=rebuilt.model_dump(mode="json"),
+                checksum=rebuilt.checksum,
+                artifact_ids=[stored.ref.artifact_id],
+                artifact_checksums={stored.ref.artifact_id: stored.ref.checksum},
+                state_version=continuation.state_version + 1,
+                event_sequence=0,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.add(
+            BuildSystemDecisionModel(
+                id="decision-" + hashlib.sha256(replacement_stage_id.encode()).hexdigest()[:12],
+                run_id=run.id,
+                stage_plan_id=replacement_stage_id,
+                decision_id=rebuilt.build_system_decision.decision_id,
+                decision=rebuilt.build_system_decision.model_dump(mode="json"),
+                checksum=rebuilt.build_system_decision.checksum,
+                created_at=now,
+            )
+        )
+        pointers = list(
+            session.scalars(
+                select(ActivePlanVersionModel).where(
+                    ActivePlanVersionModel.run_id == run.id,
+                    ActivePlanVersionModel.scope.in_(("migration", continuation.current_stage_id)),
+                )
+            ).all()
+        )
+        if len(pointers) != 2:
+            raise StageRecoveryError(
+                "STAGE_REEXECUTION_CONTEXT_MISSING",
+                "Active migration and stage plan pointers are required",
+            )
+        for pointer in pointers:
+            pointer.migration_plan_id = replacement_plan_id
+            pointer.stage_plan_id = replacement_stage_id
+            pointer.version = current.version + 1
+            pointer.state_version = continuation.state_version + 1
+            pointer.updated_at = now
+        continuation.plan_id = replacement_plan_id
+        continuation.plan_checksum = rebuilt_plan.checksum
+        continuation.stage_plan_id = replacement_stage_id
+        continuation.stage_plan_checksum = rebuilt.checksum
+        continuation.status = "queued"
+        continuation.current_node = "create_g07"
+        continuation.last_error_code = None
+        continuation.last_error_message = None
+        continuation.cancel_requested_at = None
+        continuation.cancel_requested_by = None
+        continuation.cancel_idempotency_key = None
+        continuation.cancel_request_checksum = None
+        continuation.worker_id = None
+        continuation.lease_expires_at = None
+        continuation.wake_sequence += 1
+        continuation.state_version += 1
+        continuation.updated_at = now
+        append_continuation_event(
+            session,
+            continuation,
+            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED,
+            key=f"reexecute:{idempotency_key}",
+            reason="recovery policy approved re-execution from the governed G07 boundary",
+            payload={"stage_plan_id": replacement_stage_id, "artifact_id": stored.ref.artifact_id},
+            occurred_at=now,
+            actor="control-tower",
+        )
+        return rebuilt
+
+    @staticmethod
+    def _latest_binding(session, run_id: str, stage_id: str):
+        return session.scalar(
+            select(StageWorkspaceBindingModel)
+            .where(
+                StageWorkspaceBindingModel.run_id == run_id,
+                StageWorkspaceBindingModel.stage_id == stage_id,
+                StageWorkspaceBindingModel.active.is_(True),
+            )
+            .order_by(
+                StageWorkspaceBindingModel.created_at.desc(),
+                StageWorkspaceBindingModel.id.desc(),
+            )
+            .limit(1)
+        )
+
     def advance_next(self) -> bool:
         with self._scope() as session:
             operation = session.scalar(
@@ -578,6 +946,7 @@ class StageRecoveryService:
                 StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
                 StageWorkspaceBindingModel.active.is_(True),
             )
+            .order_by(StageWorkspaceBindingModel.created_at.desc(), StageWorkspaceBindingModel.id.desc())
         )
         if run is None or stage is None or binding is None:
             raise StageRecoveryError(
@@ -1048,6 +1417,7 @@ class StageRecoveryService:
                     StageWorkspaceBindingModel.stage_id == operation.stage_id,
                     StageWorkspaceBindingModel.active.is_(True),
                 )
+                .order_by(StageWorkspaceBindingModel.created_at.desc(), StageWorkspaceBindingModel.id.desc())
             )
             if binding is None:
                 raise StageRecoveryError("WORKSPACE_BINDING_MISSING", "Active stage workspace binding is missing")
@@ -1088,6 +1458,7 @@ class StageRecoveryService:
                     StageWorkspaceBindingModel.stage_id == operation.stage_id,
                     StageWorkspaceBindingModel.active.is_(True),
                 )
+                .order_by(StageWorkspaceBindingModel.created_at.desc(), StageWorkspaceBindingModel.id.desc())
             )
             expected = self._checkpoint_authority(session, checkpoint, binding)
             restored = STAGE_FINGERPRINT_PROFILE.fingerprint(Path(binding.workspace_path))
@@ -1149,6 +1520,7 @@ class StageRecoveryService:
                     StageWorkspaceBindingModel.stage_id == operation.stage_id,
                     StageWorkspaceBindingModel.active.is_(True),
                 )
+                .order_by(StageWorkspaceBindingModel.created_at.desc(), StageWorkspaceBindingModel.id.desc())
             )
             if stage is None or binding is None:
                 raise StageRecoveryError(
@@ -1196,6 +1568,7 @@ class StageRecoveryService:
                     StageWorkspaceBindingModel.stage_id == operation.stage_id,
                     StageWorkspaceBindingModel.active.is_(True),
                 )
+                .order_by(StageWorkspaceBindingModel.created_at.desc(), StageWorkspaceBindingModel.id.desc())
             )
             if replay_context is not None:
                 live = STAGE_FINGERPRINT_PROFILE.fingerprint(
@@ -1738,6 +2111,7 @@ class StageRecoveryService:
                 StageWorkspaceBindingModel.stage_id == operation.stage_id,
                 StageWorkspaceBindingModel.active.is_(True),
             )
+            .order_by(StageWorkspaceBindingModel.created_at.desc(), StageWorkspaceBindingModel.id.desc())
         )
         return binding.workspace_fingerprint if binding else None
 

@@ -348,7 +348,10 @@ class StageExecutionApplicationService:
                 StageWorkspaceBindingModel.stage_id == stage_id,
                 StageWorkspaceBindingModel.active.is_(True),
             )
-            .order_by(StageWorkspaceBindingModel.created_at)
+            .order_by(
+                StageWorkspaceBindingModel.created_at.desc(),
+                StageWorkspaceBindingModel.id.desc(),
+            )
         )
         if binding is None:
             session.add(StageWorkspaceBindingModel(
