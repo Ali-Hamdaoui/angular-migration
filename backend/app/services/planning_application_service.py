@@ -72,6 +72,11 @@ def planning_failure_details(error: Exception, *, planning_component: str) -> di
 
 def run_scoped_stage_id(run_id: str, catalogue_stage_id: str) -> str:
     """Return the globally unique persisted identity for one run-owned stage."""
+    scoped = re.fullmatch(r"(?P<base>.+)--(?P<suffix>[0-9a-f]{16})", catalogue_stage_id)
+    if scoped is not None:
+        expected_suffix = hashlib.sha256(f"{run_id}:{scoped['base']}".encode()).hexdigest()[:16]
+        if scoped["suffix"] == expected_suffix:
+            return catalogue_stage_id
     suffix = hashlib.sha256(f"{run_id}:{catalogue_stage_id}".encode()).hexdigest()[:16]
     marker = f"--{suffix}"
     if catalogue_stage_id.endswith(marker):
@@ -251,7 +256,8 @@ class MigrationPlanService:
             )
             for item in request.stage_route
         }
-        draft = MigrationPlan(plan_id=f"plan-{request.run_id}-v{plan_version}", run_id=request.run_id, version=plan_version, source_family=request.source_family, source_exact=request.source_exact, target_family=request.target_family, route=route, catalogue_version=request.catalogue_version, repair_policy=repair, capability_snapshot_id=request.capability_snapshot_id, capability_snapshot_checksum=request.capability_snapshot_checksum, stage_dependency_dispositions=dispositions, transformer_semantic_version=request.transformer_semantic_version, run_mode=request.run_mode, qualification_authorization_checksum=request.qualification_authorization_checksum, checksum="sha256:" + "0" * 64)
+        catalogue_checksum = CompatibilityCatalogueProvider().load(request.catalogue_version).checksum
+        draft = MigrationPlan(plan_id=f"plan-{request.run_id}-v{plan_version}", run_id=request.run_id, version=plan_version, source_family=request.source_family, source_exact=request.source_exact, target_family=request.target_family, route=route, catalogue_version=request.catalogue_version, catalogue_checksum=catalogue_checksum, repair_policy=repair, capability_snapshot_id=request.capability_snapshot_id, capability_snapshot_checksum=request.capability_snapshot_checksum, stage_dependency_dispositions=dispositions, transformer_semantic_version=request.transformer_semantic_version, run_mode=request.run_mode, qualification_authorization_checksum=request.qualification_authorization_checksum, checksum="sha256:" + "0" * 64)
         return draft.model_copy(update={"checksum": checksum_model(draft)})
 
 

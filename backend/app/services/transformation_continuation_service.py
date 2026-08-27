@@ -259,6 +259,7 @@ class TransformationContinuationService:
             RecoveryFailureClass,
             StageRecoveryPolicyContext,
         )
+        from app.services.stage_plan_authority_service import StagePlanAuthorityService
 
         binding = session.scalar(
             select(StageWorkspaceBindingModel)
@@ -273,6 +274,7 @@ class TransformationContinuationService:
             )
             .limit(1)
         )
+        run = session.get(MigrationRunModel, continuation.run_id)
         plan = session.get(MigrationPlanModel, continuation.plan_id)
         stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
         active_command = session.scalar(
@@ -282,6 +284,14 @@ class TransformationContinuationService:
                 CommandExecutionModel.status.in_(("queued", "pending", "running")),
             )
         )
+        commands_executed = session.scalar(
+            select(CommandExecutionModel.id)
+            .where(
+                CommandExecutionModel.run_id == continuation.run_id,
+                CommandExecutionModel.stage_id == continuation.current_stage_id,
+            )
+            .limit(1)
+        ) is not None
         command = session.get(CommandExecutionModel, continuation.waiting_execution_id) if continuation.waiting_execution_id else None
         if command is None:
             command = session.scalar(
@@ -335,6 +345,7 @@ class TransformationContinuationService:
             binding is not None
             and plan is not None
             and stage_plan is not None
+            and run is not None
             and plan.run_id == continuation.run_id
             and stage_plan.run_id == continuation.run_id
             and stage_plan.stage_id == continuation.current_stage_id
@@ -342,12 +353,42 @@ class TransformationContinuationService:
             and stage_plan.checksum == continuation.stage_plan_checksum
             and Path(binding.workspace_path).is_dir()
         )
+        aliases = dict(run.workspace_aliases or {}) if run is not None else {}
+        safe_predecessor_present = bool(
+            aliases.get("BASELINE_SANDBOX")
+            and aliases.get("STAGE_SANDBOX")
+            and Path(str(aliases["BASELINE_SANDBOX"])).is_dir()
+        )
         gate_binding_stale = False
         if pending_gate is not None and binding is not None and Path(binding.workspace_path).is_dir():
             try:
                 gate_binding_stale = pending_gate.workspace_fingerprint != StageSandboxCopier.fingerprint(Path(binding.workspace_path))
             except (OSError, ValueError):
                 gate_binding_stale = True
+        plan_authority_stale = False
+        if plan is not None and stage_plan is not None:
+            try:
+                plan_authority_stale = StagePlanAuthorityService().compare(
+                    stage_plan.stage_plan or {}, plan.plan or {}
+                ).stale
+            except (TypeError, ValueError):
+                # An unresolvable authority is not evidence for an automatic
+                # refresh; the normal unknown-failure path remains fail-closed.
+                plan_authority_stale = False
+        planned_aliases = {
+            reference.get("working_directory_alias")
+            for references in ((stage_plan.stage_plan or {}).get("commands") or {}).values()
+            for reference in (references if isinstance(references, list) else (references,))
+            if isinstance(reference, dict) and reference.get("working_directory_alias")
+        }
+        command_authority_mismatch = bool(
+            binding is not None
+            and stage_plan is not None
+            and (
+                (stage_plan.stage_plan or {}).get("stage_id") != continuation.current_stage_id
+                or planned_aliases != {binding.alias}
+            )
+        )
         failure_code = continuation.last_error_code or (command.failure_code if command else None)
         failure_message = continuation.last_error_message or (command.failure_message if command else None)
         route = FailureEvidenceService().classify(
@@ -363,6 +404,10 @@ class TransformationContinuationService:
         )
         if pending_gate is not None and gate_binding_stale:
             failure_class = RecoveryFailureClass.STALE_GATE_BINDING
+        elif plan_authority_stale:
+            failure_class = RecoveryFailureClass.STAGE_PLAN_AUTHORITY_STALE
+        elif command_authority_mismatch:
+            failure_class = RecoveryFailureClass.COMMAND_AUTHORITY_MISMATCH
         elif failure_code == "PROVEN_TARGET_COHORT_INCOMPLETE":
             failure_class = RecoveryFailureClass.TARGET_COHORT_INCOMPLETE
         elif failure_code in {"PROVEN_LOCK_RESOLUTION_FAILED", "LOCKFILE_GENERATION_ERESOLVE"}:
@@ -405,7 +450,7 @@ class TransformationContinuationService:
                 if ref
             ),
             checkpoint_present=checkpoint is not None,
-            checkpoint_safe=bool(checkpoint and checkpoint.safe_for_resume),
+            checkpoint_safe=bool(checkpoint and checkpoint.safe_for_resume and safe_predecessor_present),
             workspace_authority_valid=workspace_authority_valid,
             active_command=active_command is not None,
             active_gate=pending_gate.gate_id if pending_gate else None,
@@ -413,6 +458,9 @@ class TransformationContinuationService:
             stage_output_invalid=stage_output_invalid,
             introduced_by_migration=continuation.current_node in output_nodes,
             command_id=command.command_id if command else None,
+            plan_authority_stale=plan_authority_stale,
+            commands_executed=commands_executed,
+            command_authority_mismatch=command_authority_mismatch,
         )
 
     def reexecute_blocked_stage_from_g07(
@@ -456,6 +504,8 @@ class TransformationContinuationService:
                 continuation,
                 expected_state_version=expected_state_version,
                 idempotency_key=idempotency_key,
+                refresh_plan=policy_context.plan_authority_stale or policy_context.command_authority_mismatch,
+                refresh_reason_code=policy_context.failure_class.value,
             )
         except StageRecoveryError as error:
             raise TransformationContinuationError(error.code, error.message) from error

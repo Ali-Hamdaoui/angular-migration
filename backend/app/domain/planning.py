@@ -209,6 +209,7 @@ class MigrationPlan(ContractModel):
     route: tuple[str, ...] = Field(min_length=1)
     mode: Literal["strict_compatibility"] = "strict_compatibility"
     catalogue_version: str = Field(min_length=1, max_length=128)
+    catalogue_checksum: str | None = Field(default=None, pattern=_CHECKSUM)
     stage_plan_strategy: Literal["resolve_exact_before_each_stage"] = "resolve_exact_before_each_stage"
     approval_policy: str = "mandatory-human-v1"
     repair_policy: RepairPolicy
@@ -413,6 +414,7 @@ SEMANTIC_METADATA_FIELDS = (
     "transformer_semantic_version",
     "run_mode",
     "qualification_authorization_checksum",
+    "catalogue_checksum",
 )
 
 

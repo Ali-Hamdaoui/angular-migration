@@ -54,6 +54,10 @@ def _rows(stage_id, runtime_id):
             sha256=("a" if kind is RuntimeExecutableKind.NODE else "b" if kind is RuntimeExecutableKind.NPM else "c") * 64,
             resolved_path=f"C:/runtimes/{runtime_id}/{kind.value}.exe",
             source="synthetic-stage-matrix",
+            operating_system="windows",
+            architecture="amd64",
+            installation_root=f"C:/runtimes/{runtime_id}",
+            installation_variant=None,
             status="bound",
             created_at=NOW,
         )
@@ -107,6 +111,21 @@ def test_command_authority_reads_stage_runtime_rows():
     assert {item.runtime_id for item in bindings.values()} == {"node12"}
     assert bindings["node"].resolved_path.endswith("node.exe")
     assert bindings["npm"].version_exact == "8.19.4"
+    assert bindings["node"].operating_system == "windows"
+
+
+def test_command_authority_preserves_linux_runtime_metadata():
+    stage_id = "stage-linux-command"
+    rows = _rows(stage_id, "node12")
+    for row in rows:
+        row.operating_system = "linux"
+        row.architecture = "x86_64"
+        row.resolved_path = f"/opt/runtimes/{row.runtime_id}/{row.kind}"
+        row.installation_root = f"/opt/runtimes/{row.runtime_id}"
+    bindings = canonical_stage_runtime_identity(rows, stage_id)["descriptors"]
+    assert bindings["node"].operating_system == "linux"
+    assert bindings["node"].architecture == "x86_64"
+    assert bindings["node"].installation_root == "/opt/runtimes/node12"
 
 
 def test_command_authority_rejects_blocked_stage_runtime_rows():

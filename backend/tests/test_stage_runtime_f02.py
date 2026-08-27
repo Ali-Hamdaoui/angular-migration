@@ -340,6 +340,9 @@ def test_record_and_list_stage_binding(tmp_path: Path):
         assert row.stage_id == stage_id
         assert row.run_id == run_id
         assert len(row.sha256) == 64
+        assert row.operating_system == "windows"
+        assert row.architecture == "amd64"
+        assert row.installation_root
 
     # idempotent
     again = service.record_binding(run_id, binding, actor="test")
@@ -351,6 +354,18 @@ def test_record_and_list_stage_binding(tmp_path: Path):
     with session_scope() as session:
         rows_db = session.query(StageRuntimeBindingModel).filter_by(stage_id=stage_id).all()
         assert len(rows_db) == 3
+
+
+def test_record_binding_persists_runtime_descriptor_metadata():
+    run_id, stage_id = _seed_run_and_stage()
+    service = StageRuntimeApplicationService(
+        authority=_SyntheticAuthority((("node22", "22.23.1", "8.19.4"),))
+    )
+    binding = service.resolve_stage(stage_id, "angular-18.x", "angular-19.x")
+    rows = service.record_binding(run_id, binding, actor="test")
+    assert {row.operating_system for row in rows} == {"windows"}
+    assert {row.architecture for row in rows} == {"amd64"}
+    assert {row.installation_root for row in rows} == {"C:/synthetic/node22"}
 
 
 def test_record_binding_unknown_stage_raises(tmp_path: Path):

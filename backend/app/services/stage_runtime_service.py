@@ -48,13 +48,18 @@ def canonical_stage_runtime_identity(rows: list[StageRuntimeBindingModel], stage
             raise ValueError("The durable stage runtime binding is incomplete")
         try:
             kind = RuntimeExecutableKind(row.kind)
+            if not row.operating_system or not row.architecture or not row.installation_root:
+                raise ValueError("durable runtime descriptor metadata is incomplete")
             descriptors[row.kind] = RuntimeExecutableDescriptor(
                 kind=kind,
                 executable_name=Path(row.resolved_path).name,
                 resolved_path=row.resolved_path,
                 version_exact=row.version_exact,
                 sha256=row.sha256,
-                installation_root=str(Path(row.resolved_path).parent),
+                operating_system=row.operating_system,
+                architecture=row.architecture,
+                installation_root=row.installation_root,
+                installation_variant=row.installation_variant,
                 source=row.source or "stage-runtime-binding",
                 runtime_id=row.runtime_id,
                 probed_at=row.created_at,
@@ -326,6 +331,23 @@ class StageRuntimeApplicationService:
                         existing.sha256 = item.descriptor.sha256
                         existing.resolved_path = item.descriptor.resolved_path
                         existing.source = item.descriptor.source
+                        existing.operating_system = item.descriptor.operating_system
+                        existing.architecture = item.descriptor.architecture
+                        existing.installation_root = item.descriptor.installation_root
+                        existing.installation_variant = item.descriptor.installation_variant
+                        existing.status = "bound"
+                        existing.blocked_reason = None
+                        existing.created_at = now
+                    elif binding.status == "bound" and item.descriptor is not None:
+                        existing.runtime_id = item.descriptor.runtime_id
+                        existing.version_exact = item.descriptor.version_exact
+                        existing.sha256 = item.descriptor.sha256
+                        existing.resolved_path = item.descriptor.resolved_path
+                        existing.source = item.descriptor.source
+                        existing.operating_system = item.descriptor.operating_system
+                        existing.architecture = item.descriptor.architecture
+                        existing.installation_root = item.descriptor.installation_root
+                        existing.installation_variant = item.descriptor.installation_variant
                         existing.status = "bound"
                         existing.blocked_reason = None
                         existing.created_at = now
@@ -341,6 +363,10 @@ class StageRuntimeApplicationService:
                     sha256=item.descriptor.sha256 if item.descriptor else None,
                     resolved_path=item.descriptor.resolved_path if item.descriptor else None,
                     source=item.descriptor.source if item.descriptor else None,
+                    operating_system=item.descriptor.operating_system if item.descriptor else None,
+                    architecture=item.descriptor.architecture if item.descriptor else None,
+                    installation_root=item.descriptor.installation_root if item.descriptor else None,
+                    installation_variant=item.descriptor.installation_variant if item.descriptor else None,
                     status=binding.status,
                     blocked_reason=item.blocked_reason or binding.blocked_reason,
                     created_at=now,

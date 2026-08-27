@@ -18,7 +18,9 @@ class RecoveryFailureClass(str, Enum):
     STALE_WORKSPACE_BINDING = "STALE_WORKSPACE_BINDING"
     STALE_GATE_BINDING = "STALE_GATE_BINDING"
     COMMAND_INTERRUPTED = "COMMAND_INTERRUPTED"
+    COMMAND_AUTHORITY_MISMATCH = "COMMAND_AUTHORITY_MISMATCH"
     SOURCE_REGRESSION = "SOURCE_REGRESSION"
+    STAGE_PLAN_AUTHORITY_STALE = "STAGE_PLAN_AUTHORITY_STALE"
     UNKNOWN_FAILURE = "UNKNOWN_FAILURE"
 
 
@@ -52,6 +54,9 @@ class StageRecoveryPolicyContext:
     stage_output_invalid: bool = False
     introduced_by_migration: bool = False
     command_id: str | None = None
+    plan_authority_stale: bool = False
+    commands_executed: bool = False
+    command_authority_mismatch: bool = False
 
 
 @dataclass(frozen=True)
@@ -97,6 +102,26 @@ class StageRecoveryPolicyService:
             return self._deny("RECOVERY_COMMAND_ACTIVE", refs)
 
         failure_class = self._normalize_class(context.failure_class)
+        if failure_class is RecoveryFailureClass.STAGE_PLAN_AUTHORITY_STALE:
+            if not context.plan_authority_stale:
+                return self._deny("STAGE_PLAN_AUTHORITY_EVIDENCE_MISSING", refs)
+            if context.commands_executed or context.stage_output_invalid:
+                return self._deny("STAGE_PLAN_AUTHORITY_REFRESH_UNSAFE", refs)
+            return self._allow(
+                RecoveryAction.REEXECUTE_FROM_G07,
+                "STAGE_PLAN_AUTHORITY_REFRESH_ALLOWED",
+                refs,
+            )
+        if failure_class is RecoveryFailureClass.COMMAND_AUTHORITY_MISMATCH:
+            if not context.command_authority_mismatch:
+                return self._deny("COMMAND_AUTHORITY_EVIDENCE_MISSING", refs)
+            if context.commands_executed or context.stage_output_invalid:
+                return self._deny("COMMAND_AUTHORITY_REFRESH_UNSAFE", refs)
+            return self._allow(
+                RecoveryAction.REEXECUTE_FROM_G07,
+                "COMMAND_AUTHORITY_REFRESH_ALLOWED",
+                refs,
+            )
         if failure_class is RecoveryFailureClass.STALE_GATE_BINDING:
             if not context.active_gate or not context.gate_binding_stale:
                 return self._deny("STALE_GATE_EVIDENCE_MISSING", refs)

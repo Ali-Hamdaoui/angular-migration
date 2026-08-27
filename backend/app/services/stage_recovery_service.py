@@ -11,7 +11,7 @@ from sqlalchemy import select, update
 
 from app.artifact_store import ArtifactNotFoundError, ArtifactStoreError, LocalFilesystemArtifactStore
 from app.domain.contracts import ArtifactType, WorkflowEventType
-from app.domain.planning import BuildSystemDecision, MigrationPlan, StageExecutionPlan, checksum_model
+from app.domain.planning import BuildSystemDecision, MigrationPlan, PlanGenerationRequest, StageExecutionPlan, checksum_model
 from app.repositories.models import (
     ActivePlanVersionModel,
     ArtifactMetadataModel,
@@ -46,6 +46,8 @@ from app.services.patch_apply_service import PatchApplyService
 from app.services.repair_application_service import RepairApplicationError
 from app.services.repair_lifecycle_service import RepairLifecycleService
 from app.services.stage_preparation_primitives import StageSandboxCopier
+from app.services.stage_plan_authority_service import StagePlanAuthorityService
+from app.services.planning_application_service import PlanningApplicationService
 from app.services.transformer_stage_service import (
     ReconstructionMode,
     TransformerStageError,
@@ -637,6 +639,8 @@ class StageRecoveryService:
         *,
         expected_state_version: int,
         idempotency_key: str,
+        refresh_plan: bool = False,
+        refresh_reason_code: str = "STAGE_PLAN_AUTHORITY_STALE",
     ) -> StageExecutionPlan:
         """Rebuild one blocked stage from its governed predecessor boundary."""
         if continuation.state_version != expected_state_version:
@@ -656,7 +660,10 @@ class StageRecoveryService:
             if stage_plan is None:
                 raise StageRecoveryError("STAGE_PLAN_STALE", "Re-executed stage plan is missing")
             return StageExecutionPlan.model_validate(stage_plan.stage_plan)
-        if continuation.status not in {"blocked", "cancelled"}:
+        allowed_statuses = {"blocked", "cancelled"}
+        if refresh_plan:
+            allowed_statuses.add("waiting_gate")
+        if continuation.status not in allowed_statuses:
             raise StageRecoveryError(
                 "STAGE_REEXECUTION_NOT_ALLOWED",
                 "Only a blocked or cancelled stage may be re-executed",
@@ -708,38 +715,51 @@ class StageRecoveryService:
             step.workspace_fingerprint = None
             step.artifact_ids = []
             step.updated_at = now
-        current_values = dict(current.stage_plan or {})
         replacement_suffix = f"recovery-{hashlib.sha256(idempotency_key.encode()).hexdigest()[:12]}"
         replacement_plan_id = f"{plan.id[:128 - len(replacement_suffix) - 1]}-{replacement_suffix}"
-        plan_values = dict(plan.plan or {})
-        plan_values.update(
-            plan_id=replacement_plan_id,
-            version=current.version + 1,
-            checksum="sha256:" + "0" * 64,
-        )
-        rebuilt_plan = MigrationPlan.model_validate(plan_values)
-        rebuilt_plan = rebuilt_plan.model_copy(update={"checksum": checksum_model(rebuilt_plan)})
         replacement_stage_id = f"{current.id[:128 - len(replacement_suffix) - 1]}-{replacement_suffix}"
-        rebuilt = StageExecutionPlan.model_validate(
-            {
-                **current_values,
-                "stage_plan_id": replacement_stage_id,
-                "plan_version": current.version + 1,
-                "checksum": "sha256:" + "0" * 64,
-            }
-        )
-        rebuilt = rebuilt.model_copy(
-            update={
-                "build_system_decision": BuildSystemDecision.create(
-                    decision_id=f"builder-{run.id}-{replacement_stage_id}",
-                    builder=rebuilt.build_system_decision.builder,
-                    action=rebuilt.build_system_decision.action,
-                    rationale=rebuilt.build_system_decision.rationale,
-                ),
-                "checksum": "sha256:" + "0" * 64,
-            }
-        )
-        rebuilt = rebuilt.model_copy(update={"checksum": checksum_model(rebuilt)})
+        if refresh_plan:
+            rebuilt_plan, rebuilt, authority = self._refresh_plan_content(
+                session,
+                continuation,
+                run,
+                plan,
+                current,
+                replacement_plan_id=replacement_plan_id,
+                replacement_stage_id=replacement_stage_id,
+                workspace_fingerprint=restored_fingerprint,
+                allow_current_authority_refresh=refresh_plan,
+            )
+        else:
+            current_values = dict(current.stage_plan or {})
+            plan_values = dict(plan.plan or {})
+            plan_values.update(
+                plan_id=replacement_plan_id,
+                version=current.version + 1,
+                checksum="sha256:" + "0" * 64,
+            )
+            rebuilt_plan = MigrationPlan.model_validate(plan_values)
+            rebuilt_plan = rebuilt_plan.model_copy(update={"checksum": checksum_model(rebuilt_plan)})
+            rebuilt = StageExecutionPlan.model_validate(
+                {
+                    **current_values,
+                    "stage_plan_id": replacement_stage_id,
+                    "plan_version": current.version + 1,
+                    "checksum": "sha256:" + "0" * 64,
+                }
+            )
+            rebuilt = rebuilt.model_copy(
+                update={
+                    "build_system_decision": BuildSystemDecision.create(
+                        decision_id=f"builder-{run.id}-{replacement_stage_id}",
+                        builder=rebuilt.build_system_decision.builder,
+                        action=rebuilt.build_system_decision.action,
+                        rationale=rebuilt.build_system_decision.rationale,
+                    ),
+                    "checksum": "sha256:" + "0" * 64,
+                }
+            )
+            rebuilt = rebuilt.model_copy(update={"checksum": checksum_model(rebuilt)})
         store = LocalFilesystemArtifactStore(
             Path(run.artifact_root).parent,
             fixed_run_root=Path(run.artifact_root),
@@ -754,6 +774,16 @@ class StageRecoveryService:
                     "new_stage_plan_checksum": rebuilt.checksum,
                     "workspace_fingerprint": binding.workspace_fingerprint,
                     "restored_from_sealed_predecessor": True,
+                    **(
+                        {
+                            "reason_code": refresh_reason_code,
+                            "catalogue_version": authority.catalogue_version,
+                            "catalogue_checksum": authority.catalogue_checksum,
+                            "target_cohort": authority.target_cohort,
+                        }
+                        if refresh_plan
+                        else {}
+                    ),
                 },
                 sort_keys=True,
                 indent=2,
@@ -778,6 +808,16 @@ class StageRecoveryService:
         )
         current.status = "stale"
         plan.status = "stale"
+        if refresh_plan:
+            for package in session.scalars(
+                select(StageGatePackageModel).where(
+                    StageGatePackageModel.run_id == run.id,
+                    StageGatePackageModel.stage_id == continuation.current_stage_id,
+                    StageGatePackageModel.status == "pending",
+                )
+            ).all():
+                package.status = "stale"
+                package.stale_at = now
         plan_artifact_ids = list(plan.artifact_ids or []) + [stored.ref.artifact_id]
         plan_artifact_checksums = dict(plan.artifact_checksums or {})
         plan_artifact_checksums[stored.ref.artifact_id] = stored.ref.checksum
@@ -881,6 +921,101 @@ class StageRecoveryService:
             actor="control-tower",
         )
         return rebuilt
+
+    def _refresh_plan_content(
+        self,
+        session,
+        continuation: TransformationContinuationModel,
+        run: MigrationRunModel,
+        plan: MigrationPlanModel,
+        current: StageExecutionPlanModel,
+        *,
+        replacement_plan_id: str,
+        replacement_stage_id: str,
+        workspace_fingerprint: str,
+        allow_current_authority_refresh: bool = False,
+    ) -> tuple[MigrationPlan, StageExecutionPlan, object]:
+        """Regenerate prepared-stage authority through the normal planner."""
+        comparison = StagePlanAuthorityService().compare(current.stage_plan or {}, plan.plan or {})
+        if not comparison.stale and not allow_current_authority_refresh:
+            raise StageRecoveryError(
+                "STAGE_PLAN_AUTHORITY_CURRENT",
+                "Prepared stage plan already matches current catalogue authority",
+            )
+        authority = comparison.authority
+        try:
+            runtime = self._stage.resolve_stage_runtime(session, continuation)
+        except TransformerStageError as error:
+            raise StageRecoveryError(error.code, error.message) from error
+        current_values = current.stage_plan or {}
+        builder = (current_values.get("build_system_decision") or {}).get("builder")
+        if not builder:
+            raise StageRecoveryError("STAGE_PLAN_AUTHORITY_INPUT_INCOMPLETE", "Prepared stage builder authority is missing")
+        validation = current_values.get("validation_policy") or {}
+        recovery = current_values.get("recovery_policy") or {}
+        repair = current_values.get("repair_policy") or {}
+        request = PlanGenerationRequest(
+            run_id=run.id,
+            expected_state_version=1,
+            idempotency_key=f"stage-authority-refresh:{replacement_stage_id}",
+            actor="stage-recovery-service",
+            source_exact=current_values["source_exact"],
+            source_family=authority.source_family,
+            target_family=authority.target_family,
+            catalogue_version=authority.catalogue_version,
+            input_fingerprint=workspace_fingerprint,
+            evidence_set_checksum=current_values.get("evidence_set_checksum"),
+            input_workspace_fingerprint=workspace_fingerprint,
+            execution_profile_id=str(runtime["profile_id"]),
+            execution_profile_checksum=str(runtime["checksum"]),
+            resolved_scripts=current_values.get("resolved_scripts") or {"build": "build", "test": "test"},
+            project_targets=current_values.get("project_targets") or {},
+            stage_route=((
+                authority.source_family,
+                authority.target_family,
+                current.stage_id,
+                authority.target_exact,
+                authority.target_cli_exact,
+            ),),
+            target_cli_exact=authority.target_cli_exact,
+            builder=builder,
+            validation_policy_id=validation.get("policy_id", "angular-stage-standard-v2"),
+            recovery_policy_id=recovery.get("policy_id", "safe-boundary-v1"),
+            repair_policy_id=repair.get("policy_id", "proposer-reviewer-human-v1"),
+            capability_snapshot_id=current_values.get("capability_snapshot_id"),
+            capability_snapshot_checksum=current_values.get("capability_snapshot_checksum"),
+            transformer_semantic_version=current_values.get("transformer_semantic_version", "transformer-plan-legacy-1"),
+            run_mode=current_values.get("run_mode", "PRODUCTION"),
+            qualification_authorization_checksum=current_values.get("qualification_authorization_checksum"),
+        )
+        generated = PlanningApplicationService().generate(request, plan_version=current.version + 1)
+        if generated.first_stage_plan is None:
+            raise StageRecoveryError("STAGE_PLAN_AUTHORITY_GENERATION_FAILED", "Planner returned no replacement stage plan")
+        rebuilt = generated.first_stage_plan.model_copy(update={"stage_plan_id": replacement_stage_id})
+        rebuilt = rebuilt.model_copy(
+            update={
+                "build_system_decision": BuildSystemDecision.create(
+                    decision_id=f"builder-{run.id}-{replacement_stage_id}",
+                    builder=rebuilt.build_system_decision.builder,
+                    action=rebuilt.build_system_decision.action,
+                    rationale=rebuilt.build_system_decision.rationale,
+                ),
+                "checksum": "sha256:" + "0" * 64,
+            }
+        )
+        rebuilt = rebuilt.model_copy(update={"checksum": checksum_model(rebuilt)})
+        plan_values = dict(plan.plan or {})
+        plan_values.update(
+            plan_id=replacement_plan_id,
+            version=current.version + 1,
+            catalogue_version=authority.catalogue_version,
+            catalogue_checksum=authority.catalogue_checksum,
+            checksum="sha256:" + "0" * 64,
+        )
+        rebuilt_plan = MigrationPlan.model_validate(plan_values)
+        rebuilt_plan = rebuilt_plan.model_copy(update={"checksum": checksum_model(rebuilt_plan)})
+        return rebuilt_plan, rebuilt, authority
+
 
     @staticmethod
     def _latest_binding(session, run_id: str, stage_id: str):
