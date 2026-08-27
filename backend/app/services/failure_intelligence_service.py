@@ -55,6 +55,11 @@ _ENVIRONMENT_RE = re.compile(
     r"command.*timeout|network error|registry timeout",
     re.I,
 )
+_ENVIRONMENT_TRANSIENT_RE = re.compile(
+    r"ebusy|(?:cleanup|remove|unlink|rename|spawn|open).{0,80}enoent|"
+    r"enoent.{0,80}(?:cleanup|remove|unlink|rename|spawn|open)",
+    re.I,
+)
 
 
 class FailureIntelligenceService:
@@ -263,7 +268,11 @@ def _extract_normalized(evidence: Any) -> tuple[str, str, dict[str, Any] | None]
 
 def _is_environment_failure_message(message: str, code: str) -> bool:
     combined = f"{code} {message}"
-    return bool(_ENVIRONMENT_RE.search(combined))
+    return bool(_ENVIRONMENT_RE.search(combined) or _ENVIRONMENT_TRANSIENT_RE.search(combined))
+
+
+def _is_transient_environment_failure_message(message: str, code: str) -> bool:
+    return bool(_ENVIRONMENT_TRANSIENT_RE.search(f"{code} {message}"))
 
 
 def _is_dependency_incompatible_message(message: str, code: str, diagnosis: dict[str, Any] | None = None) -> bool:
@@ -317,7 +326,10 @@ def classify_failure_route(evidence: Any) -> FailureRoute:
     if _is_environment_failure_message(message, code):
         # distinguish permanent vs transient deterministically
         lower = message.lower()
-        if any(k in lower for k in ("e401", "e403", "auth", "permission", "enospc", "eacces", "eperm", "node-gyp", "gyp err")):
+        if (
+            any(k in lower for k in ("e401", "e403", "auth", "permission", "enospc", "eacces", "eperm", "node-gyp", "gyp err"))
+            and not _is_transient_environment_failure_message(message, code)
+        ):
             return FailureRoute.ENVIRONMENT_PERMANENT
         return FailureRoute.ENVIRONMENT_TRANSIENT
     if _is_dependency_incompatible_message(message, code, diagnosis):

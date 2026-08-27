@@ -393,7 +393,11 @@ class TransformationContinuationService:
         # retry-budget boundary.  The terminal command is the authoritative
         # failure evidence used for recovery classification.
         failure_code = (command.failure_code if command else None) or continuation.last_error_code
-        failure_message = (command.failure_message if command else None) or continuation.last_error_message
+        failure_message = (
+            FailureEvidenceService._execution_output(session, run, command)
+            if command is not None and run is not None
+            else None
+        ) or (command.failure_message if command else None) or continuation.last_error_message
         route = FailureEvidenceService().classify(
             {
                 "normalized_failure": {
@@ -469,7 +473,17 @@ class TransformationContinuationService:
             plan_authority_stale=plan_authority_stale,
             commands_executed=commands_executed,
             command_authority_mismatch=command_authority_mismatch,
-            reconstruction_required=bool(command and command.reconstruction_required),
+            reconstruction_required=bool(
+                command
+                and (
+                    command.reconstruction_required
+                    or (
+                        command.operation_kind == "mutating"
+                        and command.status in {"failed", "cancelled", "interrupted", "timed_out"}
+                        and command.started_at is not None
+                    )
+                )
+            ),
             retry_budget_exhausted=continuation.attempt >= continuation.max_attempts,
         )
 
