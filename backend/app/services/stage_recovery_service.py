@@ -998,7 +998,9 @@ class StageRecoveryService:
         rebuilt = rebuilt.model_copy(
             update={
                 "build_system_decision": BuildSystemDecision.create(
-                    decision_id=f"builder-{run.id}-{replacement_stage_id}",
+                    decision_id="builder-" + hashlib.sha256(
+                        f"{run.id}:{replacement_stage_id}".encode("utf-8")
+                    ).hexdigest()[:32],
                     builder=rebuilt.build_system_decision.builder,
                     action=rebuilt.build_system_decision.action,
                     rationale=rebuilt.build_system_decision.rationale,
