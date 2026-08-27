@@ -1470,7 +1470,7 @@ def cancel_transformation(
                     run_id,
                     active.id,
                     actor,
-                    idempotency_key=f"{body.idempotency_key}:command",
+                    idempotency_key=f"{body.idempotency_key}:command:{active.id}",
                 )
         except TransformationContinuationError as error:
             return error_response(

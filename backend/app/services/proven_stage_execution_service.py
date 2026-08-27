@@ -1546,7 +1546,7 @@ def _clear_target_node_modules(
             for package, exact in target_cohort.items():
                 if package in values:
                     values[package] = exact
-            if target_cohort.get("@angular/core") in {"12.2.17", "13.3.12", "14.3.0", "15.2.10"} and "karma" in values:
+            if target_cohort.get("@angular/core") in {"12.2.17", "13.3.12", "14.3.0", "15.2.10", "16.2.12"} and "karma" in values:
                 values["karma"] = "~6.4.4"
         target_manifest.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     # The target lock is generated from the approved target manifest.  Copying
@@ -1628,7 +1628,7 @@ def _apply_target_cohort(workspace: Path, cohort: dict[str, str]) -> None:
             if package in current and current[package] != exact:
                 current[package] = exact
                 changed = True
-    if cohort.get("@angular/core") in {"12.2.17", "13.3.12", "14.3.0", "15.2.10"}:
+    if cohort.get("@angular/core") in {"12.2.17", "13.3.12", "14.3.0", "15.2.10", "16.2.12"}:
         dev_dependencies = manifest.get("devDependencies")
         if isinstance(dev_dependencies, dict) and "karma" in dev_dependencies and dev_dependencies["karma"] != "~6.4.4":
             dev_dependencies["karma"] = "~6.4.4"

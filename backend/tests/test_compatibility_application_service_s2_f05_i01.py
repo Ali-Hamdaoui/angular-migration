@@ -17,6 +17,7 @@ from app.services.compatibility_application_service import (
 )
 from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
 from app.services.migration_route_service import MigrationRouteService
+from app.services.proven_stage_execution_service import _apply_target_cohort
 
 
 CHECKSUM = "sha256:" + "a" * 64
@@ -356,6 +357,49 @@ def test_angular_14_to_15_uses_the_proven_exact_target_cohort():
         "rxjs": "7.8.0",
         "zone.js": "0.12.0",
     }
+
+
+def test_angular_15_to_16_uses_the_proven_exact_target_cohort():
+    entry = next(
+        item
+        for item in CompatibilityCatalogueProvider().load().entries
+        if item.stage_id == "angular-15-to-16"
+    )
+
+    assert entry.target_angular_exact == "16.2.12"
+    assert entry.target_cli_exact == "16.2.16"
+    assert entry.target_cohort() == {
+        "@angular/animations": "16.2.12",
+        "@angular/common": "16.2.12",
+        "@angular/compiler": "16.2.12",
+        "@angular/compiler-cli": "16.2.12",
+        "@angular/core": "16.2.12",
+        "@angular/forms": "16.2.12",
+        "@angular/platform-browser": "16.2.12",
+        "@angular/platform-browser-dynamic": "16.2.12",
+        "@angular/router": "16.2.12",
+        "@angular/cli": "16.2.16",
+        "@angular-devkit/build-angular": "16.2.16",
+        "typescript": "5.1.6",
+        "rxjs": "6.6.7",
+        "zone.js": "0.13.3",
+    }
+
+
+def test_angular_16_target_cohort_normalizes_karma_for_build_angular(tmp_path):
+    package_json = tmp_path / "package.json"
+    package_json.write_text(
+        '{"devDependencies": {"@angular/core": "16.2.12", "karma": "~5.1.0"}}\n',
+        encoding="utf-8",
+    )
+
+    _apply_target_cohort(
+        tmp_path,
+        {"@angular/core": "16.2.12", "@angular-devkit/build-angular": "16.2.16"},
+    )
+
+    manifest = __import__("json").loads(package_json.read_text(encoding="utf-8"))
+    assert manifest["devDependencies"]["karma"] == "~6.4.4"
 
 
 @pytest.mark.parametrize(

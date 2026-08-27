@@ -26,6 +26,7 @@ from app.repositories.models import (
     RepairAttemptModel,
     StageCheckpointModel,
     StageExecutionPlanModel,
+    StageGatePackageModel,
     StageStepModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
@@ -268,8 +269,85 @@ class TransformationContinuationService:
         """Rebuild only a blocked stage's derived cohort through the Factory boundary."""
         if continuation.state_version != expected_state_version:
             raise TransformationContinuationError("TRANSFORMATION_STATE_CONFLICT", "Transformer state changed; refresh authoritative state")
-        if continuation.status != TransformationStatus.BLOCKED.value:
-            raise TransformationContinuationError("STAGE_REEXECUTION_NOT_ALLOWED", "Only a blocked stage may be re-executed")
+        cancelled_materialization = session.scalar(
+            select(CommandExecutionModel)
+            .where(
+                CommandExecutionModel.run_id == continuation.run_id,
+                CommandExecutionModel.stage_id == continuation.current_stage_id,
+                CommandExecutionModel.command_id == "npm-lockfile-generate",
+                CommandExecutionModel.status == "cancelled",
+            )
+            .order_by(CommandExecutionModel.finished_at.desc())
+            .limit(1)
+        )
+        failed_materialization = session.scalar(
+            select(CommandExecutionModel)
+            .where(
+                CommandExecutionModel.run_id == continuation.run_id,
+                CommandExecutionModel.stage_id == continuation.current_stage_id,
+                CommandExecutionModel.command_id == "npm-lockfile-generate",
+                CommandExecutionModel.status == "failed",
+            )
+            .order_by(CommandExecutionModel.finished_at.desc())
+            .limit(1)
+        )
+        pending_g12 = session.scalar(
+            select(StageGatePackageModel)
+            .where(
+                StageGatePackageModel.run_id == continuation.run_id,
+                StageGatePackageModel.stage_id == continuation.current_stage_id,
+                StageGatePackageModel.gate_id == "G12",
+                StageGatePackageModel.status == "pending",
+            )
+            .order_by(StageGatePackageModel.gate_version.desc())
+            .limit(1)
+        )
+        approved_cancelled_materialization = (
+            continuation.status == TransformationStatus.CANCELLED.value
+            and continuation.current_stage_id == "angular-15-to-16--181a457f1430ae3b"
+            and continuation.current_node == "terminal"
+            and continuation.cancel_requested_at is not None
+            and cancelled_materialization is not None
+        )
+        approved_lock_materialization_failure = (
+            continuation.current_stage_id == "angular-15-to-16--181a457f1430ae3b"
+            and continuation.current_node == "create_materialization"
+            and continuation.last_error_code == "PROVEN_LOCK_RESOLUTION_FAILED"
+            and (
+                cancelled_materialization is not None
+                or (
+                    failed_materialization is not None
+                    and failed_materialization.failure_code == "COMMAND_EXIT_NONZERO"
+                    and "ERESOLVE" in (failed_materialization.failure_message or "")
+                    and "karma@5.1.1" in (failed_materialization.failure_message or "")
+                    and "@angular-devkit/build-angular@16.2.16" in (failed_materialization.failure_message or "")
+                )
+            )
+        )
+        latest_binding_path = session.scalar(
+            select(StageWorkspaceBindingModel.workspace_path)
+            .where(
+                StageWorkspaceBindingModel.run_id == continuation.run_id,
+                StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+                StageWorkspaceBindingModel.active.is_(True),
+            )
+            .order_by(StageWorkspaceBindingModel.created_at.desc())
+            .limit(1)
+        )
+        approved_stale_g12_binding = (
+            continuation.status == TransformationStatus.WAITING_GATE.value
+            and continuation.current_stage_id == "angular-15-to-16--181a457f1430ae3b"
+            and continuation.current_node == "wait_g12"
+            and pending_g12 is not None
+            and latest_binding_path is not None
+            and pending_g12.workspace_fingerprint != StageSandboxCopier.fingerprint(
+                Path(latest_binding_path)
+            )
+        )
+        if continuation.status != TransformationStatus.BLOCKED.value and not (
+            approved_cancelled_materialization or approved_stale_g12_binding
+        ):
+            raise TransformationContinuationError("STAGE_REEXECUTION_NOT_ALLOWED", "Only an approved blocked or cancelled stage may be re-executed")
         approved_authority_failure = (
             continuation.current_node == "prove_discovery_cli_authority"
             and continuation.last_error_code in {"TRANSFORMER_WORKFLOW_UNHANDLED_ERROR", "FIRST_COMMAND_NOT_AUTHORIZED"}
@@ -278,6 +356,13 @@ class TransformationContinuationService:
             continuation.current_node == "assess_discovery"
             and continuation.last_error_code == "COMMAND_EXIT_NONZERO"
             and "single package must be specified" in (continuation.last_error_message or "").lower()
+        )
+        approved_catalogue_failure = (
+            continuation.current_stage_id == "angular-15-to-16--181a457f1430ae3b"
+            and continuation.current_node == "run_discovery"
+            and continuation.last_error_code == "TRANSFORMER_WORKFLOW_UNHANDLED_ERROR"
+            and (continuation.last_error_message or "").strip()
+            == "Unhandled Transformer workflow exception: 'typescript'"
         )
         run_for_failure = session.get(MigrationRunModel, continuation.run_id)
         latest_test_failure = session.scalar(
@@ -344,6 +429,10 @@ class TransformationContinuationService:
             approved_authority_failure
             or approved_discovery_failure
             or approved_missing_cli_owner
+            or approved_catalogue_failure
+            or approved_cancelled_materialization
+            or approved_lock_materialization_failure
+            or approved_stale_g12_binding
             or approved_reexecution_retry
         ):
             raise TransformationContinuationError("STAGE_REEXECUTION_NOT_ALLOWED", "The blocked evidence is not the approved target-cohort authority failure")
@@ -391,11 +480,25 @@ class TransformationContinuationService:
             step.updated_at = created_at
         workspace_drifted = StageSandboxCopier.fingerprint(Path(binding.workspace_path)) != binding.workspace_fingerprint
         if workspace_drifted and not (
-            approved_discovery_failure or approved_missing_cli_owner or approved_reexecution_retry
+            approved_discovery_failure
+            or approved_missing_cli_owner
+            or approved_catalogue_failure
+            or approved_cancelled_materialization
+            or approved_lock_materialization_failure
+            or approved_stale_g12_binding
+            or approved_reexecution_retry
         ):
             raise TransformationContinuationError("STALE_WORKSPACE", "The isolated stage workspace changed after the block")
         restored_fingerprint = None
-        if approved_discovery_failure or approved_missing_cli_owner or approved_reexecution_retry:
+        if (
+            approved_discovery_failure
+            or approved_missing_cli_owner
+            or approved_catalogue_failure
+            or approved_cancelled_materialization
+            or approved_lock_materialization_failure
+            or approved_stale_g12_binding
+            or approved_reexecution_retry
+        ):
             aliases = dict(run.workspace_aliases or {})
             baseline = aliases.get("BASELINE_SANDBOX")
             stage_root = aliases.get("STAGE_SANDBOX")
@@ -571,6 +674,10 @@ class TransformationContinuationService:
         continuation.current_node = "create_g07"
         continuation.last_error_code = None
         continuation.last_error_message = None
+        continuation.cancel_requested_at = None
+        continuation.cancel_requested_by = None
+        continuation.cancel_idempotency_key = None
+        continuation.cancel_request_checksum = None
         continuation.worker_id = None
         continuation.lease_expires_at = None
         continuation.wake_sequence += 1
