@@ -386,6 +386,33 @@ def test_angular_15_to_16_uses_the_proven_exact_target_cohort():
     }
 
 
+def test_angular_16_to_17_uses_the_verified_exact_target_cohort():
+    entry = next(
+        item
+        for item in CompatibilityCatalogueProvider().load().entries
+        if item.stage_id == "angular-16-to-17"
+    )
+
+    assert entry.target_angular_exact == "17.3.12"
+    assert entry.target_cli_exact == "17.3.17"
+    assert entry.target_cohort() == {
+        "@angular/animations": "17.3.12",
+        "@angular/common": "17.3.12",
+        "@angular/compiler": "17.3.12",
+        "@angular/compiler-cli": "17.3.12",
+        "@angular/core": "17.3.12",
+        "@angular/forms": "17.3.12",
+        "@angular/platform-browser": "17.3.12",
+        "@angular/platform-browser-dynamic": "17.3.12",
+        "@angular/router": "17.3.12",
+        "@angular/cli": "17.3.17",
+        "@angular-devkit/build-angular": "17.3.17",
+        "typescript": "5.4.5",
+        "rxjs": "7.8.1",
+        "zone.js": "0.14.4",
+    }
+
+
 def test_angular_16_target_cohort_normalizes_karma_for_build_angular(tmp_path):
     package_json = tmp_path / "package.json"
     package_json.write_text(
