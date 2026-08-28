@@ -281,6 +281,7 @@ class TransformationContinuationService:
             select(CommandExecutionModel.id).where(
                 CommandExecutionModel.run_id == continuation.run_id,
                 CommandExecutionModel.stage_id == continuation.current_stage_id,
+                CommandExecutionModel.plan_id == continuation.plan_id,
                 CommandExecutionModel.status.in_(("queued", "pending", "running")),
             )
         )
@@ -289,16 +290,20 @@ class TransformationContinuationService:
             .where(
                 CommandExecutionModel.run_id == continuation.run_id,
                 CommandExecutionModel.stage_id == continuation.current_stage_id,
+                CommandExecutionModel.plan_id == continuation.plan_id,
             )
             .limit(1)
         ) is not None
         command = session.get(CommandExecutionModel, continuation.waiting_execution_id) if continuation.waiting_execution_id else None
+        if command is not None and command.plan_id != continuation.plan_id:
+            command = None
         if command is None:
             command = session.scalar(
                 select(CommandExecutionModel)
                 .where(
                     CommandExecutionModel.run_id == continuation.run_id,
                     CommandExecutionModel.stage_id == continuation.current_stage_id,
+                    CommandExecutionModel.plan_id == continuation.plan_id,
                     CommandExecutionModel.status.in_(("failed", "cancelled", "interrupted")),
                 )
                 .order_by(
