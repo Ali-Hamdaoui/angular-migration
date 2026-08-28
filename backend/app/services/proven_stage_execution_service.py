@@ -1073,8 +1073,17 @@ class ProvenStageExecutionService:
     def _node_target_install_same_authority(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
+            run = session.get(MigrationRunModel, continuation.run_id)
+            stage_plan = self._stage_plan(session, continuation)
+            _clear_target_node_modules(
+                self._binding(session, continuation),
+                run.source_path if run is not None else None,
+                stage_plan.get("target_cohort") or {},
+                source_family=stage_plan.get("source_family"),
+                target_family=stage_plan.get("target_family"),
+            )
             reference = dict(
-                (self._stage_plan(session, continuation).get("commands") or {})
+                (stage_plan.get("commands") or {})
                 .get("final_install", [{}])[0]
             )
             self._queue_planned_command(
