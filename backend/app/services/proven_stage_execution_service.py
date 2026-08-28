@@ -1038,18 +1038,6 @@ class ProvenStageExecutionService:
                     (self._stage_plan(session, continuation).get("commands") or {})
                     .get("lockfile_generation", [{}])[0]
                 )
-                lock_reference.update(
-                    template_id="tpl-npm-lockfile-generate-v2",
-                    template_version=2,
-                    arguments=[
-                        "install",
-                        "--package-lock-only",
-                        "--ignore-scripts",
-                        "--no-audit",
-                        "--no-fund",
-                        "--include=optional",
-                    ],
-                )
                 self._queue_planned_command(
                     session,
                     continuation,
@@ -1088,11 +1076,6 @@ class ProvenStageExecutionService:
             reference = dict(
                 (self._stage_plan(session, continuation).get("commands") or {})
                 .get("final_install", [{}])[0]
-            )
-            reference.update(
-                template_id="tpl-npm-ci-final-v4",
-                template_version=4,
-                arguments=["ci", "--include=optional", "--foreground-scripts"],
             )
             self._queue_planned_command(
                 session,

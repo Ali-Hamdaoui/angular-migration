@@ -162,6 +162,7 @@ class TransformationCommandDefinition:
     template_id: str
     executable: str
     argument_patterns: tuple[str, ...]
+    template_version: int = 1
     executable_aliases: tuple[str, ...] = ()
     timeout_seconds: int = 300
     network_profile: str = "approved-registries-only"
@@ -211,6 +212,7 @@ class TransformationCommandDefinition:
             arguments=self.argument_patterns,
             executable_aliases=self.executable_aliases,
             description=self.description,
+            version=self.template_version,
             allowed_env_vars=self.allowed_env_vars,
             max_output_bytes=self.max_output_bytes,
         )
@@ -571,6 +573,7 @@ NPM_LOCKFILE_GENERATE_V2_RENDERER: Final[TransformationCommandDefinition] = Tran
         "--no-fund",
         "--include=optional",
     ),
+    template_version=2,
     executable_aliases=("npm.cmd",),
     timeout_seconds=3600,
     network_profile="approved-registries-only",
@@ -607,7 +610,8 @@ TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinitio
         description="Verify Angular versions",
     ),
     "npm-ci-final": TransformationCommandDefinition(
-        command_id="npm-ci-final", template_id="tpl-npm-ci-final", executable="npm", argument_patterns=("ci", "--include=optional", "--foreground-scripts"),
+        command_id="npm-ci-final", template_id="tpl-npm-ci-final-v4", executable="npm", argument_patterns=("ci", "--include=optional", "--foreground-scripts"),
+        template_version=4,
         executable_aliases=("npm.cmd",), timeout_seconds=3600,
         allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"), max_output_bytes=5_000_000,
         description="Final clean install after lockfile verification",
@@ -620,13 +624,7 @@ TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinitio
         allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"), max_output_bytes=20_000_000,
         description="Prove the full physical/logical npm dependency tree as read-only evidence",
     ),
-    "npm-lockfile-generate": TransformationCommandDefinition(
-        command_id="npm-lockfile-generate", template_id="tpl-npm-lockfile-generate", executable="npm",
-        argument_patterns=("install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"),
-        executable_aliases=("npm.cmd",), timeout_seconds=3600,
-        allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"), max_output_bytes=5_000_000,
-        description="Regenerate the approved npm lockfile without lifecycle scripts",
-    ),
+    "npm-lockfile-generate": NPM_LOCKFILE_GENERATE_V2_RENDERER,
     "npm-script-build-production": TransformationCommandDefinition(
         command_id="npm-script-build-production", template_id="tpl-npm-script-build-production", executable="npm",
         argument_patterns=("run", "{build_script}", "--", "--configuration", "{build_configuration}"),
@@ -742,17 +740,6 @@ _TRANSFORMATION_COMMAND_TEMPLATES: tuple[CommandTemplate, ...] = tuple(
         allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
         max_output_bytes=5_000_000,
         description="Clean target install including runtime optional dependencies",
-    ),
-    CommandTemplate(
-        template_id="tpl-npm-ci-final-v4",
-        command_id="npm-ci-final",
-        executable="npm",
-        arguments=("ci", "--include=optional", "--foreground-scripts"),
-        executable_aliases=("npm.cmd",),
-        version=4,
-        allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
-        max_output_bytes=5_000_000,
-        description="Clean target install with optional dependencies and serialized lifecycle scripts",
     ),
     CommandTemplate(
         template_id="tpl-angular-update-discovery-v2",

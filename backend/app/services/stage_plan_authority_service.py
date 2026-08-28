@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.domain.compatibility import CompatibilityCatalogueEntry
+from app.domain.command import TRANSFORMATION_COMMAND_CATALOGUE
 from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
 
 
@@ -66,6 +67,7 @@ class StagePlanAuthorityService:
             differences.append("target_cli_exact")
         if stage_plan.get("target_cohort") != authority.target_cohort:
             differences.append("target_cohort")
+        differences.extend(self._command_differences(stage_plan))
         if plan is not None:
             if plan.get("catalogue_version") != authority.catalogue_version:
                 differences.append("catalogue_version")
@@ -77,6 +79,26 @@ class StagePlanAuthorityService:
             differences=tuple(differences),
             authority=authority,
         )
+
+    @staticmethod
+    def _command_differences(stage_plan: dict) -> list[str]:
+        """Detect planned command references that no longer match the catalogue."""
+        differences: list[str] = []
+        commands = stage_plan.get("commands") or {}
+        for references in commands.values():
+            items = references if isinstance(references, list) else (references,)
+            for reference in items:
+                if not isinstance(reference, dict):
+                    continue
+                definition = TRANSFORMATION_COMMAND_CATALOGUE.get(reference.get("command_id"))
+                if definition is None:
+                    continue
+                if (
+                    reference.get("template_id") != definition.template_id
+                    or reference.get("template_version") != definition.template_version
+                ):
+                    differences.append(f"command:{definition.command_id}")
+        return differences
 
     @staticmethod
     def _authority(version: str, checksum: str, entry: CompatibilityCatalogueEntry) -> StagePlanAuthority:
