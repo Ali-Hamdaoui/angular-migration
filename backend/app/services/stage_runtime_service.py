@@ -339,6 +339,20 @@ class StageRuntimeApplicationService:
                         existing.blocked_reason = None
                         existing.created_at = now
                     elif binding.status == "bound" and item.descriptor is not None:
+                        identity_changed = any(
+                            getattr(existing, field) != getattr(item.descriptor, field)
+                            for field in (
+                                "runtime_id",
+                                "version_exact",
+                                "sha256",
+                                "resolved_path",
+                                "source",
+                                "operating_system",
+                                "architecture",
+                                "installation_root",
+                                "installation_variant",
+                            )
+                        )
                         existing.runtime_id = item.descriptor.runtime_id
                         existing.version_exact = item.descriptor.version_exact
                         existing.sha256 = item.descriptor.sha256
@@ -350,7 +364,8 @@ class StageRuntimeApplicationService:
                         existing.installation_variant = item.descriptor.installation_variant
                         existing.status = "bound"
                         existing.blocked_reason = None
-                        existing.created_at = now
+                        if identity_changed:
+                            existing.created_at = now
                     rows.append(existing)
                     continue
                 row = StageRuntimeBindingModel(

@@ -567,17 +567,29 @@ class StageRecoveryService:
                 StageGatePackageModel.run_id == continuation.run_id,
                 StageGatePackageModel.stage_id == continuation.current_stage_id,
                 StageGatePackageModel.gate_id == gate_id,
-                StageGatePackageModel.status == "pending",
+                StageGatePackageModel.status.in_(("pending", "approved")),
             )
             .order_by(
                 StageGatePackageModel.gate_version.desc(),
                 StageGatePackageModel.id.desc(),
             )
         )
-        if package is None or continuation.status != "waiting_gate":
+        if package is None or continuation.status not in {"waiting_gate", "blocked"}:
             raise StageRecoveryError(
                 "STALE_GATE_RECOVERY_NOT_ALLOWED",
                 "A pending gate package and waiting-gate continuation are required",
+            )
+        current_plan_commands = session.scalar(
+            select(CommandExecutionModel.id).where(
+                CommandExecutionModel.run_id == continuation.run_id,
+                CommandExecutionModel.stage_id == continuation.current_stage_id,
+                CommandExecutionModel.plan_id == continuation.plan_id,
+            )
+        )
+        if package.status == "approved" and (continuation.status != "blocked" or current_plan_commands is not None):
+            raise StageRecoveryError(
+                "STALE_GATE_RECOVERY_NOT_ALLOWED",
+                "An approved gate can be renewed only before the active plan executes a command",
             )
         binding = self._latest_binding(session, continuation.run_id, continuation.current_stage_id)
         if binding is None or not Path(binding.workspace_path).is_dir():

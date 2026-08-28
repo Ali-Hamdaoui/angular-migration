@@ -325,6 +325,16 @@ class TransformationContinuationService:
             )
             .limit(1)
         )
+        approved_gate = session.scalar(
+            select(StageGatePackageModel)
+            .where(
+                StageGatePackageModel.run_id == continuation.run_id,
+                StageGatePackageModel.stage_id == continuation.current_stage_id,
+                StageGatePackageModel.status == "approved",
+            )
+            .order_by(StageGatePackageModel.gate_version.desc(), StageGatePackageModel.id.desc())
+            .limit(1)
+        )
         checkpoint = session.scalar(
             select(StageCheckpointModel)
             .where(
@@ -416,8 +426,12 @@ class TransformationContinuationService:
                 "prior_fingerprints": [],
             }
         )
+        gate_package = pending_gate or approved_gate
         if pending_gate is not None and gate_binding_stale:
             failure_class = RecoveryFailureClass.STALE_GATE_BINDING
+        elif failure_code == "STAGE_RUNTIME_G07_BINDING_INVALID":
+            failure_class = RecoveryFailureClass.STALE_GATE_BINDING
+            gate_binding_stale = approved_gate is not None and not commands_executed
         elif plan_authority_stale:
             failure_class = RecoveryFailureClass.STAGE_PLAN_AUTHORITY_STALE
         elif command_authority_mismatch:
@@ -470,7 +484,7 @@ class TransformationContinuationService:
                 ref
                 for ref in (
                     command.id if command else None,
-                    pending_gate.id if pending_gate else None,
+                    gate_package.id if gate_package else None,
                     checkpoint.id if checkpoint else None,
                 )
                 if ref
@@ -479,7 +493,7 @@ class TransformationContinuationService:
             checkpoint_safe=bool(checkpoint and checkpoint.safe_for_resume and safe_predecessor_present),
             workspace_authority_valid=workspace_authority_valid,
             active_command=active_command is not None,
-            active_gate=pending_gate.gate_id if pending_gate else None,
+            active_gate=(pending_gate.gate_id if pending_gate else "G07" if gate_binding_stale else None),
             gate_binding_stale=gate_binding_stale,
             stage_output_invalid=stage_output_invalid,
             introduced_by_migration=continuation.current_node in output_nodes,
