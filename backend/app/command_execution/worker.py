@@ -80,6 +80,26 @@ def _executable_kind(executable: str) -> RuntimeExecutableKind | None:
     return None
 
 
+def _short_windows_execution_path(path: Path) -> Path:
+    """Use a Windows 8.3 spelling for child-process working directories.
+
+    The persisted workspace path remains the authoritative path.  This only
+    changes the spelling passed to a child process, avoiding legacy Windows
+    path-length failures in deeply nested package trees.
+    """
+    if os.name != "nt":
+        return path
+    try:
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = ctypes.windll.kernel32.GetShortPathNameW(
+            str(path), buffer, len(buffer)
+        )
+    except (AttributeError, OSError):
+        return path
+    short = buffer.value if length else ""
+    return Path(short) if short and len(short) < len(str(path)) else path
+
+
 class _JobBasicLimitInformation(ctypes.Structure):
     _fields_ = [
         ("PerProcessUserTimeLimit", ctypes.c_longlong),
@@ -317,7 +337,10 @@ class CommandPolicy:
     runtime_bindings: dict[str, RuntimeExecutableDescriptor] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        aliases = {name: Path(path).resolve() for name, path in self.working_directory_aliases.items()}
+        aliases = {
+            name: _short_windows_execution_path(Path(path))
+            for name, path in self.working_directory_aliases.items()
+        }
         if any(name not in _MUTABLE_WORKSPACE_ALIASES and not name.startswith("STAGE_WORKSPACE_") for name in aliases):
             raise CommandPolicyViolation("Only registered mutable workspace aliases may execute commands")
         object.__setattr__(self, "working_directory_aliases", aliases)
@@ -464,7 +487,9 @@ class CommandPolicy:
             resolved.relative_to(sandbox_root)
         except ValueError as exc:
             raise CommandPolicyViolation("Working directory must stay inside the sandbox root") from exc
-        return resolved
+        # Validate containment using the canonical path, but retain the
+        # approved execution spelling (which may be a Windows short path).
+        return Path(candidate)
 
 
 class CommandLogWriter:
