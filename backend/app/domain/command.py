@@ -604,6 +604,20 @@ NPM_LOCKFILE_GENERATE_V3_RENDERER: Final[TransformationCommandDefinition] = Tran
     description="Regenerate an npm v2 lockfile with optional dependency metadata for clean-install compatibility",
 )
 
+NPM_CI_FINAL_V5_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
+    command_id="npm-ci-final",
+    template_id="tpl-npm-ci-final-v5",
+    executable="npm",
+    argument_patterns=("ci", "--foreground-scripts"),
+    template_version=5,
+    executable_aliases=("npm.cmd",),
+    timeout_seconds=3600,
+    network_profile="approved-registries-only",
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+    max_output_bytes=5_000_000,
+    description="Final clean install using npm's platform-aware optional dependency handling",
+)
+
 # Default command templates for Sprint 3 pipeline
 #
 # V2.2 deprecation: `angular-update-exact` (V2-V6 renderers below) and the
@@ -631,13 +645,7 @@ TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinitio
         argument_patterns=("ng", "version"), executable_aliases=("npx.cmd",), timeout_seconds=300,
         description="Verify Angular versions",
     ),
-    "npm-ci-final": TransformationCommandDefinition(
-        command_id="npm-ci-final", template_id="tpl-npm-ci-final-v4", executable="npm", argument_patterns=("ci", "--include=optional", "--foreground-scripts"),
-        template_version=4,
-        executable_aliases=("npm.cmd",), timeout_seconds=3600,
-        allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"), max_output_bytes=5_000_000,
-        description="Final clean install after lockfile verification",
-    ),
+    "npm-ci-final": NPM_CI_FINAL_V5_RENDERER,
     "npm-dependency-tree": TransformationCommandDefinition(
         command_id="npm-dependency-tree", template_id="tpl-npm-dependency-tree", executable="npm",
         argument_patterns=("ls", "--all", "--json"),
