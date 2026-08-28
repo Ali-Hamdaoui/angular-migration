@@ -107,7 +107,10 @@ class StageRecoveryPolicyService:
         if failure_class is RecoveryFailureClass.STAGE_PLAN_AUTHORITY_STALE:
             if not context.plan_authority_stale:
                 return self._deny("STAGE_PLAN_AUTHORITY_EVIDENCE_MISSING", refs)
-            if context.commands_executed or context.stage_output_invalid:
+            if (
+                (context.commands_executed or context.stage_output_invalid)
+                and not context.reconstruction_required
+            ):
                 return self._deny("STAGE_PLAN_AUTHORITY_REFRESH_UNSAFE", refs)
             return self._allow(
                 RecoveryAction.REEXECUTE_FROM_G07,
