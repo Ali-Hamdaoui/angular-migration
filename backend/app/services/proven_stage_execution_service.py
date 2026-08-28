@@ -1090,9 +1090,9 @@ class ProvenStageExecutionService:
                 .get("final_install", [{}])[0]
             )
             reference.update(
-                template_id="tpl-npm-ci-final-v3",
-                template_version=3,
-                arguments=["ci", "--include=optional"],
+                template_id="tpl-npm-ci-final-v4",
+                template_version=4,
+                arguments=["ci", "--include=optional", "--foreground-scripts"],
             )
             self._queue_planned_command(
                 session,

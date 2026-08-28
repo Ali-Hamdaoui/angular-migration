@@ -607,7 +607,7 @@ TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinitio
         description="Verify Angular versions",
     ),
     "npm-ci-final": TransformationCommandDefinition(
-        command_id="npm-ci-final", template_id="tpl-npm-ci-final", executable="npm", argument_patterns=("ci", "--include=optional"),
+        command_id="npm-ci-final", template_id="tpl-npm-ci-final", executable="npm", argument_patterns=("ci", "--include=optional", "--foreground-scripts"),
         executable_aliases=("npm.cmd",), timeout_seconds=3600,
         allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"), max_output_bytes=5_000_000,
         description="Final clean install after lockfile verification",
@@ -742,6 +742,17 @@ _TRANSFORMATION_COMMAND_TEMPLATES: tuple[CommandTemplate, ...] = tuple(
         allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
         max_output_bytes=5_000_000,
         description="Clean target install including runtime optional dependencies",
+    ),
+    CommandTemplate(
+        template_id="tpl-npm-ci-final-v4",
+        command_id="npm-ci-final",
+        executable="npm",
+        arguments=("ci", "--include=optional", "--foreground-scripts"),
+        executable_aliases=("npm.cmd",),
+        version=4,
+        allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+        max_output_bytes=5_000_000,
+        description="Clean target install with optional dependencies and serialized lifecycle scripts",
     ),
     CommandTemplate(
         template_id="tpl-angular-update-discovery-v2",

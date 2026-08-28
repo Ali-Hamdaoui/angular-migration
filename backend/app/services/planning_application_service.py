@@ -223,13 +223,13 @@ class StageExecutionPlanService:
             template_version = 1
         else:
             definition = TRANSFORMATION_COMMAND_CATALOGUE[command_id]
-            template_version = 3 if command_id == "npm-ci-final" else 1
+            template_version = 4 if command_id == "npm-ci-final" else 1
         stage_id = run_scoped_stage_id(request.run_id, request.stage_route[0][2])
         alias = "STAGE_WORKSPACE_" + stage_id.upper().replace("-", "_")
         bindings = dict(parameter_bindings or {})
         return CommandTemplateReference(
             command_id=definition.command_id,
-            template_id="tpl-npm-ci-final-v3" if command_id == "npm-ci-final" else definition.template_id,
+            template_id="tpl-npm-ci-final-v4" if command_id == "npm-ci-final" else definition.template_id,
             template_version=template_version,
             parameter_bindings=bindings,
             executable=definition.executable,
