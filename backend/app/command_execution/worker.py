@@ -610,10 +610,15 @@ class WorkerSupervisor:
             # these platform primitives available in the sanitized child
             # environment without forwarding the ambient environment.
             effective.update({"SYSTEMROOT", "COMSPEC", "PATHEXT"})
+        effective_upper = {name.upper() for name in effective}
         for var, value in os.environ.items():
             upper = var.upper()
             blocked = any(pattern in upper for pattern in WorkerSupervisor._SECRET_PATTERNS)
-            if not blocked and var in effective:
+            # Windows environment names are case-insensitive, but Python keeps
+            # the spelling inherited from the parent process.  Compare by
+            # normalized name so SystemRoot/ComSpec/PATHEXT are not lost from
+            # the sanitized child environment.
+            if not blocked and upper in effective_upper:
                 clean[var] = value
         for var, value in (overrides or {}).items():
             upper = var.upper()

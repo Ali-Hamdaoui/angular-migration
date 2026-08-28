@@ -604,6 +604,52 @@ NPM_LOCKFILE_GENERATE_V3_RENDERER: Final[TransformationCommandDefinition] = Tran
     description="Regenerate an npm v2 lockfile with optional dependency metadata for clean-install compatibility",
 )
 
+NPM_LOCKFILE_GENERATE_V4_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
+    command_id="npm-lockfile-generate",
+    template_id="tpl-npm-lockfile-generate-v4",
+    executable="npm",
+    argument_patterns=(
+        "install",
+        "--package-lock-only",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--include=optional",
+        "--omit=peer",
+        "--lockfile-version=2",
+    ),
+    template_version=4,
+    executable_aliases=("npm.cmd",),
+    timeout_seconds=3600,
+    network_profile="approved-registries-only",
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+    max_output_bytes=5_000_000,
+    description="Regenerate an npm v2 lockfile with the peer-resolution mode used by clean install",
+)
+
+NPM_LOCKFILE_GENERATE_V5_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
+    command_id="npm-lockfile-generate",
+    template_id="tpl-npm-lockfile-generate-v5",
+    executable="npm",
+    argument_patterns=(
+        "install",
+        "--package-lock-only",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--include=optional",
+        "--omit=peer",
+        "--lockfile-version=3",
+    ),
+    template_version=5,
+    executable_aliases=("npm.cmd",),
+    timeout_seconds=3600,
+    network_profile="approved-registries-only",
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+    max_output_bytes=5_000_000,
+    description="Regenerate the npm v3 packages lockfile with the peer-resolution mode used by clean install",
+)
+
 NPM_CI_FINAL_V5_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
     command_id="npm-ci-final",
     template_id="tpl-npm-ci-final-v5",
@@ -668,7 +714,7 @@ TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinitio
         allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"), max_output_bytes=20_000_000,
         description="Prove the full physical/logical npm dependency tree as read-only evidence",
     ),
-    "npm-lockfile-generate": NPM_LOCKFILE_GENERATE_V3_RENDERER,
+    "npm-lockfile-generate": NPM_LOCKFILE_GENERATE_V5_RENDERER,
     "npm-script-build-production": TransformationCommandDefinition(
         command_id="npm-script-build-production", template_id="tpl-npm-script-build-production", executable="npm",
         argument_patterns=("run", "{build_script}", "--", "--configuration", "{build_configuration}"),
