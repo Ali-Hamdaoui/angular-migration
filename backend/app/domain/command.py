@@ -618,6 +618,20 @@ NPM_CI_FINAL_V5_RENDERER: Final[TransformationCommandDefinition] = Transformatio
     description="Final clean install using npm's platform-aware optional dependency handling",
 )
 
+NPM_CI_FINAL_V6_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
+    command_id="npm-ci-final",
+    template_id="tpl-npm-ci-final-v6",
+    executable="npm",
+    argument_patterns=("ci", "--include=optional", "--omit=peer", "--foreground-scripts"),
+    template_version=6,
+    executable_aliases=("npm.cmd",),
+    timeout_seconds=3600,
+    network_profile="approved-registries-only",
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+    max_output_bytes=5_000_000,
+    description="Final clean install retaining optional dependencies while excluding peer-only platform metadata",
+)
+
 # Default command templates for Sprint 3 pipeline
 #
 # V2.2 deprecation: `angular-update-exact` (V2-V6 renderers below) and the
@@ -645,7 +659,7 @@ TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinitio
         argument_patterns=("ng", "version"), executable_aliases=("npx.cmd",), timeout_seconds=300,
         description="Verify Angular versions",
     ),
-    "npm-ci-final": NPM_CI_FINAL_V5_RENDERER,
+    "npm-ci-final": NPM_CI_FINAL_V6_RENDERER,
     "npm-dependency-tree": TransformationCommandDefinition(
         command_id="npm-dependency-tree", template_id="tpl-npm-dependency-tree", executable="npm",
         argument_patterns=("ls", "--all", "--json"),
