@@ -612,7 +612,11 @@ class WorkerSupervisor:
         if not effective:
             effective = {"PATH"}
         if os.name == "nt":
-            effective.add("SYSTEMROOT")
+            # Windows npm lifecycle scripts use the command interpreter and
+            # extension rules when spawning package install hooks.  Keep
+            # these platform primitives available in the sanitized child
+            # environment without forwarding the ambient environment.
+            effective.update({"SYSTEMROOT", "COMSPEC", "PATHEXT"})
         for var, value in os.environ.items():
             upper = var.upper()
             blocked = any(pattern in upper for pattern in WorkerSupervisor._SECRET_PATTERNS)
