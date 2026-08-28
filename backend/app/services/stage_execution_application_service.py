@@ -27,7 +27,7 @@ from app.repositories.models import (
 )
 from app.repositories.session import session_scope
 from app.services.planning_review_application_service import PlanRevisionService, PlanningReviewApplicationError
-from app.services.command_executor_service import CommandExecutorService
+from app.services.command_executor_service import CommandExecutorError, CommandExecutorService
 from app.services.command_registry_service import (
     CommandPolicyEngineService,
     CommandPolicyError,
@@ -500,8 +500,8 @@ class StageExecutionApplicationService:
                 correlation_id=authorization.correlation_id,
                 timeout_seconds=reference["timeout_seconds"],
             )
-        except Exception as error:
-            raise StageExecutionError("FIRST_COMMAND_QUEUE_FAILED", "The first authorized command could not be queued.") from error
+        except CommandExecutorError as error:
+            raise StageExecutionError(error.code, error.message) from error
 
     @staticmethod
     def aggregate_artifact_checksum(checksums: dict[str, str]) -> str:

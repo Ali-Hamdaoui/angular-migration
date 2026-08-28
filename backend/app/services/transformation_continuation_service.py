@@ -450,6 +450,15 @@ class TransformationContinuationService:
             "validation_test",
         }
         stage_output_invalid = continuation.current_node in output_nodes
+        # A governed stage re-execution always reconstructs the workspace from
+        # the verified predecessor before replacing stale authority.  The
+        # failed command itself may be read-only, so derive this safety fact
+        # from the stage boundary rather than from that command's operation
+        # kind alone.
+        reconstruction_required = bool(
+            safe_predecessor_present
+            and (commands_executed or stage_output_invalid)
+        )
         return StageRecoveryPolicyContext(
             run_id=continuation.run_id,
             stage_id=continuation.current_stage_id,
@@ -478,17 +487,7 @@ class TransformationContinuationService:
             plan_authority_stale=plan_authority_stale,
             commands_executed=commands_executed,
             command_authority_mismatch=command_authority_mismatch,
-            reconstruction_required=bool(
-                command
-                and (
-                    command.reconstruction_required
-                    or (
-                        command.operation_kind == "mutating"
-                        and command.status in {"failed", "cancelled", "interrupted", "timed_out"}
-                        and command.started_at is not None
-                    )
-                )
-            ),
+            reconstruction_required=reconstruction_required,
             retry_budget_exhausted=continuation.attempt >= continuation.max_attempts,
         )
 
