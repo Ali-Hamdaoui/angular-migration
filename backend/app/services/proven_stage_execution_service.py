@@ -37,6 +37,7 @@ from app.repositories.models import (
     StageExecutionPlanModel,
     StageStepModel,
     StageWorkspaceBindingModel,
+    WorkspaceGenerationModel,
     TransformationContinuationModel,
 )
 from app.repositories.session import session_scope
@@ -108,8 +109,8 @@ _PROVEN_SUCCESSORS = {
     ProvenTransformationNode.VALIDATION_BUILD.value: ProvenTransformationNode.VALIDATION_TEST.value,
     ProvenTransformationNode.VALIDATION_TEST.value: ProvenTransformationNode.DIAGNOSTIC_DELTA.value,
     ProvenTransformationNode.DIAGNOSTIC_DELTA.value: ProvenTransformationNode.AGGREGATE_PROVEN_VALIDATION.value,
-    ProvenTransformationNode.AGGREGATE_PROVEN_VALIDATION.value: ProvenTransformationNode.PROMOTE_VALIDATED.value,
-    ProvenTransformationNode.PROMOTE_VALIDATED.value: ProvenTransformationNode.PROMOTION_PENDING.value,
+    ProvenTransformationNode.AGGREGATE_PROVEN_VALIDATION.value: ProvenTransformationNode.PROMOTION_PENDING.value,
+    ProvenTransformationNode.PROMOTE_VALIDATED.value: "seal_stage",
 }
 
 #: Proven nodes that terminate the sequential table by design: the graph
@@ -121,6 +122,27 @@ _PROVEN_TERMINAL_NODES = frozenset(
         ProvenTransformationNode.DISCARD_DISCOVERY.value,
     }
 )
+
+
+def _current_step_scope(session, continuation) -> tuple[object, ...]:
+    binding = session.scalar(
+        select(StageWorkspaceBindingModel).where(
+            StageWorkspaceBindingModel.run_id == continuation.run_id,
+            StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+            StageWorkspaceBindingModel.active.is_(True),
+        )
+    )
+    if binding is None or not binding.workspace_generation_id:
+        return (
+            StageStepModel.stage_id == continuation.current_stage_id,
+            StageStepModel.stage_plan_id == continuation.stage_plan_id,
+            StageStepModel.workspace_generation_id.is_(None),
+        )
+    return (
+        StageStepModel.stage_id == continuation.current_stage_id,
+        StageStepModel.stage_plan_id == continuation.stage_plan_id,
+        StageStepModel.workspace_generation_id == binding.workspace_generation_id,
+    )
 
 
 class ProvenStageExecutionService:
@@ -513,7 +535,7 @@ class ProvenStageExecutionService:
     def _latest_terminal_execution(self, session, continuation, group: str) -> CommandExecutionModel | None:
         step = session.scalar(
             select(StageStepModel).where(
-                StageStepModel.stage_id == continuation.current_stage_id,
+                *_current_step_scope(session, continuation),
                 StageStepModel.name == f"{group}-0",
             )
         )
@@ -1272,7 +1294,7 @@ class ProvenStageExecutionService:
             ):
                 step = session.scalar(
                     select(StageStepModel).where(
-                        StageStepModel.stage_id == continuation.current_stage_id,
+                        *_current_step_scope(session, continuation),
                         StageStepModel.name == name,
                     )
                 )
@@ -1307,7 +1329,7 @@ class ProvenStageExecutionService:
                 return
             step = session.scalar(
                 select(StageStepModel).where(
-                    StageStepModel.stage_id == continuation.current_stage_id,
+                    *_current_step_scope(session, continuation),
                     StageStepModel.name == "final_install-0",
                 )
             )
@@ -1390,7 +1412,7 @@ class ProvenStageExecutionService:
                 for index in range(len(references)):
                     step = session.scalar(
                         select(StageStepModel).where(
-                            StageStepModel.stage_id == continuation.current_stage_id,
+                            *_current_step_scope(session, continuation),
                             StageStepModel.name == f"{group}-{index}",
                         )
                     )
@@ -1744,18 +1766,24 @@ def _promotion_summary(session, continuation) -> object:
             required_groups.append(group)
     steps = session.scalars(
         select(StageStepModel).where(
-            StageStepModel.stage_id == continuation.current_stage_id,
+            *_current_step_scope(session, continuation),
             StageStepModel.name.in_(tuple(f"{group}-0" for group in required_groups)),
         )
     ).all()
     passed = steps and all(step.status == "PASSED" for step in steps)
     fingerprint = binding.workspace_fingerprint if binding is not None else "none"
+    generation = (
+        session.get(WorkspaceGenerationModel, binding.workspace_generation_id)
+        if binding is not None and binding.workspace_generation_id
+        else None
+    )
 
     class _Summary:
         run_id = continuation.run_id
         stage_id = continuation.current_stage_id
         status = "PASS" if passed else "FAIL"
         candidate_fingerprint = fingerprint
+        candidate_generation_id = generation.id if generation is not None else "none"
 
     return _Summary()
 

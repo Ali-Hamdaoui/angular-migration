@@ -88,7 +88,12 @@ def _gate_successor_node(session: Session, continuation: TransformationContinuat
     and G12→SEAL remain for both tables.
     """
     node = _NEXT_NODE[gate_id]
-    if gate_id not in {StageGateId.G07.value, StageGateId.G08.value, StageGateId.G09.value} or not getattr(
+    if gate_id not in {
+        StageGateId.G07.value,
+        StageGateId.G08.value,
+        StageGateId.G09.value,
+        StageGateId.G12.value,
+    } or not getattr(
         continuation, "stage_plan_id", None
     ):
         return node
@@ -106,7 +111,8 @@ def _gate_successor_node(session: Session, continuation: TransformationContinuat
     return {
         StageGateId.G07.value: ProvenTransformationNode.CREATE_SOURCE_BASELINE.value,
         StageGateId.G08.value: ProvenTransformationNode.EXECUTE_MIGRATION_OWNER.value,
-        StageGateId.G09.value: ProvenTransformationNode.PROMOTE_VALIDATED.value,
+        StageGateId.G09.value: ProvenTransformationNode.PROMOTION_PENDING.value,
+        StageGateId.G12.value: ProvenTransformationNode.PROMOTE_VALIDATED.value,
     }[gate_id]
 
 

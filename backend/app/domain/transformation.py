@@ -172,6 +172,7 @@ class FailureRoute(str, Enum):
     ENVIRONMENT_TRANSIENT = "environment_transient"
     ENVIRONMENT_PERMANENT = "environment_permanent"
     DEPENDENCY_INCOMPATIBLE = "dependency_incompatible"
+    PACKAGE_EXPORT_INCOMPATIBLE = "package_export_incompatible"
     UNEXPECTED_PROMPT = "unexpected_prompt"
     POLICY_VIOLATION = "policy_violation"
     ANGULAR_UPDATE_COMMAND_POLICY = "angular_update_command_policy"

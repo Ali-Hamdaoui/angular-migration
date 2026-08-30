@@ -1859,6 +1859,8 @@ class TransformerStageService:
         step = session.scalar(
             select(StageStepModel).where(
                 StageStepModel.stage_id == continuation.current_stage_id,
+                StageStepModel.stage_plan_id == continuation.stage_plan_id,
+                StageStepModel.workspace_generation_id == binding.workspace_generation_id,
                 StageStepModel.name == f"{group}-0",
             )
         )
@@ -1867,6 +1869,11 @@ class TransformerStageService:
                 id=f"step-{run.id}-{continuation.current_stage_id}-{group}-0",
                 run_id=run.id,
                 stage_id=continuation.current_stage_id,
+                stage_plan_id=continuation.stage_plan_id,
+                workspace_generation_id=binding.workspace_generation_id,
+                step_key=f"{group}-0",
+                projection_version=1,
+                source_record_type="command_execution",
                 name=f"{group}-0",
                 status="PENDING",
                 component_type="command",

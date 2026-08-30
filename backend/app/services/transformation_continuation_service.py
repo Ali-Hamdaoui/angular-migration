@@ -413,19 +413,6 @@ class TransformationContinuationService:
             if command is not None and run is not None
             else None
         ) or (command.failure_message if command else None) or continuation.last_error_message
-        route = FailureEvidenceService().classify(
-            {
-                "normalized_failure": {
-                    "error_code": failure_code,
-                    "failure_message": failure_message,
-                    "command_id": command.command_id if command else None,
-                    "cancel_requested": command.cancel_requested_at is not None if command else None,
-                    "claim_expired": FailureEvidenceService.command_claim_expired(command) if command else False,
-                },
-                "failure_fingerprint": "recovery-context",
-                "prior_fingerprints": [],
-            }
-        )
         gate_package = pending_gate or approved_gate
         if pending_gate is not None and gate_binding_stale:
             failure_class = RecoveryFailureClass.STALE_GATE_BINDING
@@ -448,12 +435,6 @@ class TransformationContinuationService:
             )
         ) or continuation.status == TransformationStatus.CANCELLED.value:
             failure_class = RecoveryFailureClass.COMMAND_INTERRUPTED
-        elif route.value == "environment_transient":
-            failure_class = RecoveryFailureClass.ENVIRONMENT_TRANSIENT
-        elif route.value == "environment_permanent":
-            failure_class = RecoveryFailureClass.ENVIRONMENT_PERMANENT
-        elif route.value == "dependency_incompatible":
-            failure_class = RecoveryFailureClass.DEPENDENCY_INCOMPATIBLE
         else:
             failure_class = RecoveryFailureClass.UNKNOWN_FAILURE
         output_nodes = {
@@ -536,7 +517,10 @@ class TransformationContinuationService:
                     idempotency_key=idempotency_key,
                 )
                 return None
-            if decision.action is not RecoveryAction.REEXECUTE_FROM_G07:
+            if decision.action not in {
+                RecoveryAction.RECONSTRUCT_WORKSPACE,
+                RecoveryAction.REEXECUTE_FROM_G07,
+            }:
                 raise StageRecoveryError(
                     "RECOVERY_ACTION_NOT_STAGE_REEXECUTION",
                     f"Recovery policy selected {decision.action.value}; use its governed flow",

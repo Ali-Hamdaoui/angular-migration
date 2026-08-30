@@ -157,12 +157,23 @@ class WorkspaceAuthorityService:
             stage = session.get(MigrationStageModel, request.stage_id)
             if stage is None:
                 raise WorkspaceAuthorityError("STAGE_NOT_FOUND", f"Migration stage {request.stage_id} not found")
+            prepared = session.scalar(
+                select(WorkspaceGenerationModel)
+                .where(
+                    WorkspaceGenerationModel.run_id == request.run_id,
+                    WorkspaceGenerationModel.stage_id == request.stage_id,
+                    WorkspaceGenerationModel.alias == request.alias,
+                    WorkspaceGenerationModel.generation == request.generation,
+                    WorkspaceGenerationModel.status == "prepared",
+                )
+            )
             highest = session.execute(
                 select(WorkspaceGenerationModel.generation)
                 .where(
                     WorkspaceGenerationModel.run_id == request.run_id,
                     WorkspaceGenerationModel.stage_id == request.stage_id,
                     WorkspaceGenerationModel.alias == request.alias,
+                    WorkspaceGenerationModel.status == "active",
                 )
                 .order_by(WorkspaceGenerationModel.generation.desc())
                 .limit(1)
@@ -206,20 +217,31 @@ class WorkspaceAuthorityService:
                 binding.workspace_path = request.workspace_path
                 binding.workspace_fingerprint = request.fingerprint
                 binding.input_fingerprint = request.input_fingerprint
-            generation_row = WorkspaceGenerationModel(
-                id=_generation_id(request.run_id, request.stage_id, request.alias, request.generation),
-                run_id=request.run_id,
-                stage_id=request.stage_id,
-                alias=request.alias,
-                generation=request.generation,
-                workspace_path=request.workspace_path,
-                fingerprint=request.fingerprint,
-                input_fingerprint=request.input_fingerprint,
-                status="active",
-                active_binding_id=binding_id,
-                created_at=now,
-            )
-            session.add(generation_row)
+            if prepared is not None:
+                if (
+                    prepared.workspace_path != request.workspace_path
+                    or prepared.fingerprint != request.fingerprint
+                ):
+                    raise WorkspaceAuthorityError(
+                        "GENERATION_BINDING_MISMATCH",
+                        "prepared generation content differs from promotion request",
+                    )
+                prepared.status = "active"
+                prepared.active_binding_id = binding_id
+            else:
+                session.add(WorkspaceGenerationModel(
+                    id=_generation_id(request.run_id, request.stage_id, request.alias, request.generation),
+                    run_id=request.run_id,
+                    stage_id=request.stage_id,
+                    alias=request.alias,
+                    generation=request.generation,
+                    workspace_path=request.workspace_path,
+                    fingerprint=request.fingerprint,
+                    input_fingerprint=request.input_fingerprint,
+                    status="active",
+                    active_binding_id=binding_id,
+                    created_at=now,
+                ))
             try:
                 session.commit()
             except (IntegrityError, OperationalError):

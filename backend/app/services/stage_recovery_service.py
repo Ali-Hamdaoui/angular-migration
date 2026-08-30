@@ -29,6 +29,7 @@ from app.repositories.models import (
     StageRecoveryOperationModel,
     StageStepModel,
     StageWorkspaceBindingModel,
+    WorkspaceGenerationModel,
     TransformationContinuationModel,
     WorkflowEventModel,
 )
@@ -698,38 +699,61 @@ class StageRecoveryService:
                 "STAGE_REEXECUTION_CONTEXT_MISSING",
                 "The sealed predecessor is unavailable for stage re-execution",
             )
+        replacement_suffix = f"recovery-{hashlib.sha256(idempotency_key.encode()).hexdigest()[:12]}"
+        replacement_plan_id = f"{plan.id[:128 - len(replacement_suffix) - 1]}-{replacement_suffix}"
+        replacement_stage_id = f"{current.id[:128 - len(replacement_suffix) - 1]}-{replacement_suffix}"
+        replacement_workspace = Path(stage_root) / f"{Path(binding.workspace_path).name}-{replacement_suffix}"
+        replacement_workspace.mkdir(parents=True, exist_ok=True)
         try:
             restored_fingerprint = TransformerStageService.reconstruct_workspace(
                 baseline,
-                binding.workspace_path,
+                str(replacement_workspace),
                 stage_root,
                 expected,
             )
         except TransformerStageError as error:
             raise StageRecoveryError(error.code, error.message) from error
         now = self._now()
+        old_generation = (
+            session.get(WorkspaceGenerationModel, binding.workspace_generation_id)
+            if binding.workspace_generation_id
+            else None
+        )
+        if old_generation is not None and old_generation.status in {"prepared", "active"}:
+            old_generation.status = "retired"
+        next_generation = session.scalar(
+            select(WorkspaceGenerationModel.generation)
+            .where(
+                WorkspaceGenerationModel.run_id == run.id,
+                WorkspaceGenerationModel.stage_id == continuation.current_stage_id,
+                WorkspaceGenerationModel.alias == binding.alias,
+            )
+            .order_by(WorkspaceGenerationModel.generation.desc())
+            .limit(1)
+        ) or 0
+        generation = WorkspaceGenerationModel(
+            id="gen-" + hashlib.sha256(
+                f"{run.id}:{continuation.current_stage_id}:{binding.alias}:{next_generation + 1}".encode()
+            ).hexdigest()[:24],
+            run_id=run.id,
+            stage_id=continuation.current_stage_id,
+            alias=binding.alias,
+            generation=next_generation + 1,
+            workspace_path=str(replacement_workspace),
+            fingerprint=restored_fingerprint,
+            input_fingerprint=expected,
+            status="prepared",
+            active_binding_id=binding.id,
+            created_at=now,
+        )
+        session.add(generation)
+        binding.workspace_path = str(replacement_workspace)
         binding.workspace_fingerprint = restored_fingerprint
+        binding.workspace_generation_id = generation.id
         binding.last_verified_fingerprint = restored_fingerprint
         binding.last_verified_at = now
-        for step in session.scalars(
-            select(StageStepModel).where(
-                StageStepModel.run_id == run.id,
-                StageStepModel.stage_id == continuation.current_stage_id,
-            )
-        ).all():
-            step.status = "PENDING"
-            step.attempt_id = None
-            step.idempotency_key = None
-            step.started_at = None
-            step.completed_at = None
-            step.execution_id = None
-            step.output_checksum = None
-            step.workspace_fingerprint = None
-            step.artifact_ids = []
-            step.updated_at = now
-        replacement_suffix = f"recovery-{hashlib.sha256(idempotency_key.encode()).hexdigest()[:12]}"
-        replacement_plan_id = f"{plan.id[:128 - len(replacement_suffix) - 1]}-{replacement_suffix}"
-        replacement_stage_id = f"{current.id[:128 - len(replacement_suffix) - 1]}-{replacement_suffix}"
+        aliases[binding.alias] = str(replacement_workspace)
+        run.workspace_aliases = aliases
         if refresh_plan:
             rebuilt_plan, rebuilt, authority = self._refresh_plan_content(
                 session,
@@ -877,6 +901,24 @@ class StageRecoveryService:
                 updated_at=now,
             )
         )
+        for group, references in (rebuilt.commands or {}).items():
+            for index, _reference in enumerate(references if isinstance(references, list) else (references,)):
+                session.add(
+                    StageStepModel(
+                        id=f"step-{run.id}-{continuation.current_stage_id}-{replacement_stage_id[:16]}-{group}-{index}",
+                        run_id=run.id,
+                        stage_id=continuation.current_stage_id,
+                        stage_plan_id=replacement_stage_id,
+                        workspace_generation_id=generation.id,
+                        step_key=f"{group}-{index}",
+                        projection_version=1,
+                        source_record_type="command_execution",
+                        name=f"{group}-{index}",
+                        status="PENDING",
+                        component_type="command",
+                        idempotency_key=f"{run.id}:{continuation.current_stage_id}:{replacement_stage_id}:{group}:{index}",
+                    )
+                )
         session.add(
             BuildSystemDecisionModel(
                 id="decision-" + hashlib.sha256(replacement_stage_id.encode()).hexdigest()[:12],

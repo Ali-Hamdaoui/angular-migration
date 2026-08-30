@@ -119,6 +119,11 @@ _MUTATING_COMMAND_IDS = frozenset(
         "npm-dependency-materialize",
         "npm-dependency-uninstall",
         "npm-dependency-install",
+        # Validation commands can mutate generated output and tool caches even
+        # when they leave source files unchanged.
+        "npm-script-build-production",
+        "npm-script-test-ci",
+        "npm-script-lint",
     }
 )
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")

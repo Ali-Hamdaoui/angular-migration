@@ -32,7 +32,7 @@ from app.repositories.models import (
     StageStepModel,
     TransformationContinuationModel,
 )
-from app.services.failure_intelligence_service import is_dependency_incompatible_failure
+from app.services.failure_evidence_service import FailureEvidenceService
 
 logger = logging.getLogger(__name__)
 
@@ -417,7 +417,12 @@ def _normalization_rejection(proposal: dict) -> CausalRejection | None:
 
 
 def _is_dependency_failure(diagnosis_kind: str, normalized: dict) -> bool:
-    return is_dependency_incompatible_failure(normalized) or str(
+    route = FailureEvidenceService().classify({
+        "normalized_failure": normalized,
+        "failure_fingerprint": "causal-review",
+        "prior_fingerprints": [],
+    })
+    return route in {"dependency_incompatible", "package_export_incompatible"} or str(
         normalized.get("error_code") or ""
     ) in _DEPENDENCY_ERROR_CODES or str(normalized.get("failure_code") or "") in _DEPENDENCY_ERROR_CODES
 

@@ -15,6 +15,7 @@ from app.domain.planning import TRANSFORMER_SEMANTIC_VERSION_PROVEN
 from app.repositories.models import (
     ActivePlanVersionModel,
     ArtifactMetadataModel,
+    CandidatePromotionModel,
     CommandExecutionModel,
     MigrationPlanModel,
     MigrationRunModel,
@@ -140,22 +141,55 @@ class TransformerSealingFlow:
                 self._queue(continuation, "materialize_next_stage")
                 return
             context = self._sealing.context(session, continuation)
+            stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+            proven = bool(
+                stage_plan is not None
+                and (stage_plan.stage_plan or {}).get("transformer_semantic_version")
+                == TRANSFORMER_SEMANTIC_VERSION_PROVEN
+            )
             approval = session.scalar(
                 select(StageGatePackageModel)
                 .where(
                     StageGatePackageModel.stage_id == continuation.current_stage_id,
-                    StageGatePackageModel.gate_id.in_(("G11", "G12")),
+                    StageGatePackageModel.gate_id == "G12"
+                    if proven
+                    else StageGatePackageModel.gate_id.in_(("G11", "G12")),
                     StageGatePackageModel.status == "approved",
                 )
                 .order_by(
-                    (StageGatePackageModel.gate_id == "G11").desc(),
+                    (StageGatePackageModel.gate_id == "G12").desc(),
                     StageGatePackageModel.gate_version.desc(),
                 )
             )
             if approval is None:
-                self._block(session, continuation, "STAGE_APPROVAL_REQUIRED", "Approved G11 is missing")
+                self._block(
+                    session,
+                    continuation,
+                    "STAGE_APPROVAL_REQUIRED",
+                    "Approved G12 is missing" if proven else "Approved G11 is missing",
+                )
                 return
             approval_checksum = approval.package_checksum
+            if proven:
+                promotion = session.scalar(
+                    select(CandidatePromotionModel)
+                    .where(
+                        CandidatePromotionModel.run_id == continuation.run_id,
+                        CandidatePromotionModel.stage_id == continuation.current_stage_id,
+                        CandidatePromotionModel.status == "promoted",
+                        CandidatePromotionModel.candidate_fingerprint == context["workspace_fingerprint"],
+                    )
+                    .order_by(CandidatePromotionModel.created_at.desc())
+                    .limit(1)
+                )
+                if promotion is None or not promotion.receipt_checksum:
+                    self._block(
+                        session,
+                        continuation,
+                        "PROMOTION_RECEIPT_REQUIRED",
+                        "Proven sealing requires a reconciled promotion receipt",
+                    )
+                    return
         try:
             target, fingerprint, chain_hash, output, seal = self._sealing.seal(
                 context, approval_checksum
@@ -178,6 +212,17 @@ class TransformerSealingFlow:
                     )
                 )
                 if existing is None:
+                    promotion = session.scalar(
+                        select(CandidatePromotionModel)
+                        .where(
+                            CandidatePromotionModel.run_id == continuation.run_id,
+                            CandidatePromotionModel.stage_id == continuation.current_stage_id,
+                            CandidatePromotionModel.status == "promoted",
+                            CandidatePromotionModel.candidate_fingerprint == fingerprint,
+                        )
+                        .order_by(CandidatePromotionModel.created_at.desc())
+                        .limit(1)
+                    )
                     for artifact in (output, seal):
                         self._stage.register_artifact(session, artifact, continuation)
                     sequence = (
@@ -198,6 +243,9 @@ class TransformerSealingFlow:
                             workspace_alias="SEALED_STAGE_" + continuation.current_stage_id.upper(),
                             workspace_path=str(target),
                             workspace_fingerprint=fingerprint,
+                            workspace_generation_id=(promotion.workspace_generation_id if promotion else None),
+                            promotion_receipt_id=(promotion.id if promotion else None),
+                            g12_package_checksum=approval_checksum,
                             manifest_artifact_id=seal.ref.artifact_id,
                             manifest_checksum=chain_hash,
                             safe_for_resume=True,

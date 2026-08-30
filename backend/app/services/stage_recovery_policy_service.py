@@ -26,10 +26,12 @@ class RecoveryFailureClass(str, Enum):
 
 class RecoveryAction(str, Enum):
     RETRY_COMMAND = "RETRY_COMMAND"
-    RECOVER_STAGE = "RECOVER_STAGE"
+    RECONSTRUCT_WORKSPACE = "RECONSTRUCT_WORKSPACE"
     REEXECUTE_FROM_G07 = "REEXECUTE_FROM_G07"
+    REFRESH_PLAN = "REFRESH_PLAN"
     RECREATE_GATE = "RECREATE_GATE"
-    REQUEST_REPAIR = "REQUEST_REPAIR"
+    REQUEST_SOURCE_REPAIR = "REQUEST_SOURCE_REPAIR"
+    REQUEST_DEPENDENCY_REPAIR = "REQUEST_DEPENDENCY_REPAIR"
     ESCALATE_UNKNOWN = "ESCALATE_UNKNOWN"
     DENY = "DENY"
 
@@ -153,7 +155,7 @@ class StageRecoveryPolicyService:
                 )
                 else RecoveryAction.RETRY_COMMAND
                 if context.command_id
-                else RecoveryAction.RECOVER_STAGE
+                else RecoveryAction.RECONSTRUCT_WORKSPACE
             )
             return self._allow(action, "TRANSIENT_COMMAND_RECOVERY_ALLOWED", refs)
         if failure_class in {
@@ -164,16 +166,16 @@ class StageRecoveryPolicyService:
             action = (
                 RecoveryAction.REEXECUTE_FROM_G07
                 if context.stage_output_invalid and context.introduced_by_migration
-                else RecoveryAction.REQUEST_REPAIR
+                else RecoveryAction.REQUEST_DEPENDENCY_REPAIR
             )
             return self._allow(action, "DEPENDENCY_RECOVERY_GOVERNED", refs)
         if failure_class is RecoveryFailureClass.STALE_WORKSPACE_BINDING:
-            return self._allow(RecoveryAction.RECOVER_STAGE, "WORKSPACE_RECOVERY_GOVERNED", refs)
+            return self._allow(RecoveryAction.RECONSTRUCT_WORKSPACE, "WORKSPACE_RECOVERY_GOVERNED", refs)
         if failure_class is RecoveryFailureClass.SOURCE_REGRESSION:
             action = (
                 RecoveryAction.REEXECUTE_FROM_G07
                 if context.stage_output_invalid and context.introduced_by_migration
-                else RecoveryAction.REQUEST_REPAIR
+                else RecoveryAction.REQUEST_SOURCE_REPAIR
             )
             return self._allow(action, "SOURCE_REGRESSION_GOVERNED", refs)
         return StageRecoveryPolicyDecision(

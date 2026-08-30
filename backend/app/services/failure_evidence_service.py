@@ -21,7 +21,6 @@ from app.services.dependency_closure_service import (
     installed_dependency_version,
     is_exact_version,
 )
-from app.services.failure_intelligence_service import FailureIntelligenceService
 
 
 CONTEXT_PACK_SCHEMA_VERSION = "repair-context-pack-v1"
@@ -33,6 +32,32 @@ CAUSAL_REPAIR_SCHEMA_VERSION = "causal-repair-lineage-v1"
 _TERMINAL_FAILURE_STATUSES = frozenset({"failed", "timed_out", "cancelled", "interrupted"})
 _FAILURE_TARGET = re.compile(
     r"(?P<path>(?:[A-Za-z]:[\\/][^\s:'\"()]+|(?:[A-Za-z0-9_.@-]+[\\/])+[A-Za-z0-9_.@()-]+\.(?:ts|html|scss|json)))(?::\d+(?::\d+)?)?"
+)
+_MODULE_EXPORT_FAILURE = re.compile(
+    r"(?P<requested>['\"](?P<specifier>\.[^'\"]+)['\"]|(?P<bare>\.[^\s'\"]+))\s+"
+    r"is not exported under the conditions\s+\[(?P<conditions>[^\]]*)\]\s+"
+    r"from package\s+(?P<package_root>[^\r\n()]+?)\s+"
+    r"\(see exports field in\s+(?P<manifest>[^\r\n()]+?package\.json)\)",
+    re.IGNORECASE,
+)
+_MODULE_IMPORTER = re.compile(
+    r"(?P<importer>(?:[A-Za-z]:[\\/]|\./|/)[^:\r\n]+):\d+(?::\d+)?\s*-\s*",
+)
+_NODE_MODULE_PACKAGE = re.compile(
+    r"node_modules[\\/](?P<package>@[^\\/]+[\\/][^\\/]+|[^\\/]+)",
+    re.IGNORECASE,
+)
+_ENVIRONMENT_FAILURE = re.compile(
+    r"enet|econn|etimedout|enotfound|eai_again|enospc|eacces|eperm|permission denied|"
+    r"read.only|disk.*full|no space left|e401|e403|unauthorized|forbidden|registry.*auth|"
+    r"node-gyp|gyp err|prebuild|native.*binary|worker.*lost|claim.*expir|interrupted|"
+    r"timed.?out|command.*timeout|network error|registry timeout",
+    re.IGNORECASE,
+)
+_ENVIRONMENT_TRANSIENT = re.compile(
+    r"ebusy|(?:cleanup|remove|unlink|rename|spawn|open).{0,80}enoent|"
+    r"enoent.{0,80}(?:cleanup|remove|unlink|rename|spawn|open)",
+    re.IGNORECASE,
 )
 ANGULAR_DIRTY_WORKSPACE_MESSAGE = (
     "Repository is not clean. Please commit or stash any changes before updating."
@@ -277,6 +302,92 @@ class FailureEvidenceService:
     source_codes: ClassVar[set[str]] = {"COMPILATION_FAILED"}
 
     @staticmethod
+    def _exports_target_is_available(value: object, conditions: set[str]) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return True
+        if isinstance(value, list):
+            return any(FailureEvidenceService._exports_target_is_available(item, conditions) for item in value)
+        if isinstance(value, dict):
+            return any(
+                key == "default" or key in conditions
+                for key in value
+                if FailureEvidenceService._exports_target_is_available(value[key], conditions)
+            )
+        return False
+
+    @staticmethod
+    def _module_resolution_evidence(workspace: Path, message: str) -> dict[str, object] | None:
+        match = _MODULE_EXPORT_FAILURE.search(message)
+        if match is None:
+            return None
+        requested = match.group("specifier") or match.group("bare")
+        package_root_text = match.group("package_root").strip()
+        manifest_text = match.group("manifest").strip()
+        package_match = _NODE_MODULE_PACKAGE.search(package_root_text)
+        package_name = package_match.group("package") if package_match else None
+        manifest = Path(manifest_text)
+        if not manifest.is_file() and package_name:
+            manifest = workspace / "node_modules" / package_name / "package.json"
+        try:
+            manifest = manifest.resolve(strict=True)
+            package_root = manifest.parent
+            manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+            return None
+        exports = manifest_payload.get("exports")
+        if not isinstance(exports, (dict, list, str)):
+            return None
+        importer_match = _MODULE_IMPORTER.search(message)
+        importer = importer_match.group("importer") if importer_match else None
+        conditions = {
+            item.strip().strip("'\"")
+            for item in (match.group("conditions") or "").split(",")
+            if item.strip()
+        }
+        exposed = False
+        if isinstance(exports, dict) and any(str(key).startswith(".") for key in exports):
+            if requested in exports:
+                exposed = FailureEvidenceService._exports_target_is_available(exports[requested], conditions)
+            elif not exposed:
+                for key, target in exports.items():
+                    if isinstance(key, str) and "*" in key:
+                        prefix, suffix = key.split("*", 1)
+                        if requested.startswith(prefix) and requested.endswith(suffix):
+                            exposed = FailureEvidenceService._exports_target_is_available(target, conditions)
+                            if exposed:
+                                break
+        elif requested == ".":
+            exposed = FailureEvidenceService._exports_target_is_available(exports, conditions)
+        if exposed or not importer:
+            return None
+        try:
+            importer_path = Path(importer).resolve(strict=True)
+            relative_importer = importer_path.relative_to(workspace).as_posix()
+        except (OSError, ValueError):
+            relative_importer = importer
+        return {
+            "diagnostic": "MODULE_NOT_EXPORTED",
+            "importer": relative_importer,
+            "requested_specifier": requested,
+            "installed_package": package_name,
+            "installed_package_root": str(package_root),
+            "installed_package_manifest": str(manifest),
+            "exports": exports,
+            "observed_conditions": sorted(conditions),
+            "resolver_proof": "requested subpath is not exposed by installed exports semantics",
+            "owner": "SOURCE" if not str(relative_importer).startswith("node_modules/") else "DEPENDENCY",
+        }
+
+    @staticmethod
+    def is_environment_failure(evidence: object) -> bool:
+        normalized = evidence.get("normalized_failure") if isinstance(evidence, dict) else evidence
+        normalized = normalized if isinstance(normalized, dict) else {}
+        text = f"{normalized.get('error_code') or ''} {normalized.get('failure_code') or ''} {normalized.get('failure_message') or ''}"
+        return bool(_ENVIRONMENT_FAILURE.search(text) or _ENVIRONMENT_TRANSIENT.search(text))
+
+    @staticmethod
     def is_angular_update_dirty_workspace(evidence: dict[str, object]) -> bool:
         normalized = evidence.get("normalized_failure") or {}
         message = " ".join(str(normalized.get("failure_message") or "").split())
@@ -508,6 +619,11 @@ class FailureEvidenceService:
                 except ValueError:
                     pass
             normalized["failure_diagnosis"] = diagnosis
+        module_resolution = self._module_resolution_evidence(
+            Path(binding.workspace_path), str(normalized["failure_message"] or "")
+        )
+        if module_resolution is not None:
+            normalized["module_resolution"] = module_resolution
         semantic_failure_fingerprint = "sha256:" + hashlib.sha256(
             json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -596,10 +712,11 @@ class FailureEvidenceService:
 
     @staticmethod
     def _causal_kind(normalized: dict[str, object], step_name: str | None) -> str:
-        intelligence = FailureIntelligenceService()
-        if intelligence.is_dependency_incompatible(normalized):
+        route = FailureEvidenceService().classify(
+            {"normalized_failure": normalized, "failure_fingerprint": "causal-kind", "prior_fingerprints": []}
+        )
+        if route in {FailureRoute.DEPENDENCY_INCOMPATIBLE, FailureRoute.PACKAGE_EXPORT_INCOMPATIBLE}:
             return "dependency"
-        route = intelligence.classify(normalized)
         if route in {FailureRoute.ENVIRONMENT_TRANSIENT, FailureRoute.ENVIRONMENT_PERMANENT}:
             return "environment"
         prefix = str(step_name or "").split("-", 1)[0]
@@ -650,6 +767,7 @@ class FailureEvidenceService:
         return value if isinstance(value, dict) else None
 
     def classify(self, evidence: dict[str, object]) -> FailureRoute:
+        """Canonical semantic route for immutable, normalized evidence."""
         code = str((evidence["normalized_failure"] or {}).get("error_code") or "")
         normalized = evidence.get("normalized_failure") or {}
         if evidence["failure_fingerprint"] in evidence["prior_fingerprints"]:
@@ -658,13 +776,21 @@ class FailureEvidenceService:
             return FailureRoute.ANGULAR_UPDATE_COMMAND_POLICY
         if self.is_angular_update_peer_dependency_conflict(evidence):
             return FailureRoute.ANGULAR_UPDATE_PEER_CONFLICT
-        intelligence_route = FailureIntelligenceService().classify(evidence)
-        if intelligence_route in {
-            FailureRoute.DEPENDENCY_INCOMPATIBLE,
-            FailureRoute.ENVIRONMENT_TRANSIENT,
-            FailureRoute.ENVIRONMENT_PERMANENT,
-        }:
-            return intelligence_route
+        if self.is_environment_failure(evidence):
+            text = str(normalized.get("failure_message") or "").lower()
+            if any(token in text for token in ("e401", "e403", "auth", "permission", "enospc", "eacces", "eperm", "node-gyp", "gyp err")) and not _ENVIRONMENT_TRANSIENT.search(text):
+                return FailureRoute.ENVIRONMENT_PERMANENT
+            return FailureRoute.ENVIRONMENT_TRANSIENT
+        module_resolution = normalized.get("module_resolution")
+        if (
+            isinstance(module_resolution, dict)
+            and module_resolution.get("diagnostic") == "MODULE_NOT_EXPORTED"
+            and module_resolution.get("importer")
+            and module_resolution.get("requested_specifier")
+            and module_resolution.get("installed_package_manifest")
+            and module_resolution.get("resolver_proof")
+        ):
+            return FailureRoute.PACKAGE_EXPORT_INCOMPATIBLE
         if code in self.transient_codes:
             return FailureRoute.ENVIRONMENT_TRANSIENT
         if (

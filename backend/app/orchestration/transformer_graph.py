@@ -4254,7 +4254,7 @@ class TransformerOrchestrator:
             is_npm_eresolve_failure,
             is_npm_etarget_failure,
         )
-        from app.services.failure_intelligence_service import is_environment_failure
+        from app.services.failure_evidence_service import FailureEvidenceService
 
         if execution is None:
             return False
@@ -4281,7 +4281,7 @@ class TransformerOrchestrator:
             "failure_code": execution.failure_code,
             "command_id": execution.command_id,
         }
-        if is_environment_failure(env_evidence):
+        if FailureEvidenceService.is_environment_failure(env_evidence):
             return False
         # Immutable evidence contract: result + command-log artifacts must exist
         # AND be physically read back with checksums proven against the persisted
@@ -6104,7 +6104,12 @@ class TransformerOrchestrator:
     def _repairable_route(route) -> bool:
         # V2.2: dependency_incompatible is repairable via manifest normalization (P3); preserve legacy routes
         val = route.value if hasattr(route, "value") else str(route)
-        return val in {"repairable_source", "angular_update_peer_conflict", "dependency_incompatible"}
+        return val in {
+            "repairable_source",
+            "angular_update_peer_conflict",
+            "dependency_incompatible",
+            "package_export_incompatible",
+        }
 
     @staticmethod
     def _is_angular_update_failure(session, continuation) -> bool:

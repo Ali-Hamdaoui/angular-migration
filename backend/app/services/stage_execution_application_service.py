@@ -23,6 +23,7 @@ from app.repositories.models import (
     StageExecutionPlanModel,
     StageStepModel,
     StageWorkspaceBindingModel,
+    WorkspaceGenerationModel,
     WorkflowEventModel,
 )
 from app.repositories.session import session_scope
@@ -325,19 +326,6 @@ class StageExecutionApplicationService:
             stage_record.source_angular_version = stage_value.get("source_exact") or stage_record.source_angular_version
             stage_record.target_angular_version = stage_value.get("target_exact") or stage_record.target_angular_version
             stage_record.status = "prepared"
-        existing_steps = session.query(StageStepModel).filter(StageStepModel.stage_id == stage_id).count()
-        if existing_steps == 0:
-            for group, references in (stage.stage_plan.get("commands") or {}).items():
-                for index, _reference in enumerate(references):
-                    session.add(StageStepModel(
-                        id=f"step-{run.id}-{stage_id}-{group}-{index}",
-                        run_id=run.id,
-                        stage_id=stage_id,
-                        name=f"{group}-{index}",
-                        status="PENDING",
-                        component_type="command",
-                        idempotency_key=f"{run.id}:{stage_id}:{group}:{index}",
-                    ))
         aliases = dict(run.workspace_aliases or {})
         aliases[preparation.workspace_alias] = preparation.workspace_path
         run.workspace_aliases = aliases
@@ -354,7 +342,7 @@ class StageExecutionApplicationService:
             )
         )
         if binding is None:
-            session.add(StageWorkspaceBindingModel(
+            binding = StageWorkspaceBindingModel(
                 id="stage-workspace-" + hashlib.sha256(
                     f"{run.id}:{stage_id}:{preparation.workspace_alias}".encode()
                 ).hexdigest()[:24],
@@ -367,7 +355,62 @@ class StageExecutionApplicationService:
                 input_fingerprint=preparation.fingerprint,
                 active=True,
                 created_at=now,
-            ))
+            )
+            session.add(binding)
+        generation = None
+        if binding.workspace_generation_id:
+            generation = session.get(WorkspaceGenerationModel, binding.workspace_generation_id)
+        if generation is None:
+            current_generation = session.scalar(
+                select(WorkspaceGenerationModel.generation)
+                .where(
+                    WorkspaceGenerationModel.run_id == run.id,
+                    WorkspaceGenerationModel.stage_id == stage_id,
+                    WorkspaceGenerationModel.alias == binding.alias,
+                )
+                .order_by(WorkspaceGenerationModel.generation.desc())
+                .limit(1)
+            ) or 0
+            generation_number = current_generation + 1
+            generation_id = "gen-" + hashlib.sha256(
+                f"{run.id}:{stage_id}:{binding.alias}:{generation_number}".encode()
+            ).hexdigest()[:24]
+            generation = WorkspaceGenerationModel(
+                id=generation_id,
+                run_id=run.id,
+                stage_id=stage_id,
+                alias=binding.alias,
+                generation=generation_number,
+                workspace_path=binding.workspace_path,
+                fingerprint=binding.workspace_fingerprint,
+                input_fingerprint=binding.input_fingerprint,
+                status="prepared",
+                active_binding_id=binding.id,
+                created_at=now,
+            )
+            session.add(generation)
+            binding.workspace_generation_id = generation.id
+        current_steps = session.query(StageStepModel).filter(
+            StageStepModel.stage_plan_id == stage.id,
+            StageStepModel.workspace_generation_id == generation.id,
+        ).count()
+        if current_steps == 0:
+            for group, references in (stage.stage_plan.get("commands") or {}).items():
+                for index, _reference in enumerate(references if isinstance(references, list) else (references,)):
+                    session.add(StageStepModel(
+                        id=f"step-{run.id}-{stage_id}-{stage.id[:16]}-{group}-{index}",
+                        run_id=run.id,
+                        stage_id=stage_id,
+                        stage_plan_id=stage.id,
+                        workspace_generation_id=generation.id,
+                        step_key=f"{group}-{index}",
+                        projection_version=1,
+                        source_record_type="command_execution",
+                        name=f"{group}-{index}",
+                        status="PENDING",
+                        component_type="command",
+                        idempotency_key=f"{run.id}:{stage_id}:{stage.id}:{group}:{index}",
+                    ))
         for artifact in preparation_artifacts:
             session.add(ArtifactMetadataModel(
                 id="metadata-" + artifact.ref.artifact_id,

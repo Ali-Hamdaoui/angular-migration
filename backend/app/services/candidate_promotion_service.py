@@ -13,7 +13,14 @@ from sqlalchemy import select
 from app.domain.candidate_promotion import CandidatePromotionDecision
 from app.domain.transformation import ValidationSummary
 from app.domain.workspace_authority import WorkspacePromotionRequest
-from app.repositories.models import CandidatePromotionModel, MigrationRunModel, MigrationStageModel
+from app.repositories.models import (
+    CandidatePromotionModel,
+    MigrationRunModel,
+    MigrationStageModel,
+    StageGatePackageModel,
+    StageWorkspaceBindingModel,
+    WorkspaceGenerationModel,
+)
 from app.repositories.session import session_scope
 from app.services.workspace_authority_service import WorkspaceAuthorityService
 
@@ -135,6 +142,44 @@ class CandidatePromotionService:
         """
         from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
 
+        with self._session_scope() as session:
+            gate = session.scalar(
+                select(StageGatePackageModel)
+                .where(
+                    StageGatePackageModel.run_id == run_id,
+                    StageGatePackageModel.stage_id == stage_id,
+                    StageGatePackageModel.gate_id == "G12",
+                    StageGatePackageModel.status == "approved",
+                )
+                .order_by(StageGatePackageModel.gate_version.desc())
+                .limit(1)
+            )
+            binding = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == run_id,
+                    StageWorkspaceBindingModel.stage_id == stage_id,
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            generation = (
+                session.get(WorkspaceGenerationModel, binding.workspace_generation_id)
+                if binding is not None and binding.workspace_generation_id
+                else None
+            )
+            if gate is None:
+                raise CandidatePromotionError("G12_REQUIRED", "promotion requires an approved G12")
+            if binding is None or generation is None:
+                raise CandidatePromotionError(
+                    "WORKSPACE_GENERATION_MISSING",
+                    "promotion requires a plan-bound workspace generation",
+                )
+            if generation.status not in {"prepared", "active"} or generation.workspace_path != str(candidate_path):
+                raise CandidatePromotionError("WORKSPACE_GENERATION_STALE", "candidate generation is not the bound generation")
+            if hasattr(validation_summary, "candidate_generation_id") and validation_summary.candidate_generation_id != generation.id:
+                raise CandidatePromotionError("VALIDATION_GENERATION_MISMATCH", "validation is bound to another workspace generation")
+            if gate.workspace_fingerprint != validation_summary.candidate_fingerprint:
+                raise CandidatePromotionError("G12_FINGERPRINT_MISMATCH", "G12 does not bind the validated candidate fingerprint")
+
         if validation_summary.run_id != run_id or validation_summary.stage_id != stage_id:
             raise CandidatePromotionError(
                 "VALIDATION_SUMMARY_SCOPE_MISMATCH",
@@ -153,7 +198,33 @@ class CandidatePromotionService:
                 "live candidate fingerprint differs from the validated generation",
                 {"validated": validation_summary.candidate_fingerprint[:16]},
             )
-        return self.promote_candidate(run_id=run_id, stage_id=stage_id, candidate_path=candidate_path)
+        alias = _stage_alias(stage_id)
+        request = WorkspacePromotionRequest(
+            run_id=run_id,
+            stage_id=stage_id,
+            alias=alias,
+            generation=generation.generation,
+            workspace_path=str(candidate_path),
+            fingerprint=validation_summary.candidate_fingerprint,
+            input_fingerprint=generation.input_fingerprint,
+        )
+        try:
+            self._authority.promote(request)
+        except Exception as exc:
+            code = getattr(exc, "code", "PROMOTION_FAILED")
+            raise CandidatePromotionError("PROMOTION_FAILED", str(exc), {"cause": code}) from exc
+        decision = CandidatePromotionDecision(
+            run_id=run_id,
+            stage_id=stage_id,
+            alias=alias,
+            candidate_fingerprint=validation_summary.candidate_fingerprint,
+            generation=generation.generation,
+            status="promoted",
+            validated=True,
+            previous_generation=generation.generation - 1 if generation.generation > 1 else None,
+        ).bind_checksum()
+        self.persist(decision, workspace_generation_id=generation.id, g12_package_checksum=gate.package_checksum)
+        return decision
 
     def rollback_safety(self, *, run_id: str, stage_id: str) -> CandidatePromotionDecision:
         """Confirm the last-good generation is still active (rollback safety).
@@ -183,7 +254,13 @@ class CandidatePromotionService:
     def _previous_generation(self, run_id: str, stage_id: str) -> int | None:
         return self._authority.current_generation(run_id, stage_id, _stage_alias(stage_id))
 
-    def persist(self, decision: CandidatePromotionDecision) -> CandidatePromotionModel:
+    def persist(
+        self,
+        decision: CandidatePromotionDecision,
+        *,
+        workspace_generation_id: str | None = None,
+        g12_package_checksum: str | None = None,
+    ) -> CandidatePromotionModel:
         with self._session_scope() as session:
             existing = session.scalar(
                 select(CandidatePromotionModel).where(
@@ -204,6 +281,9 @@ class CandidatePromotionService:
                 validated=decision.validated,
                 blockers=list(decision.blockers),
                 previous_generation=decision.previous_generation,
+                workspace_generation_id=workspace_generation_id,
+                g12_package_checksum=g12_package_checksum,
+                receipt_checksum=decision.checksum,
                 checksum=decision.checksum,
                 created_at=self._now_provider(),
             )

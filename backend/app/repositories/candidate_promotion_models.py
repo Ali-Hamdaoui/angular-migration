@@ -22,5 +22,8 @@ class CandidatePromotionModel(Base):
     validated: Mapped[bool] = mapped_column(Boolean, nullable=False)
     blockers: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     previous_generation: Mapped[int | None] = mapped_column(Integer)
+    workspace_generation_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    g12_package_checksum: Mapped[str | None] = mapped_column(String(128))
+    receipt_checksum: Mapped[str | None] = mapped_column(String(128), index=True)
     checksum: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
