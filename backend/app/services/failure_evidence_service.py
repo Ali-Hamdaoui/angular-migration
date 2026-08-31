@@ -135,8 +135,8 @@ def _failure_matches_current_route(last_error_code: str | None, failure_code: st
     return (
         not last_error_code
         or failure_code == last_error_code
-        or last_error_code
-        in {"FAILURE_ROUTE_ENVIRONMENT_TRANSIENT", "CAUSAL_EXECUTION_AMBIGUOUS"}
+        or str(last_error_code).startswith("FAILURE_ROUTE_")
+        or last_error_code == "CAUSAL_EXECUTION_AMBIGUOUS"
     )
 
 
