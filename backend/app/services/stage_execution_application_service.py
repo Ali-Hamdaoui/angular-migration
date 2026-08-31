@@ -398,7 +398,9 @@ class StageExecutionApplicationService:
             for group, references in (stage.stage_plan.get("commands") or {}).items():
                 for index, _reference in enumerate(references if isinstance(references, list) else (references,)):
                     session.add(StageStepModel(
-                        id=f"step-{run.id}-{stage_id}-{stage.id[:16]}-{group}-{index}",
+                        id="step-" + hashlib.sha256(
+                            f"{run.id}:{stage_id}:{stage.id}:{generation.id}:{group}:{index}".encode("utf-8")
+                        ).hexdigest()[:32],
                         run_id=run.id,
                         stage_id=stage_id,
                         stage_plan_id=stage.id,

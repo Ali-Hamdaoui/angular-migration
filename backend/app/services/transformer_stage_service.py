@@ -1866,7 +1866,10 @@ class TransformerStageService:
         )
         if step is None:
             step = StageStepModel(
-                id=f"step-{run.id}-{continuation.current_stage_id}-{continuation.stage_plan_id[:16]}-{group}-0",
+                id="step-" + hashlib.sha256(
+                    f"{run.id}:{continuation.current_stage_id}:{continuation.stage_plan_id}:"
+                    f"{binding.workspace_generation_id}:{group}:0".encode("utf-8")
+                ).hexdigest()[:32],
                 run_id=run.id,
                 stage_id=continuation.current_stage_id,
                 stage_plan_id=continuation.stage_plan_id,

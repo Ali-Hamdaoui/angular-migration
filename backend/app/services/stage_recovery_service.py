@@ -905,7 +905,10 @@ class StageRecoveryService:
             for index, _reference in enumerate(references if isinstance(references, list) else (references,)):
                 session.add(
                     StageStepModel(
-                        id=f"step-{run.id}-{continuation.current_stage_id}-{replacement_stage_id[:16]}-{group}-{index}",
+                        id="step-" + hashlib.sha256(
+                            f"{run.id}:{continuation.current_stage_id}:{replacement_stage_id}:"
+                            f"{generation.id}:{group}:{index}".encode("utf-8")
+                        ).hexdigest()[:32],
                         run_id=run.id,
                         stage_id=continuation.current_stage_id,
                         stage_plan_id=replacement_stage_id,
