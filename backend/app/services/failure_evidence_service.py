@@ -311,7 +311,10 @@ class FailureEvidenceService:
         normalized = evidence.get("normalized_failure") or {}
         if not isinstance(normalized, dict):
             return False
-        if str(normalized.get("error_code") or "") != "COMMAND_EXIT_NONZERO":
+        if "COMMAND_EXIT_NONZERO" not in {
+            str(normalized.get("error_code") or ""),
+            str(normalized.get("failure_code") or ""),
+        }:
             return False
         causal = evidence.get("causal_repair") or {}
         if not isinstance(causal, dict) or causal.get("causal_kind") not in {"build", "test", "lint"}:
