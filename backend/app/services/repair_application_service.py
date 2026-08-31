@@ -2452,13 +2452,16 @@ class RepairApplicationService:
             or continuation.current_stage_id != attempt.stage_id
             or continuation.status != "blocked"
             or continuation.current_node != "propose_repair"
-            or continuation.last_error_code
-            not in {
-                "REPAIR_SEMANTIC_RETRY_EXHAUSTED",
-                "REPAIR_CAUSAL_REJECTION",
-                "REPAIR_DEPENDENCY_EVIDENCE_INVALID",
-                "REPAIR_PROPOSAL_SCHEMA_INVALID",
-            }
+            or (
+                continuation.last_error_code
+                not in {
+                    "REPAIR_SEMANTIC_RETRY_EXHAUSTED",
+                    "REPAIR_CAUSAL_REJECTION",
+                    "REPAIR_DEPENDENCY_EVIDENCE_INVALID",
+                    "REPAIR_PROPOSAL_SCHEMA_INVALID",
+                }
+                and continuation.last_error_code not in _SEMANTIC_RETRY_CODES
+            )
             or continuation.state_version != expected_state_version
         ):
             raise RepairApplicationError(
