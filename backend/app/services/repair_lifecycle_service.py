@@ -115,9 +115,21 @@ class RepairLifecycleService:
                 MigrationStageModel.status == "sealed",
             )
         )
-        if stage is None or not cls._has_approved_gate(
-            session, run_id=run_id, stage_id=stage_id, gate_id="G11"
-        ):
+        final_gate = session.scalar(
+            select(StageGatePackageModel)
+            .where(
+                StageGatePackageModel.run_id == run_id,
+                StageGatePackageModel.stage_id == stage_id,
+                StageGatePackageModel.gate_id.in_("G11", "G12"),
+                StageGatePackageModel.status == "approved",
+                StageGatePackageModel.stale_at.is_(None),
+            )
+            .order_by(
+                (StageGatePackageModel.gate_id == "G12").desc(),
+                StageGatePackageModel.gate_version.desc(),
+            )
+        )
+        if stage is None or final_gate is None:
             return ()
 
         replacements = session.scalars(
@@ -125,7 +137,9 @@ class RepairLifecycleService:
             .where(
                 RepairAttemptModel.run_id == run_id,
                 RepairAttemptModel.stage_id == stage_id,
-                RepairAttemptModel.status == "validation_passed",
+                RepairAttemptModel.status.in_(
+                    ("validation_passed", "waiting_g11", "revalidating", "revalidating_affected")
+                ),
             )
             .order_by(RepairAttemptModel.attempt_number.desc())
         ).all()
@@ -133,12 +147,38 @@ class RepairLifecycleService:
             (
                 attempt
                 for attempt in replacements
-                if cls._has_complete_replacement_evidence(session, attempt)
+                if cls._has_complete_replacement_evidence(
+                    session,
+                    attempt,
+                    final_gate=final_gate,
+                    allow_uncompleted=final_gate.gate_id == "G12",
+                )
             ),
             None,
         )
         if replacement is None:
             return ()
+
+        reconciled_at = now or datetime.now(UTC)
+        if replacement.status != "validation_passed":
+            if replacement.status != "waiting_g11":
+                cls.transition_in_session(
+                    session,
+                    replacement,
+                    "waiting_g11",
+                    reason="sealed final gate completed legacy repair revalidation",
+                    actor="transformer",
+                    now=reconciled_at,
+                )
+            cls.transition_in_session(
+                session,
+                replacement,
+                "validation_passed",
+                reason="sealed final gate completed repair validation",
+                actor="transformer",
+                now=reconciled_at,
+            )
+            replacement.completed_at = reconciled_at
 
         older_attempts = session.scalars(
             select(RepairAttemptModel)
@@ -153,7 +193,6 @@ class RepairLifecycleService:
         if not older_attempts:
             return ()
 
-        reconciled_at = now or datetime.now(UTC)
         for attempt in older_attempts:
             attempt.status = "superseded"
             attempt.completed_at = reconciled_at
@@ -176,7 +215,14 @@ class RepairLifecycleService:
         )
 
     @classmethod
-    def _has_complete_replacement_evidence(cls, session, attempt) -> bool:
+    def _has_complete_replacement_evidence(
+        cls,
+        session,
+        attempt,
+        *,
+        final_gate: StageGatePackageModel,
+        allow_uncompleted: bool = False,
+    ) -> bool:
         if not all(
             (
                 attempt.proposal_artifact_id,
@@ -188,9 +234,10 @@ class RepairLifecycleService:
                 attempt.validation_summary_artifact_id,
                 attempt.validation_summary_checksum,
                 attempt.post_fingerprint,
-                attempt.completed_at,
             )
         ):
+            return False
+        if not allow_uncompleted and attempt.completed_at is None:
             return False
         gate = session.get(StageGatePackageModel, attempt.g10_gate_package_id)
         return bool(
@@ -200,4 +247,6 @@ class RepairLifecycleService:
             and gate.gate_id == "G10"
             and gate.status == "approved"
             and gate.stale_at is None
+            and gate.stage_plan_id == final_gate.stage_plan_id
+            and final_gate.workspace_fingerprint == attempt.post_fingerprint
         )
