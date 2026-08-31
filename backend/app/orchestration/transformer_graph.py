@@ -7075,13 +7075,19 @@ class TransformerOrchestrator:
 
     @staticmethod
     def _validation_attempt_key(session, continuation) -> str:
-        if continuation.last_error_code == "FAILURE_ROUTE_ENVIRONMENT_TRANSIENT":
-            return TransformerOrchestrator._environment_retry_attempt_key(continuation)
         attempt = session.query(RepairAttemptModel).filter_by(
             run_id=continuation.run_id, stage_id=continuation.current_stage_id
         ).filter(
             RepairAttemptModel.status != "superseded"
         ).order_by(RepairAttemptModel.attempt_number.desc()).first()
+        if (
+            continuation.current_node == "final_install"
+            and attempt is not None
+            and attempt.status == "migration_retried"
+        ):
+            return f"{attempt.id}:validation-cycle:{continuation.state_version}"
+        if continuation.last_error_code == "FAILURE_ROUTE_ENVIRONMENT_TRANSIENT":
+            return TransformerOrchestrator._environment_retry_attempt_key(continuation)
         return attempt.id if attempt and attempt.status in {"applied", "applied_verified", "migration_retried", "revalidating"} else "initial"
 
     @staticmethod
