@@ -514,6 +514,7 @@ class TransformerSealingFlow:
                     run_id=continuation.run_id,
                     stage_id=stage_id,
                 )
+            session.flush()
             if session.scalar(
                 select(CommandExecutionModel.id).where(
                     CommandExecutionModel.run_id == continuation.run_id,
