@@ -110,7 +110,7 @@ _NPM_ERESOLVE_PEER_CONFLICT_RE = re.compile(
     rf"(?P<version>\d+\.\d+\.\d+(?:[-\w.]*)?)(?=\s|$)"
 )
 _SOURCE_COMPATIBILITY_DIAGNOSTIC = re.compile(
-    r"(?im)(?:^|[\r\n])\s*(?:\.?[\\/])?[^:\r\n]+\.(?:ts|html|scss):\d+(?::\d+)?\s*-\s*"
+    r"(?im)(?:^|[\r\n])\s*(?:\.?[\\/])?[^:\r\n]+\.(?:ts|html|scss):\d+(?::\d+)?(?:-\d+)?\s*-\s*"
     r"(?:error|warning):.*(?:has no exported member|export .* was not found|"
     r"cannot find module|cannot find name|does not exist on type|is not assignable to)",
 )
