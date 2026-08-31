@@ -501,6 +501,17 @@ def causal_rejection(
         or evidence.get("failure_route")
         or ""
     ).strip()
+    # Derived causal metadata predates the canonical module-resolution route in
+    # some immutable artifacts. Re-evaluate the frozen normalized evidence;
+    # never trust a historical derived owner over current deterministic proof.
+    canonical_route = FailureEvidenceService().classify({
+        "normalized_failure": normalized,
+        "failure_fingerprint": "causal-review",
+        "prior_fingerprints": [],
+    }).value
+    if canonical_route == "package_export_incompatible":
+        route = canonical_route
+        causal_kind = "source"
     # new normalization path takes precedence for dependency_incompatible / migrate_packages
     operations = proposal.get("operations") if isinstance(proposal.get("operations"), list) else []
     has_norm = any(_is_normalization_operation(op) for op in operations if isinstance(op, dict))
