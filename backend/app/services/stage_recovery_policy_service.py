@@ -21,6 +21,7 @@ class RecoveryFailureClass(str, Enum):
     COMMAND_AUTHORITY_MISMATCH = "COMMAND_AUTHORITY_MISMATCH"
     SOURCE_REGRESSION = "SOURCE_REGRESSION"
     STAGE_PLAN_AUTHORITY_STALE = "STAGE_PLAN_AUTHORITY_STALE"
+    PROJECTION_AUTHORITY_STALE = "PROJECTION_AUTHORITY_STALE"
     UNKNOWN_FAILURE = "UNKNOWN_FAILURE"
 
 
@@ -59,6 +60,7 @@ class StageRecoveryPolicyContext:
     plan_authority_stale: bool = False
     commands_executed: bool = False
     command_authority_mismatch: bool = False
+    projection_authority_stale: bool = False
     reconstruction_required: bool = False
     retry_budget_exhausted: bool = False
 
@@ -127,6 +129,14 @@ class StageRecoveryPolicyService:
             return self._allow(
                 RecoveryAction.REEXECUTE_FROM_G07,
                 "COMMAND_AUTHORITY_REFRESH_ALLOWED",
+                refs,
+            )
+        if failure_class is RecoveryFailureClass.PROJECTION_AUTHORITY_STALE:
+            if not context.projection_authority_stale or not context.reconstruction_required:
+                return self._deny("PROJECTION_AUTHORITY_REFRESH_UNSAFE", refs)
+            return self._allow(
+                RecoveryAction.REEXECUTE_FROM_G07,
+                "PROJECTION_AUTHORITY_REFRESH_ALLOWED",
                 refs,
             )
         if failure_class is RecoveryFailureClass.STALE_GATE_BINDING:

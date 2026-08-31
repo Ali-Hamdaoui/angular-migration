@@ -412,6 +412,10 @@ class TransformationContinuationService:
                 or planned_aliases != {binding.alias}
             )
         )
+        projection_authority_stale = bool(
+            continuation.last_error_code == "PROVEN_PRIOR_STEP_NOT_VERIFIED"
+            and commands_executed
+        )
         # The continuation error may be a controller-level route such as a
         # retry-budget boundary.  The terminal command is the authoritative
         # failure evidence used for recovery classification.
@@ -431,6 +435,8 @@ class TransformationContinuationService:
             failure_class = RecoveryFailureClass.STAGE_PLAN_AUTHORITY_STALE
         elif command_authority_mismatch:
             failure_class = RecoveryFailureClass.COMMAND_AUTHORITY_MISMATCH
+        elif projection_authority_stale:
+            failure_class = RecoveryFailureClass.PROJECTION_AUTHORITY_STALE
         elif workspace_binding_stale:
             failure_class = RecoveryFailureClass.STALE_WORKSPACE_BINDING
         elif failure_code == "PROVEN_TARGET_COHORT_INCOMPLETE":
@@ -492,6 +498,7 @@ class TransformationContinuationService:
             plan_authority_stale=plan_authority_stale,
             commands_executed=commands_executed,
             command_authority_mismatch=command_authority_mismatch,
+            projection_authority_stale=projection_authority_stale,
             reconstruction_required=reconstruction_required,
             retry_budget_exhausted=continuation.attempt >= continuation.max_attempts,
         )
