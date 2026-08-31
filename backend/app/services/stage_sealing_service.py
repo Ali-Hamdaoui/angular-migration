@@ -11,7 +11,11 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
-from app.artifact_store import LocalFilesystemArtifactStore
+from app.artifact_store import (
+    ArtifactNotFoundError,
+    ArtifactStoreError,
+    LocalFilesystemArtifactStore,
+)
 from app.domain.contracts import ArtifactType
 from app.repositories.models import (
     ArtifactMetadataModel,
@@ -25,6 +29,7 @@ from app.repositories.models import (
     StageWorkspaceBindingModel,
 )
 from app.services.stage_preparation_primitives import StageSandboxCopier
+from app.services.repair_lifecycle_service import RepairLifecycleService
 from app.services.stage_target_version_service import (
     StageTargetVersionError,
     StageTargetVersionService,
@@ -59,7 +64,10 @@ class StageSealingService:
         )
         latest_repair = session.scalar(
             select(RepairAttemptModel)
-            .where(RepairAttemptModel.stage_id == continuation.current_stage_id)
+            .where(
+                RepairAttemptModel.run_id == continuation.run_id,
+                RepairAttemptModel.stage_id == continuation.current_stage_id,
+            )
             .order_by(RepairAttemptModel.attempt_number.desc())
             .limit(1)
         )
@@ -71,22 +79,6 @@ class StageSealingService:
             and latest_repair.proposal_artifact_id is None
             and latest_repair.review_artifact_id is None
         )
-        active_repair = (
-            latest_repair.id
-            if latest_repair is not None
-            and not stale_repair_recovery
-            and latest_repair.status
-            not in (
-                "waiting_g11",
-                "validation_passed",
-                "completed",
-                "rejected",
-                "apply_failed",
-                "request_changes",
-                "superseded",
-            )
-            else None
-        )
         g09 = session.scalar(
             select(StageGatePackageModel)
             .where(
@@ -96,12 +88,6 @@ class StageSealingService:
             )
             .order_by(StageGatePackageModel.gate_version.desc())
         )
-        if active_command or active_prompt or active_repair:
-            raise StageSealingError(
-                "STAGE_NOT_CLEAN", "Commands, prompts, or repairs are still active"
-            )
-        if g09 is None and active_repair is not None:
-            raise StageSealingError("G09_APPROVAL_REQUIRED", "Approved G09 evidence is missing")
         bindings = session.scalars(
             select(StageWorkspaceBindingModel)
             .where(
@@ -127,6 +113,32 @@ class StageSealingService:
         if binding is None:
             raise StageSealingError("WORKSPACE_BINDING_MISSING", "Active stage workspace binding is missing")
         run = session.get(MigrationRunModel, continuation.run_id)
+        if latest_repair is not None and latest_repair.status in ("revalidating", "revalidating_affected"):
+            self._reconcile_completed_validation(
+                session, continuation, latest_repair, binding, run
+            )
+        active_repair = (
+            latest_repair.id
+            if latest_repair is not None
+            and not stale_repair_recovery
+            and latest_repair.status
+            not in (
+                "waiting_g11",
+                "validation_passed",
+                "completed",
+                "rejected",
+                "apply_failed",
+                "request_changes",
+                "superseded",
+            )
+            else None
+        )
+        if active_command or active_prompt or active_repair:
+            raise StageSealingError(
+                "STAGE_NOT_CLEAN", "Commands, prompts, or repairs are still active"
+            )
+        if g09 is None and active_repair is not None:
+            raise StageSealingError("G09_APPROVAL_REQUIRED", "Approved G09 evidence is missing")
         stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
         previous = session.scalar(
             select(StageCheckpointModel)
@@ -170,6 +182,48 @@ class StageSealingService:
                 for item in evidence
             ],
         }
+
+    def _reconcile_completed_validation(
+        self, session, continuation, repair, binding, run
+    ) -> None:
+        metadata = session.scalar(
+            select(ArtifactMetadataModel).where(
+                ArtifactMetadataModel.run_id == continuation.run_id,
+                ArtifactMetadataModel.stage_id == continuation.current_stage_id,
+                ArtifactMetadataModel.relative_path
+                == f"04_workflow_state/stages/{continuation.current_stage_id}/proven/validation-summary.json",
+                ArtifactMetadataModel.immutable.is_(True),
+            ).order_by(ArtifactMetadataModel.created_at.desc()).limit(1)
+        )
+        if metadata is None or run is None or not run.artifact_root:
+            return
+        try:
+            artifact = LocalFilesystemArtifactStore(
+                Path(run.artifact_root).parent,
+                fixed_run_root=Path(run.artifact_root),
+            ).read_artifact(continuation.run_id, metadata.relative_path)
+            payload = json.loads(artifact.content)
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, TypeError):
+            return
+        if (
+            artifact.ref.checksum != metadata.checksum
+            or payload.get("run_id") != continuation.run_id
+            or payload.get("stage_id") != continuation.current_stage_id
+            or payload.get("status") != "PASS"
+            or payload.get("workspace_fingerprint") != binding.workspace_fingerprint
+            or repair.post_fingerprint != binding.workspace_fingerprint
+            or not payload.get("steps")
+            or any(status != "PASSED" for status in payload["steps"].values())
+        ):
+            return
+        repair.validation_summary_artifact_id = artifact.ref.artifact_id
+        repair.validation_summary_checksum = artifact.ref.checksum
+        RepairLifecycleService.transition_in_session(
+            session,
+            repair,
+            "waiting_g11",
+            reason="reconciled immutable proven validation summary before sealing",
+        )
 
     def verify_cleanliness(self, context: dict[str, object]) -> dict[str, object]:
         workspace = Path(str(context["workspace_path"])).resolve(strict=True)
