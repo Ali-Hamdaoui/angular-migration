@@ -2990,7 +2990,7 @@ class TransformerOrchestrator:
 
     @staticmethod
     def _environment_retry_attempt_key(continuation) -> str:
-        return f"environment-retry:{continuation.attempt}"
+        return f"environment-retry:{continuation.state_version}"
 
     @staticmethod
     def _unexecuted_environment_retry_recovery_allowed(continuation, evidence, step) -> bool:
