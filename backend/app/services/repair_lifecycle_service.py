@@ -120,7 +120,7 @@ class RepairLifecycleService:
             .where(
                 StageGatePackageModel.run_id == run_id,
                 StageGatePackageModel.stage_id == stage_id,
-                StageGatePackageModel.gate_id.in_("G11", "G12"),
+                StageGatePackageModel.gate_id.in_(("G11", "G12")),
                 StageGatePackageModel.status == "approved",
                 StageGatePackageModel.stale_at.is_(None),
             )
