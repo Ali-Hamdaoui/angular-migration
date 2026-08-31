@@ -62,12 +62,7 @@ class ValidationRunner:
     ) -> str:
         run, plan, stage_plan, binding, references = self._context(session, continuation, group)
         for index, _reference in enumerate(references):
-            step = session.scalar(
-                select(StageStepModel).where(
-                    StageStepModel.stage_id == continuation.current_stage_id,
-                    StageStepModel.name == f"{group}-{index}",
-                )
-            )
+            step = self._step(session, continuation, f"{group}-{index}")
             if step is None:
                 raise ValidationRunnerError("VALIDATION_STEP_MISSING", f"{group}-{index} is missing")
             execution = (
@@ -200,8 +195,7 @@ class ValidationRunner:
         failed: list[tuple[StageStepModel, CommandExecutionModel]] = []
         for step in session.scalars(
             select(StageStepModel).where(
-                StageStepModel.run_id == continuation.run_id,
-                StageStepModel.stage_id == continuation.current_stage_id,
+                *self._step_scope(session, continuation),
                 StageStepModel.status == "FAILED",
                 StageStepModel.name.like("lint-%"),
             )
@@ -238,12 +232,7 @@ class ValidationRunner:
                     "VALIDATION_TARGET_MISSING", f"Approved validation target {group} is missing"
                 )
             for index in range(len(references)):
-                step = session.scalar(
-                    select(StageStepModel).where(
-                        StageStepModel.stage_id == continuation.current_stage_id,
-                        StageStepModel.name == f"{group}-{index}",
-                    )
-                )
+                step = self._step(session, continuation, f"{group}-{index}")
                 if step is None or step.status != "PASSED" or not step.execution_id:
                     raise ValidationRunnerError(
                         "VALIDATION_INCOMPLETE", f"{group}-{index} has no current passing evidence"
@@ -281,12 +270,7 @@ class ValidationRunner:
         if "lint" not in required:
             lint_references = (value.get("commands") or {}).get("lint") or []
             lint_steps = [
-                session.scalar(
-                    select(StageStepModel).where(
-                        StageStepModel.stage_id == continuation.current_stage_id,
-                        StageStepModel.name == f"lint-{index}",
-                    )
-                )
+                self._step(session, continuation, f"lint-{index}")
                 for index in range(len(lint_references))
             ]
             if lint_steps and all(step is not None and step.status == "PASSED" for step in lint_steps):
@@ -397,6 +381,28 @@ class ValidationRunner:
             validation_group="lint",
             execution=execution,
         ).is_accepted
+
+    def _step(self, session, continuation, name: str) -> StageStepModel | None:
+        return session.scalar(
+            select(StageStepModel).where(
+                *self._step_scope(session, continuation),
+                StageStepModel.name == name,
+            )
+        )
+
+    def _step_scope(self, session, continuation) -> tuple[object, ...]:
+        binding = self._binding(session, continuation)
+        if not binding.workspace_generation_id:
+            raise ValidationRunnerError(
+                "VALIDATION_WORKSPACE_GENERATION_MISSING",
+                "Validation requires an exact workspace generation binding",
+            )
+        return (
+            StageStepModel.run_id == continuation.run_id,
+            StageStepModel.stage_id == continuation.current_stage_id,
+            StageStepModel.stage_plan_id == continuation.stage_plan_id,
+            StageStepModel.workspace_generation_id == binding.workspace_generation_id,
+        )
 
     @staticmethod
     def _mark_known_baseline_step(
