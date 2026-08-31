@@ -1864,9 +1864,9 @@ class TransformerStageService:
                 StageStepModel.name == f"{group}-0",
             )
         )
-        if step is None and reference_override is not None:
+        if step is None:
             step = StageStepModel(
-                id=f"step-{run.id}-{continuation.current_stage_id}-{group}-0",
+                id=f"step-{run.id}-{continuation.current_stage_id}-{continuation.stage_plan_id[:16]}-{group}-0",
                 run_id=run.id,
                 stage_id=continuation.current_stage_id,
                 stage_plan_id=continuation.stage_plan_id,
@@ -1894,6 +1894,7 @@ class TransformerStageService:
         execution.prompt_request_id = prompt_id
         if step is not None:
             step.execution_id = result.execution_id
+            step.source_record_id = result.execution_id
             step.status = "RUNNING"
             step.updated_at = self._now()
         expected_state_version = continuation.state_version

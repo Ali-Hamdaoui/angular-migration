@@ -26,6 +26,7 @@ from app.repositories.models import (
     StageExecutionPlanModel,
     StageGatePackageModel,
     StageWorkspaceBindingModel,
+    WorkspaceGenerationModel,
     TransformationContinuationModel,
     WorkflowEventModel,
 )
@@ -368,6 +369,13 @@ class TransformationContinuationService:
             and stage_plan.checksum == continuation.stage_plan_checksum
             and Path(binding.workspace_path).is_dir()
         )
+        workspace_binding_stale = bool(
+            binding is not None
+            and (
+                not binding.workspace_generation_id
+                or session.get(WorkspaceGenerationModel, binding.workspace_generation_id) is None
+            )
+        )
         aliases = dict(run.workspace_aliases or {}) if run is not None else {}
         safe_predecessor_present = bool(
             aliases.get("BASELINE_SANDBOX")
@@ -423,6 +431,8 @@ class TransformationContinuationService:
             failure_class = RecoveryFailureClass.STAGE_PLAN_AUTHORITY_STALE
         elif command_authority_mismatch:
             failure_class = RecoveryFailureClass.COMMAND_AUTHORITY_MISMATCH
+        elif workspace_binding_stale:
+            failure_class = RecoveryFailureClass.STALE_WORKSPACE_BINDING
         elif failure_code == "PROVEN_TARGET_COHORT_INCOMPLETE":
             failure_class = RecoveryFailureClass.TARGET_COHORT_INCOMPLETE
         elif failure_code in {"PROVEN_LOCK_RESOLUTION_FAILED", "LOCKFILE_GENERATION_ERESOLVE"}:
