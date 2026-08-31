@@ -715,8 +715,10 @@ class FailureEvidenceService:
         route = FailureEvidenceService().classify(
             {"normalized_failure": normalized, "failure_fingerprint": "causal-kind", "prior_fingerprints": []}
         )
-        if route in {FailureRoute.DEPENDENCY_INCOMPATIBLE, FailureRoute.PACKAGE_EXPORT_INCOMPATIBLE}:
+        if route is FailureRoute.DEPENDENCY_INCOMPATIBLE:
             return "dependency"
+        if route is FailureRoute.PACKAGE_EXPORT_INCOMPATIBLE:
+            return "source"
         if route in {FailureRoute.ENVIRONMENT_TRANSIENT, FailureRoute.ENVIRONMENT_PERMANENT}:
             return "environment"
         prefix = str(step_name or "").split("-", 1)[0]

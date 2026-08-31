@@ -422,7 +422,7 @@ def _is_dependency_failure(diagnosis_kind: str, normalized: dict) -> bool:
         "failure_fingerprint": "causal-review",
         "prior_fingerprints": [],
     })
-    return route in {"dependency_incompatible", "package_export_incompatible"} or str(
+    return route == "dependency_incompatible" or str(
         normalized.get("error_code") or ""
     ) in _DEPENDENCY_ERROR_CODES or str(normalized.get("failure_code") or "") in _DEPENDENCY_ERROR_CODES
 
