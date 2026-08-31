@@ -268,7 +268,18 @@ def _stage_runtime_authority(session, run: MigrationRunModel, stage_id: str | No
         raise CommandExecutorError("STAGE_RUNTIME_G07_BINDING_MISSING", "G07 approval does not bind the stage runtime")
     try:
         store = LocalFilesystemArtifactStore(Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root))
-        stored = store.read_artifact_by_id(package.package_artifact_id)
+        metadata = session.get(
+            ArtifactMetadataModel,
+            f"metadata-{package.package_artifact_id}",
+        )
+        if (
+            metadata is None
+            or metadata.run_id != run.id
+            or not metadata.immutable
+            or metadata.checksum != package.package_checksum
+        ):
+            raise ValueError("G07 runtime package metadata is missing or stale")
+        stored = store.read_artifact(run.id, metadata.relative_path)
         payload = json.loads(stored.content)
         approved_runtime = payload.get("runtime") or {}
         if (
