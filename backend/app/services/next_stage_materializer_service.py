@@ -23,6 +23,7 @@ from app.services.planning_application_service import (
     StageExecutionPlanService,
     run_scoped_stage_id,
 )
+from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.stage_target_version_service import (
     StageTargetVersionError,
@@ -141,16 +142,35 @@ class NextStageMaterializerService:
         remaining = list(context["remaining_route"])
         if not remaining:
             return None
-        route = tuple(
-            (
-                str(item["source_family"]),
-                str(item["target_family"]),
-                str(item["stage_id"]),
-                str(item["target_angular_exact"]),
-                str(item.get("target_cli_exact") or item["target_angular_exact"]),
+        try:
+            catalogue = CompatibilityCatalogueProvider().load(
+                str(context["catalogue_version"])
             )
-            for item in remaining
-        )
+            route = []
+            for item in remaining:
+                source_family = str(item["source_family"])
+                target_family = str(item["target_family"])
+                entry = catalogue.entry_for(source_family, target_family)
+                if entry is None or entry.stage_id != str(item["stage_id"]):
+                    raise NextStageMaterializerError(
+                        "CATALOGUE_STAGE_UNAVAILABLE",
+                        "Approved catalogue has no matching successor stage.",
+                    )
+                route.append(
+                    (
+                        source_family,
+                        target_family,
+                        entry.stage_id,
+                        entry.target_angular_exact,
+                        entry.target_cli_exact,
+                    )
+                )
+            route = tuple(route)
+        except (KeyError, TypeError, ValueError) as error:
+            raise NextStageMaterializerError(
+                "CATALOGUE_STAGE_UNAVAILABLE",
+                "Approved catalogue cannot resolve the successor stage.",
+            ) from error
         request = PlanGenerationRequest(
             run_id=str(context["run_id"]),
             expected_state_version=1,
