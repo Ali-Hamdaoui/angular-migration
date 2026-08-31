@@ -96,6 +96,7 @@ Windows ``Path`` sort).
 from __future__ import annotations
 
 import hashlib
+import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -207,14 +208,21 @@ def workspace_fingerprint_v1(
     """
     root = Path(root).resolve(strict=True)
     entries: list[tuple[str, bytes]] = []
-    for item in root.rglob("*"):
-        if not item.is_file():
-            continue
-        relative = item.relative_to(root)
-        excluded = {name.casefold() for name in exclude}
-        if excluded and any(part.casefold() in excluded for part in relative.parts):
-            continue
-        entries.append((relative.as_posix(), item.read_bytes()))
+    excluded = {name.casefold() for name in exclude}
+    for directory, directories, filenames in os.walk(root, topdown=True, followlinks=False):
+        if excluded:
+            directories[:] = [
+                name for name in directories if name.casefold() not in excluded
+            ]
+        directory_path = Path(directory)
+        for filename in filenames:
+            item = directory_path / filename
+            if not item.is_file():
+                continue
+            relative = item.relative_to(root)
+            if excluded and any(part.casefold() in excluded for part in relative.parts):
+                continue
+            entries.append((relative.as_posix(), item.read_bytes()))
     sort_key = (
         _raw_path_order_key
         if path_order == "raw"
