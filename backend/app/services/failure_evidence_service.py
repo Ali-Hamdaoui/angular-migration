@@ -317,12 +317,10 @@ class FailureEvidenceService:
         if not isinstance(causal, dict) or causal.get("causal_kind") not in {"build", "test", "lint"}:
             return False
         message = str(normalized.get("failure_message") or "")
-        if not _SOURCE_COMPATIBILITY_DIAGNOSTIC.search(message):
+        match = _SOURCE_COMPATIBILITY_DIAGNOSTIC.search(message)
+        if match is None or "node_modules" in match.group(0).lower():
             return False
-        workspace = evidence.get("workspace_path")
-        if not workspace:
-            return False
-        return bool(FailureTargetResolver.resolve(Path(str(workspace)), message))
+        return True
 
     @staticmethod
     def _exports_target_is_available(value: object, conditions: set[str]) -> bool:
