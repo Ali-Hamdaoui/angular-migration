@@ -341,6 +341,14 @@ _REPLACEMENT_CONTEXT_MISSING_RETRY_FEEDBACK = (
     "once. Do not infer whitespace, line endings, or an EOF newline from the\n"
     "human instruction."
 )
+_REPLACEMENT_AMBIGUOUS_RETRY_FEEDBACK = (
+    "The previous replace_text candidate used a preimage that matched the "
+    "authoritative file more than once. Each replace_text operation must use "
+    "an exact non-empty preimage that occurs exactly once. Do not repeat an "
+    "identical operation to target multiple occurrences. Instead, use one "
+    "larger unique preimage or distinct unique preimages for distinct edits, "
+    "preserving the smallest causal source change."
+)
 _DEPENDENCY_TRANSITION_RETRY_FEEDBACK = (
     "The previous proposer candidate violated the dependency_transition exclusivity rule. "
     "dependency_transition is exclusive: emit exactly one operation with "
@@ -376,6 +384,12 @@ _UNIFIED_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
 def _semantic_retry_feedback(error_code: str | None, error_message: str | None = None) -> str:
+    if error_code == "REPAIR_REPLACEMENT_AMBIGUOUS":
+        return _REPLACEMENT_AMBIGUOUS_RETRY_FEEDBACK + (
+            "\nBackend rejection for the prior candidate: "
+            + (error_message or "the replacement preimage matched multiple times")
+            + "\n"
+        )
     if error_code in {_REPLACEMENT_CONTEXT_MISSING, "REPAIR_REPLACEMENT_MISSING"}:
         return _REPLACEMENT_CONTEXT_MISSING_RETRY_FEEDBACK + (
             "\nBackend rejection for the prior candidate: "
