@@ -495,13 +495,12 @@ class TransformerSealingFlow:
                 approved = {
                     item.gate_id
                     for item in session.query(StageGatePackageModel).filter(
+                        StageGatePackageModel.run_id == continuation.run_id,
                         StageGatePackageModel.stage_id == stage_id,
                         StageGatePackageModel.status == "approved",
                     )
                 }
-                if not {"G07", "G08"}.issubset(approved) or not (
-                    "G11" in approved or {"G09", "G12"}.issubset(approved)
-                ):
+                if not {"G07", "G12"}.issubset(approved):
                     self._block(
                         session,
                         continuation,
