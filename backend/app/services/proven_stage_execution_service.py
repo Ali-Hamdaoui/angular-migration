@@ -700,6 +700,14 @@ class ProvenStageExecutionService:
             continuation = self._owned(session, continuation_id, worker_id)
             execution = self._latest_terminal_execution(session, continuation, "bootstrap_install")
             if execution is None or execution.status != "succeeded":
+                if execution is not None and execution.reconstruction_required:
+                    self._block(
+                        session,
+                        continuation,
+                        "COMMAND_RECOVERY_REQUIRED",
+                        "The source install was interrupted without verified success; governed workspace reconstruction is required before retry.",
+                    )
+                    return
                 if execution is not None and execution.status in {"interrupted", "failed"}:
                     self._queue(continuation, ProvenTransformationNode.SOURCE_INSTALL_SAME_AUTHORITY.value)
                     continuation.last_error_code = "PROVEN_SOURCE_INSTALL_RETRY_QUEUED"
