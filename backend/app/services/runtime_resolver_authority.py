@@ -165,6 +165,7 @@ class RuntimeResolverAuthority:
                         for item in descriptors
                         if item.runtime_id == runtime_id
                         and item.installation_variant == installation_variant
+                        and self._requirement_uses_install(requirement, runtime_id)
                         and requirement.satisfied_by(item)
                     ),
                     None,
@@ -176,6 +177,14 @@ class RuntimeResolverAuthority:
             node = matches.get(RuntimeExecutableKind.NODE)
             candidates.append((_semantic_version(node.version_exact if node else None), runtime_id, installation_variant or "", matches))
         return max(candidates, key=lambda item: (item[0], item[1], item[2]))[3] if candidates else {}
+
+    @staticmethod
+    def _requirement_uses_install(requirement, candidate_runtime_id) -> bool:
+        if requirement.runtime_id == candidate_runtime_id or RuntimeResolverAuthority._same_install(
+            requirement.runtime_id, candidate_runtime_id
+        ):
+            return True
+        return requirement.runtime_id == "angular-stage-runtime"
 
     def _build_descriptor(
         self,
