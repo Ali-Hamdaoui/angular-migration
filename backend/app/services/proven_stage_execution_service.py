@@ -758,14 +758,7 @@ class ProvenStageExecutionService:
 
     @staticmethod
     def _validation_attempt_key(continuation, node: str) -> str:
-        if continuation.last_error_code == "FAILURE_ROUTE_ENVIRONMENT_TRANSIENT":
-            attempt_key = f"environment-retry:{continuation.attempt}:{node}"
-        elif continuation.last_error_code == "VALIDATION_COMMAND_AUTH_RETRY_QUEUED":
-            attempt_key = f"workspace-binding-retry:{continuation.state_version}:{node}"
-        elif continuation.last_error_code == "VALIDATION_COMMAND_IDEMPOTENCY_RETRY_QUEUED":
-            attempt_key = f"stage-validation-retry:{continuation.state_version}:{node}"
-        else:
-            attempt_key = f"proven:{node}"
+        attempt_key = f"validation-cycle:{continuation.state_version}:{node}"
         return ProvenStageExecutionService._scoped_attempt_key(continuation, attempt_key)
 
     def _validate_group(self, continuation_id, worker_id, *, group, node, next_node, step_group) -> None:
@@ -1317,7 +1310,7 @@ class ProvenStageExecutionService:
                 continuation,
                 group="final_install",
                 next_node=ProvenTransformationNode.VALIDATION_TREE.value,
-                attempt_key="validation-install",
+                attempt_key=self._validation_attempt_key(continuation, "validation_install"),
             )
 
     def _node_validation_tree(self, continuation_id: str, worker_id: str) -> None:
