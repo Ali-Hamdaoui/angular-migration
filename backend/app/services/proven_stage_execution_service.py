@@ -34,6 +34,7 @@ from app.repositories.models import (
     MigrationPlanModel,
     MigrationRunModel,
     MigrationStageModel,
+    RepairAttemptModel,
     StageExecutionPlanModel,
     StageStepModel,
     StageWorkspaceBindingModel,
@@ -45,6 +46,7 @@ from app.services.proven_activation_gate import ProvenActivationGate
 from app.services.command_registry_service import CommandRegistryService
 from app.services.package_migration_service import PackageMigrationError, PackageMigrationService
 from app.services.proven_stage_tooling_policy import ProvenStageToolingPolicy
+from app.services.repair_lifecycle_service import RepairLifecycleService
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformer_stage_service import (
     TransformerStageError,
@@ -1455,7 +1457,7 @@ class ProvenStageExecutionService:
                 "steps": {step.name: step.status for step in steps},
                 "status": "PASS",
             }
-            self._record_evidence(
+            summary = self._record_evidence(
                 session,
                 continuation,
                 store,
@@ -1463,6 +1465,25 @@ class ProvenStageExecutionService:
                 payload,
                 "validation-summary-v1",
             )
+            repair = session.scalar(
+                select(RepairAttemptModel)
+                .where(
+                    RepairAttemptModel.run_id == continuation.run_id,
+                    RepairAttemptModel.stage_id == continuation.current_stage_id,
+                    RepairAttemptModel.status.in_(("revalidating", "revalidating_affected")),
+                )
+                .order_by(RepairAttemptModel.attempt_number.desc())
+                .limit(1)
+            )
+            if repair is not None:
+                repair.validation_summary_artifact_id = summary.ref.artifact_id
+                repair.validation_summary_checksum = summary.ref.checksum
+                RepairLifecycleService.transition_in_session(
+                    session,
+                    repair,
+                    "waiting_g11",
+                    reason="proven validation passed for repaired candidate",
+                )
             self._advance_after(session, continuation, ProvenTransformationNode.AGGREGATE_PROVEN_VALIDATION.value)
 
     # -- Phase 7: promotion --------------------------------------------------
