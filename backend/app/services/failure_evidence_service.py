@@ -109,6 +109,11 @@ _NPM_ERESOLVE_PEER_CONFLICT_RE = re.compile(
     rf"(?P<package>{_NPM_PACKAGE_NAME})@"
     rf"(?P<version>\d+\.\d+\.\d+(?:[-\w.]*)?)(?=\s|$)"
 )
+_SOURCE_COMPATIBILITY_DIAGNOSTIC = re.compile(
+    r"(?im)(?:^|[\r\n])\s*(?:\.?[\\/])?[^:\r\n]+\.(?:ts|html|scss):\d+(?::\d+)?\s*-\s*"
+    r"(?:error|warning):.*(?:has no exported member|export .* was not found|"
+    r"cannot find module|cannot find name|does not exist on type|is not assignable to)",
+)
 
 
 def _installed_version_of(message: str, package: str) -> str | None:
@@ -300,6 +305,24 @@ class FailureEvidenceService:
     }
     non_repairable_codes: ClassVar[set[str]] = {"VALIDATION_EVIDENCE_MISSING", "VALIDATION_INCOMPLETE"}
     source_codes: ClassVar[set[str]] = {"COMPILATION_FAILED"}
+
+    @staticmethod
+    def _is_source_compatibility_failure(evidence: dict[str, object]) -> bool:
+        normalized = evidence.get("normalized_failure") or {}
+        if not isinstance(normalized, dict):
+            return False
+        if str(normalized.get("error_code") or "") != "COMMAND_EXIT_NONZERO":
+            return False
+        causal = evidence.get("causal_repair") or {}
+        if not isinstance(causal, dict) or causal.get("causal_kind") not in {"build", "test", "lint"}:
+            return False
+        message = str(normalized.get("failure_message") or "")
+        if not _SOURCE_COMPATIBILITY_DIAGNOSTIC.search(message):
+            return False
+        workspace = evidence.get("workspace_path")
+        if not workspace:
+            return False
+        return bool(FailureTargetResolver.resolve(Path(str(workspace)), message))
 
     @staticmethod
     def _exports_target_is_available(value: object, conditions: set[str]) -> bool:
@@ -811,7 +834,7 @@ class FailureEvidenceService:
             return FailureRoute.POLICY_VIOLATION
         if code in self.non_repairable_codes:
             return FailureRoute.NON_REPAIRABLE_VALIDATION
-        if code in self.source_codes:
+        if code in self.source_codes or self._is_source_compatibility_failure(evidence):
             return FailureRoute.REPAIRABLE_SOURCE
         return FailureRoute.UNKNOWN_FAILURE
 
