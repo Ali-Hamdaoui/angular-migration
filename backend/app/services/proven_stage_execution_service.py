@@ -1355,7 +1355,9 @@ class ProvenStageExecutionService:
                 continuation,
                 group="target_version_check",
                 next_node=ProvenTransformationNode.VALIDATION_BUILD.value,
-                attempt_key="validation-version-proof",
+                attempt_key=self._validation_attempt_key(
+                    continuation, ProvenTransformationNode.VALIDATION_VERSION_PROOF.value
+                ),
             )
 
     def _node_validation_build(self, continuation_id: str, worker_id: str) -> None:
